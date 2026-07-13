@@ -5,8 +5,15 @@ also extends the superproject `AGENTS.md` when checked out as a submodule.
 
 ## Repository workflow
 
-- Use `main` as the protected integration branch and Conventional Commits with
-  the owning service as scope.
+- Keep `main` stable, runnable, and usable. Do all feature and fix work on a
+  short-lived branch created from an up-to-date `main`.
+- Use simple branch names such as `feat/stream-ingest`, `fix/clock-alignment`, or
+  `chore/dependency-update`. Keep the suffix to one to three clear kebab-case
+  words.
+- Merge only after the required tests and evals pass. Delete merged, abandoned,
+  superseded, and otherwise unused branches locally and remotely as soon as
+  they no longer serve active work.
+- Use Conventional Commits with the owning service as scope.
 - Every service ships its own deterministic tests, periodic evals, README, and
   configuration in the same commit as a feature or fix.
 - Use Semantic Versioning for releases and push the submodule commit before the
