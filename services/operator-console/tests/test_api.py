@@ -25,6 +25,23 @@ def test_health_and_static_console_are_served() -> None:
     assert "EgoGlass Operator Console" in page.text
 
 
+def test_sidebar_contains_only_the_current_home_page_link() -> None:
+    with make_client() as client:
+        page = client.get("/")
+
+    navigation = page.text.split('<nav class="nav-rail"', maxsplit=1)[1].split(
+        "</nav>", maxsplit=1
+    )[0]
+    assert navigation.count("<a ") == 1
+    assert '<a class="nav-item is-active" href="/" aria-current="page"' in navigation
+    assert "<span>主页</span>" in navigation
+    assert "data-view=" not in navigation
+    assert "<span>实时</span>" not in navigation
+    assert "<span>会话</span>" not in navigation
+    assert "<span>数据</span>" not in navigation
+    assert "<span>设置</span>" not in navigation
+
+
 def test_settings_round_trip_and_revision() -> None:
     with make_client() as client:
         initial = client.get("/api/v1/state").json()

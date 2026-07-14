@@ -290,6 +290,7 @@ button:disabled {
   background: transparent;
   color: var(--muted);
   font-size: 10px;
+  text-decoration: none;
 }
 
 .nav-item:hover {
@@ -1115,16 +1116,19 @@ button:disabled {
     right: 0;
     bottom: 0;
     z-index: 30;
-    display: grid;
+    display: flex;
     width: auto;
     height: 62px;
-    grid-template-columns: repeat(4, 1fr);
+    flex-direction: row;
+    overflow-x: auto;
     padding: 5px 8px;
     border-top: 1px solid var(--border);
     border-right: 0;
   }
 
   .nav-item {
+    width: 64px;
+    flex: 0 0 64px;
     min-height: 50px;
     margin: 0 3px;
   }

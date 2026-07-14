@@ -102,10 +102,6 @@ function bindControls() {
     tab.addEventListener("click", () => activateInspectorPanel(tab.dataset.panel));
   });
 
-  document.querySelectorAll(".nav-item").forEach((button) => {
-    button.addEventListener("click", () => navigate(button.dataset.view, button));
-  });
-
   elements.overlayButton.addEventListener("click", () => {
     state.overlayVisible = !state.overlayVisible;
     elements.overlayButton.textContent = state.overlayVisible ? "隐藏轨迹" : "显示轨迹";
@@ -127,21 +123,6 @@ function bindControls() {
     elements.fullscreenButton.textContent = document.fullscreenElement ? "退出全屏" : "全屏";
     resizeCanvas();
   });
-}
-
-function navigate(view, button) {
-  document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("is-active"));
-  button.classList.add("is-active");
-  if (view === "live") {
-    document.querySelector(".viewer-tool").scrollIntoView({ behavior: "smooth", block: "start" });
-  } else if (view === "sessions") {
-    document.querySelector(".event-tool").scrollIntoView({ behavior: "smooth", block: "center" });
-  } else if (view === "data") {
-    document.querySelector(".storage-tool").scrollIntoView({ behavior: "smooth", block: "center" });
-  } else if (view === "settings") {
-    activateInspectorPanel("settings-panel");
-    document.querySelector(".inspector-tool").scrollIntoView({ behavior: "smooth", block: "start" });
-  }
 }
 
 function activateInspectorPanel(panelId) {
