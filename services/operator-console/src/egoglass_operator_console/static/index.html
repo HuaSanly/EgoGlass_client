@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>EgoGlass Operator Console</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="EgoGlass 操作台">
+          <span class="brand-mark" aria-hidden="true">EG</span>
+          <span class="brand-copy">
+            <strong>EgoGlass</strong>
+            <span>Operator Console</span>
+          </span>
+        </a>
+
+        <div class="topbar-session" aria-label="当前会话">
+          <span class="status-light" id="connection-light" aria-hidden="true"></span>
+          <div>
+            <strong id="connection-label">正在连接</strong>
+            <span id="session-label">simulation-session-001</span>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <button class="button button-quiet" id="fullscreen-button" type="button">全屏</button>
+          <button class="button button-record" id="record-button" type="button">
+            <span class="record-dot" aria-hidden="true"></span>
+            <span id="record-label">开始录制</span>
+          </button>
+        </div>
+      </header>
+
+      <nav class="nav-rail" aria-label="主导航">
+        <button class="nav-item is-active" type="button" data-view="live" title="实时操作台">
+          <span class="nav-glyph" aria-hidden="true">LIVE</span>
+          <span>实时</span>
+        </button>
+        <button class="nav-item" type="button" data-view="sessions" title="会话列表">
+          <span class="nav-glyph" aria-hidden="true">LOG</span>
+          <span>会话</span>
+        </button>
+        <button class="nav-item" type="button" data-view="data" title="数据平台">
+          <span class="nav-glyph" aria-hidden="true">DATA</span>
+          <span>数据</span>
+        </button>
+        <button class="nav-item" type="button" data-view="settings" title="运行设置">
+          <span class="nav-glyph" aria-hidden="true">CFG</span>
+          <span>设置</span>
+        </button>
+      </nav>
+
+      <main class="main-content">
+        <section class="workspace" aria-label="实时操作台">
+          <section class="viewer-tool" aria-labelledby="viewer-title">
+            <div class="tool-header viewer-header">
+              <div>
+                <span class="eyebrow">SIMULATED SOURCE</span>
+                <h1 id="viewer-title">第一视角视频</h1>
+              </div>
+              <div class="viewer-controls" aria-label="画面控制">
+                <label class="toggle-control">
+                  <input id="left-trajectory-toggle" type="checkbox" aria-label="左手轨迹" checked>
+                  <span class="toggle-track" aria-hidden="true"></span>
+                  <span>左手</span>
+                </label>
+                <label class="toggle-control">
+                  <input id="right-trajectory-toggle" type="checkbox" aria-label="右手轨迹" checked>
+                  <span class="toggle-track" aria-hidden="true"></span>
+                  <span>右手</span>
+                </label>
+                <button class="icon-text-button" id="overlay-button" type="button" aria-pressed="true">
+                  隐藏轨迹
+                </button>
+              </div>
+            </div>
+
+            <div class="viewer-stage" id="viewer-stage">
+              <canvas id="scene-canvas" aria-label="模拟第一视角视频与左右手预测轨迹"></canvas>
+              <div class="viewer-badges">
+                <span class="badge badge-live"><span aria-hidden="true"></span>LIVE</span>
+                <span class="badge" id="resolution-badge">1280 × 720 · 20 FPS</span>
+              </div>
+              <div class="calibration-banner" id="calibration-banner">
+                <strong>模拟标定</strong>
+                <span>simulation-calibration-001</span>
+              </div>
+              <div class="viewer-empty" id="viewer-empty" hidden>
+                <strong>会话已停止</strong>
+                <button class="button button-primary" id="resume-session-button" type="button">启动模拟会话</button>
+              </div>
+            </div>
+
+            <div class="viewer-footer">
+              <div class="timecode">
+                <span>FRAME</span>
+                <strong id="frame-seq">000000</strong>
+              </div>
+              <div class="timeline" aria-label="会话时间线">
+                <span class="timeline-progress" id="timeline-progress"></span>
+                <span class="timeline-cursor" id="timeline-cursor"></span>
+              </div>
+              <div class="timecode timecode-right">
+                <span>SDK TIME</span>
+                <strong id="sdk-time">00:00.000</strong>
+              </div>
+            </div>
+          </section>
+
+          <aside class="inspector-tool" aria-label="会话检查器">
+            <div class="inspector-tabs" role="tablist" aria-label="检查器视图">
+              <button class="inspector-tab is-active" id="session-tab" type="button" role="tab" aria-selected="true" data-panel="session-panel">会话</button>
+              <button class="inspector-tab" id="calibration-tab" type="button" role="tab" aria-selected="false" data-panel="calibration-panel">标定</button>
+              <button class="inspector-tab" id="settings-tab" type="button" role="tab" aria-selected="false" data-panel="settings-panel">参数</button>
+            </div>
+
+            <section class="inspector-panel is-active" id="session-panel" role="tabpanel" aria-labelledby="session-tab">
+              <div class="panel-section">
+                <div class="section-heading">
+                  <h2>信号链路</h2>
+                  <span class="pill pill-success" id="source-pill">模拟在线</span>
+                </div>
+                <dl class="property-list">
+                  <div><dt>媒体源</dt><dd>SyntheticFrameSource</dd></div>
+                  <div><dt>传输</dt><dd>WebSocket v1</dd></div>
+                  <div><dt>编解码</dt><dd>模拟 H.264</dd></div>
+                  <div><dt>端到端</dt><dd id="feedback-latency-property">114 ms</dd></div>
+                </dl>
+              </div>
+
+              <div class="panel-section">
+                <div class="section-heading">
+                  <h2>推理窗口</h2>
+                  <span class="pill">FP16 READY</span>
+                </div>
+                <dl class="property-list">
+                  <div><dt>输入</dt><dd id="model-input-property">8 × 224² RGB</dd></div>
+                  <div><dt>历史时域</dt><dd id="history-property">0.8 s</dd></div>
+                  <div><dt>预测时域</dt><dd id="horizon-property">1.0 s</dd></div>
+                  <div><dt>GPU</dt><dd>RTX 3060 · 待接入</dd></div>
+                </dl>
+              </div>
+
+              <div class="panel-section trajectory-legend">
+                <h2>轨迹</h2>
+                <div><span class="legend-line left-hand"></span><span>左手</span><strong id="left-confidence">96%</strong></div>
+                <div><span class="legend-line right-hand"></span><span>右手</span><strong id="right-confidence">96%</strong></div>
+              </div>
+
+              <button class="button button-danger-outline full-width" id="stop-session-button" type="button">停止会话</button>
+            </section>
+
+            <section class="inspector-panel" id="calibration-panel" role="tabpanel" aria-labelledby="calibration-tab" hidden>
+              <div class="calibration-state">
+                <span class="calibration-target" aria-hidden="true"></span>
+                <div>
+                  <span class="eyebrow">ACTIVE PROFILE</span>
+                  <h2 id="calibration-profile">simulation-calibration-001</h2>
+                  <p id="calibration-state-copy">模拟配置，不代表真机空间标定结果</p>
+                </div>
+              </div>
+              <dl class="property-list property-list-spaced">
+                <div><dt>坐标系</dt><dd>camera_optical</dd></div>
+                <div><dt>单位</dt><dd>meters</dd></div>
+                <div><dt>重投影误差</dt><dd id="reprojection-error">0.31 px</dd></div>
+                <div><dt>相机内参</dt><dd>模拟 1280 × 720</dd></div>
+                <div><dt>显示外参</dt><dd>模拟矩阵</dd></div>
+              </dl>
+              <div class="notice notice-warning">
+                <strong>真机显示锁定</strong>
+                <span>只有 verified 标定配置可发送到眼镜渲染。</span>
+              </div>
+              <button class="button button-quiet full-width" type="button" disabled title="眼镜端标定将在后续实现">管理标定配置</button>
+            </section>
+
+            <section class="inspector-panel" id="settings-panel" role="tabpanel" aria-labelledby="settings-tab" hidden>
+              <form id="settings-form">
+                <div class="form-section">
+                  <h2>视频</h2>
+                  <div class="field-grid">
+                    <label>分辨率
+                      <select id="video-resolution" name="video_resolution">
+                        <option value="1280x720">1280 × 720</option>
+                        <option value="960x540">960 × 540</option>
+                        <option value="640x360">640 × 360</option>
+                      </select>
+                    </label>
+                    <label>采集帧率
+                      <input id="capture-fps" name="capture_fps" type="number" min="5" max="30" step="1">
+                    </label>
+                    <label>目标码率
+                      <div class="input-with-unit"><input id="target-bitrate" name="target_bitrate_kbps" type="number" min="500" max="10000" step="100"><span>kbps</span></div>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="form-section">
+                  <h2>推理</h2>
+                  <div class="field-grid">
+                    <label>推理帧率
+                      <input id="inference-fps" name="inference_fps" type="number" min="1" max="30" step="1">
+                    </label>
+                    <label>历史帧数
+                      <input id="history-frames" name="history_frames" type="number" min="1" max="32" step="1">
+                    </label>
+                    <label>预测步数
+                      <input id="prediction-steps" name="prediction_steps" type="number" min="1" max="30" step="1">
+                    </label>
+                    <label>步间隔
+                      <div class="input-with-unit"><input id="prediction-interval" name="prediction_interval_ms" type="number" min="50" max="1000" step="10"><span>ms</span></div>
+                    </label>
+                    <label>反馈有效期
+                      <div class="input-with-unit"><input id="feedback-age" name="max_feedback_age_ms" type="number" min="100" max="3000" step="50"><span>ms</span></div>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="form-section">
+                  <h2>记录</h2>
+                  <div class="field-grid">
+                    <label>分片长度
+                      <div class="input-with-unit"><input id="segment-seconds" name="recording_segment_seconds" type="number" min="10" max="600" step="10"><span>s</span></div>
+                    </label>
+                    <label>会话上限
+                      <div class="input-with-unit"><input id="session-limit" name="session_limit_minutes" type="number" min="0" max="240" step="5"><span>min</span></div>
+                    </label>
+                    <label>最低磁盘余量
+                      <div class="input-with-unit"><input id="min-disk" name="min_free_disk_gb" type="number" min="1" max="1000" step="1"><span>GB</span></div>
+                    </label>
+                  </div>
+                  <label class="checkbox-row">
+                    <input id="retain-recordings" name="retain_recordings" type="checkbox">
+                    <span>保留记录，不自动删除</span>
+                  </label>
+                </div>
+
+                <div class="form-actions">
+                  <span id="settings-message" role="status"></span>
+                  <button class="button button-primary" type="submit">保存参数</button>
+                </div>
+              </form>
+            </section>
+          </aside>
+        </section>
+
+        <section class="metric-band" aria-label="运行指标">
+          <article class="metric-item">
+            <span>媒体延迟</span>
+            <strong id="media-latency">45.0</strong>
+            <small>ms</small>
+            <span class="sparkline" id="media-sparkline" aria-hidden="true"></span>
+          </article>
+          <article class="metric-item">
+            <span>推理延迟</span>
+            <strong id="inference-latency">60.0</strong>
+            <small>ms</small>
+            <span class="sparkline" id="inference-sparkline" aria-hidden="true"></span>
+          </article>
+          <article class="metric-item">
+            <span>输入帧率</span>
+            <strong id="capture-rate">20.0</strong>
+            <small>FPS</small>
+          </article>
+          <article class="metric-item">
+            <span>推理帧率</span>
+            <strong id="inference-rate">10.0</strong>
+            <small>FPS</small>
+          </article>
+          <article class="metric-item">
+            <span>丢帧</span>
+            <strong id="dropped-frames">0</strong>
+            <small>frames</small>
+          </article>
+          <article class="metric-item">
+            <span>GPU 显存</span>
+            <strong id="gpu-memory">0.0</strong>
+            <small>GB</small>
+          </article>
+        </section>
+
+        <section class="lower-grid">
+          <section class="event-tool" aria-labelledby="event-title">
+            <div class="tool-header compact-header">
+              <div>
+                <span class="eyebrow">SESSION EVENTS</span>
+                <h2 id="event-title">事件记录</h2>
+              </div>
+              <button class="button button-quiet button-small" id="clear-events-button" type="button">清空</button>
+            </div>
+            <div class="event-table-wrap">
+              <table class="event-table">
+                <thead><tr><th>时间</th><th>级别</th><th>事件</th><th>详情</th></tr></thead>
+                <tbody id="event-rows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="storage-tool" aria-labelledby="storage-title">
+            <div class="tool-header compact-header">
+              <div>
+                <span class="eyebrow">LOCAL STORAGE</span>
+                <h2 id="storage-title">记录状态</h2>
+              </div>
+              <span class="pill" id="recording-pill">待机</span>
+            </div>
+            <div class="storage-meter" aria-label="模拟磁盘使用率 36%">
+              <span style="width: 36%"></span>
+            </div>
+            <dl class="property-list storage-properties">
+              <div><dt>数据目录</dt><dd>%LOCALAPPDATA%\EgoGlass</dd></div>
+              <div><dt>可用空间</dt><dd>174.2 GB</dd></div>
+              <div><dt>当前会话</dt><dd id="session-size">0 MB</dd></div>
+            </dl>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

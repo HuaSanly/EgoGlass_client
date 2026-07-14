@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# Recordings and local runtime state never belong in Git.
+data/
+recordings/
+*.mp4
+*.parquet
