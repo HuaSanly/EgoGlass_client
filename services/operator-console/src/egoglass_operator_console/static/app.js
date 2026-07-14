@@ -58,6 +58,10 @@ const state = {
 
 const context = elements.canvas.getContext("2d", { alpha: false });
 
+if (window.location.search) {
+  window.history.replaceState({}, "", window.location.pathname);
+}
+
 function apiUrl(path) {
   return `${window.location.origin}${path}`;
 }

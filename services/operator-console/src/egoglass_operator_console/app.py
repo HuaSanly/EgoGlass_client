@@ -2,20 +2,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import secrets
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .models import ConsoleState, RuntimeSettings
 from .runtime import ConsoleRuntime
 
 STATIC_DIR = Path(__file__).parent / "static"
+DESKTOP_COOKIE_NAME = "egoglass_desktop_session"
 
 
-def create_app(runtime: ConsoleRuntime | None = None) -> FastAPI:
+def create_app(
+    runtime: ConsoleRuntime | None = None,
+    *,
+    desktop_token: str | None = None,
+) -> FastAPI:
     console_runtime = runtime or ConsoleRuntime()
     app = FastAPI(
         title="EgoGlass Operator Console",
@@ -24,6 +30,30 @@ def create_app(runtime: ConsoleRuntime | None = None) -> FastAPI:
         redoc_url=None,
     )
     app.state.console_runtime = console_runtime
+    app.state.desktop_token = desktop_token
+
+    @app.middleware("http")
+    async def require_desktop_session(request: Request, call_next):
+        if desktop_token is None or request.url.path == "/api/v1/health":
+            return await call_next(request)
+
+        cookie_token = request.cookies.get(DESKTOP_COOKIE_NAME, "")
+        query_token = request.query_params.get("desktop_token", "")
+        cookie_valid = bool(cookie_token) and secrets.compare_digest(cookie_token, desktop_token)
+        query_valid = bool(query_token) and secrets.compare_digest(query_token, desktop_token)
+        if not cookie_valid and not query_valid:
+            return JSONResponse(status_code=401, content={"detail": "desktop session required"})
+
+        response = await call_next(request)
+        if query_valid:
+            response.set_cookie(
+                DESKTOP_COOKIE_NAME,
+                desktop_token,
+                httponly=True,
+                samesite="strict",
+            )
+        return response
+
     app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 
     @app.get("/", include_in_schema=False)
@@ -63,6 +93,11 @@ def create_app(runtime: ConsoleRuntime | None = None) -> FastAPI:
 
     @app.websocket("/api/v1/telemetry")
     async def telemetry(websocket: WebSocket) -> None:
+        if desktop_token is not None:
+            cookie_token = websocket.cookies.get(DESKTOP_COOKIE_NAME, "")
+            if not cookie_token or not secrets.compare_digest(cookie_token, desktop_token):
+                await websocket.close(code=4401, reason="desktop session required")
+                return
         await websocket.accept()
         tick = 0
         try:

@@ -13,23 +13,34 @@ before the Glass3 WebRTC transport is implemented.
 Future services will be added behind versioned contracts rather than imported
 from the operator console.
 
-## Quick start
+## Windows desktop
 
 ```powershell
 cd services/operator-console
-python -m uv sync --group dev
-python -m uv run egoglass-console
+uv sync --group dev
+uv run egoglass-desktop
 ```
 
-Open `http://127.0.0.1:8765`.
+The desktop command opens the operator console in a native Windows WebView2
+window. It does not open the system browser. The bundled FastAPI server uses a
+dynamic loopback port and shuts down with the window.
+
+Build and verify the local executable with:
+
+```powershell
+cd services/operator-console
+.\scripts\build-desktop.ps1
+```
+
+The ignored build output is `dist/EgoGlass/EgoGlass.exe`.
 
 ## Verification
 
 ```powershell
 cd services/operator-console
-python -m uv run pytest
-python -m uv run pytest -q evals
-python -m uv run ruff check src tests evals
+uv run pytest
+uv run pytest -q evals
+uv run ruff check src tests evals
 ```
 
 The simulator is not evidence of real-world calibration. A real device stream

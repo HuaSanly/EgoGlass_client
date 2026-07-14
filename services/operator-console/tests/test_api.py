@@ -1,4 +1,6 @@
+import pytest
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from egoglass_operator_console.app import create_app
 from egoglass_operator_console.runtime import ConsoleRuntime
@@ -69,3 +71,38 @@ def test_websocket_emits_versioned_trajectory_telemetry() -> None:
     assert payload["calibration"]["state"] == "simulated"
     assert [hand["side"] for hand in payload["hands"]] == ["left", "right"]
     assert len(payload["hands"][0]["waypoints"]) == 10
+
+
+def test_desktop_token_becomes_session_cookie_for_http_and_websocket() -> None:
+    app = create_app(ConsoleRuntime(), desktop_token="test-desktop-token")
+    with TestClient(app) as client:
+        unauthorized = client.get("/api/v1/state")
+        wrong_token = client.get("/?desktop_token=wrong")
+        authorized_root = client.get("/?desktop_token=test-desktop-token")
+        authorized_state = client.get("/api/v1/state")
+        with client.websocket_connect("/api/v1/telemetry") as websocket:
+            telemetry = websocket.receive_json()
+
+    assert unauthorized.status_code == 401
+    assert wrong_token.status_code == 401
+    assert authorized_root.status_code == 200
+    set_cookie = authorized_root.headers["set-cookie"].lower()
+    assert "egoglass_desktop_session=" in set_cookie
+    assert "httponly" in set_cookie
+    assert "path=/" in set_cookie
+    assert "samesite=strict" in set_cookie
+    assert authorized_state.status_code == 200
+    assert telemetry["source"] == "synthetic"
+
+
+def test_desktop_websocket_rejects_missing_session_cookie() -> None:
+    app = create_app(ConsoleRuntime(), desktop_token="test-desktop-token")
+
+    with (
+        TestClient(app) as client,
+        pytest.raises(WebSocketDisconnect) as disconnect,
+        client.websocket_connect("/api/v1/telemetry"),
+    ):
+        pass
+
+    assert disconnect.value.code == 4401

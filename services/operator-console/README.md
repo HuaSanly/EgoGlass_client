@@ -8,15 +8,35 @@ The current media source is deterministic and synthetic. Its output follows the
 same coordinate, calibration, and freshness rules expected from the future
 Glass3 ingest gateway.
 
-## Run
+## Run as a Windows app
 
 ```powershell
-python -m uv sync --group dev
-python -m uv run egoglass-console
+uv sync --group dev
+uv run egoglass-desktop
 ```
 
-Use `--host` and `--port` to override the default `127.0.0.1:8765` binding.
+The desktop launcher provides a native title bar, a minimum 1100x700 window,
+single-instance enforcement, a dynamic loopback port, an HttpOnly desktop
+session cookie, rotating logs under `%LOCALAPPDATA%\EgoGlass\logs`, and graceful
+server shutdown when the window closes.
+
+The browser development server remains available for UI development:
+
+```powershell
+uv run egoglass-console
+```
+
 Only a future ingest gateway will bind to the LAN by default.
+
+## Build
+
+```powershell
+.\scripts\build-desktop.ps1
+```
+
+The script synchronizes dependencies, builds the one-folder application with
+PyInstaller, verifies the installed WebView2 Runtime, and runs the packaged
+`--smoke-test`. Build output stays outside Git under `dist/EgoGlass/`.
 
 ## API
 
@@ -32,9 +52,9 @@ Only a future ingest gateway will bind to the LAN by default.
 ## Verification
 
 ```powershell
-python -m uv run pytest
-python -m uv run pytest -q evals
-python -m uv run ruff check src tests evals
+uv run pytest
+uv run pytest -q evals
+uv run ruff check src tests evals
 ```
 
 Gate tests cover validation, state transitions, trajectory ranges, freshness,

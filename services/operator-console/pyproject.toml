@@ -12,15 +12,18 @@ license = { text = "Proprietary" }
 dependencies = [
   "fastapi>=0.115,<1",
   "pydantic>=2.10,<3",
+  "pywebview>=6,<7",
   "uvicorn[standard]>=0.34,<1",
 ]
 
 [project.scripts]
 egoglass-console = "egoglass_operator_console.app:main"
+egoglass-desktop = "egoglass_operator_console.desktop:main"
 
 [dependency-groups]
 dev = [
   "httpx2>=2,<3",
+  "pyinstaller>=6.12,<7",
   "pytest>=8.3,<9",
   "ruff>=0.9,<1",
 ]
