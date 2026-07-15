@@ -1,12 +1,9 @@
 # Operator Console
 
 The operator console is a self-contained FastAPI service for Windows. It serves
-the browser UI, owns operator settings, and streams telemetry through a
-versioned WebSocket endpoint.
-
-The primary viewer displays the live Glass3 WebRTC preview from the local
-ingest gateway. Hand trajectories and inference telemetry remain deterministic
-and synthetic until the online inference service replaces them.
+an authenticated local UI that displays the live Glass3 WebRTC preview from the
+ingest gateway. It does not create placeholder media, trajectories, metrics,
+calibration, recording, or session state.
 
 ## Run as a Windows app
 
@@ -42,13 +39,6 @@ PyInstaller, verifies the installed WebView2 Runtime, and runs the packaged
 ## API
 
 - `GET /api/v1/health`
-- `GET /api/v1/state`
-- `PUT /api/v1/settings`
-- `POST /api/v1/session/start`
-- `POST /api/v1/session/stop`
-- `POST /api/v1/recording/start`
-- `POST /api/v1/recording/stop`
-- `WS /api/v1/telemetry`
 
 ## Verification
 
@@ -58,6 +48,6 @@ uv run pytest -q evals
 uv run ruff check src tests evals
 ```
 
-Gate tests cover validation, state transitions, trajectory ranges, freshness,
-and static application delivery. The eval suite checks the complete simulated
-session contract and quality thresholds separately.
+Gate tests cover desktop authentication, static application delivery, removed
+API behavior, and the real preview connection state. The eval suite prevents
+placeholder data paths from returning to the shipped runtime.

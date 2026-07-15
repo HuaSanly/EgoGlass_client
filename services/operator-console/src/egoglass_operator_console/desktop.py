@@ -22,7 +22,6 @@ from typing import Any
 import uvicorn
 
 from .app import create_app
-from .runtime import ConsoleRuntime
 
 APP_NAME = "EgoGlass"
 MUTEX_NAME = "Local\\EgoGlassOperatorConsole"
@@ -78,7 +77,7 @@ class LocalConsoleServer:
     """Runs Uvicorn on a reserved loopback socket in a background thread."""
 
     def __init__(self, desktop_token: str) -> None:
-        app = create_app(ConsoleRuntime(), desktop_token=desktop_token)
+        app = create_app(desktop_token=desktop_token)
         self._config = uvicorn.Config(
             app,
             host="127.0.0.1",
@@ -209,9 +208,12 @@ def run_smoke_test(
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
         with opener.open(build_desktop_url(server.origin, token), timeout=5) as response:
             page = response.read().decode("utf-8")
-        with opener.open(f"{server.origin}/api/v1/state", timeout=5) as response:
-            state_payload = response.read().decode("utf-8")
-        if "EgoGlass Operator Console" not in page or '"mode":"simulation"' not in state_payload:
+        with opener.open(f"{server.origin}/api/v1/health", timeout=5) as response:
+            health_payload = response.read().decode("utf-8")
+        if (
+            "EgoGlass Operator Console" not in page
+            or '"service":"operator-console"' not in health_payload
+        ):
             return 1
         return 0
     finally:

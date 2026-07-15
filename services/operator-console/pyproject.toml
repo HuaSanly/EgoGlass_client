@@ -5,13 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "egoglass-operator-console"
 version = "0.1.0"
-description = "EgoGlass operator console and deterministic client simulator"
+description = "EgoGlass desktop operator console for the live Glass3 video preview"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
 dependencies = [
   "fastapi>=0.115,<1",
-  "pydantic>=2.10,<3",
   "pywebview>=6,<7",
   "uvicorn[standard]>=0.34,<1",
 ]

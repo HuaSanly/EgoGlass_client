@@ -2,16 +2,16 @@
 
 The client repository owns the Windows ingest, online inference orchestration,
 operator tooling, and data platform. The current runnable slice receives direct
-Glass3 WebRTC video, renders its live preview in the operator console, and keeps
-deterministic synthetic trajectories isolated as an explicitly labelled stand-in
-for the future online inference service.
+Glass3 WebRTC video and renders its live preview in the operator console. It
+does not generate placeholder trajectories, metrics, calibration, or session
+data.
 
 ## Services
 
 - `services/ingest-gateway/`: terminates the direct Glass3 WebRTC video and
   frame-metadata channels; also probes GB28181-generated RTSP as a fallback.
-- `services/operator-console/`: FastAPI API, WebSocket telemetry, simulated
-  three-dimensional hand trajectories, and the browser operator console.
+- `services/operator-console/`: authenticated local UI for the real Glass3
+  preview and client-side connection events.
 
 Future services will be added behind versioned contracts rather than imported
 from the operator console.
@@ -46,7 +46,6 @@ uv run pytest -q evals
 uv run ruff check src tests evals
 ```
 
-The direct video path has passed a real-device first-frame check. The simulator
-is not evidence of real-world calibration, trajectory quality, or long-session
-stability. A real feedback stream must carry a verified calibration profile
-before the glasses application is allowed to render world-aligned feedback.
+The direct video path has passed a real-device first-frame check. World-aligned
+feedback is a separate future service and must carry a verified calibration
+profile before the glasses application is allowed to render it.
