@@ -22,6 +22,14 @@ def test_health_and_static_console_are_served() -> None:
     }
     assert page.status_code == 200
     assert 'id="scene-canvas"' in page.text
+    assert 'id="live-video-source"' in page.text
+    assert "GLASS3 LIVE SOURCE" in page.text
+    assert 'id="left-trajectory-toggle" type="checkbox" aria-label="左手模拟轨迹">' in page.text
+    assert 'id="right-trajectory-toggle" type="checkbox" aria-label="右手模拟轨迹">' in page.text
+    assert "SyntheticFrameSource" not in page.text
+    assert "WebSocket v1" not in page.text
+    assert "WebRTC / DTLS-SRTP" in page.text
+    assert "模拟 H.264" not in page.text
     assert "EgoGlass Operator Console" in page.text
 
 

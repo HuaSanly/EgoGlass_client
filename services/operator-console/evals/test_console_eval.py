@@ -2,6 +2,23 @@ from egoglass_operator_console.models import RuntimeSettings, SessionPhase
 from egoglass_operator_console.runtime import ConsoleRuntime, build_telemetry
 
 
+def test_live_glass3_preview_is_the_primary_viewer_source() -> None:
+    from egoglass_operator_console.app import STATIC_DIR
+
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="live-video-source"' in html
+    assert "127.0.0.1:8770/api/v1/webrtc/frame.jpg" in script
+    assert "state.liveVideoReady" in script
+    assert 'id="live-badge-label">WAITING</span>' in html
+    assert "renderConnectionState" in script
+    assert "GLASS3 视频在线" in script
+    assert "SyntheticFrameSource" not in html
+    assert 'aria-label="左手模拟轨迹">' in html
+    assert 'aria-label="右手模拟轨迹">' in html
+
+
 def test_default_simulated_session_meets_operator_console_quality_budget() -> None:
     settings = RuntimeSettings()
     calibration = __import__("asyncio").run(ConsoleRuntime().state()).calibration

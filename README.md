@@ -1,12 +1,15 @@
 # EgoGlass Client
 
 The client repository owns the Windows ingest, online inference orchestration,
-operator tooling, and data platform. The first runnable slice is the operator
-console with a deterministic synthetic source. It keeps the UI and API usable
-before the Glass3 WebRTC transport is implemented.
+operator tooling, and data platform. The current runnable slice receives direct
+Glass3 WebRTC video, renders its live preview in the operator console, and keeps
+deterministic synthetic trajectories isolated as an explicitly labelled stand-in
+for the future online inference service.
 
 ## Services
 
+- `services/ingest-gateway/`: terminates the direct Glass3 WebRTC video and
+  frame-metadata channels; also probes GB28181-generated RTSP as a fallback.
 - `services/operator-console/`: FastAPI API, WebSocket telemetry, simulated
   three-dimensional hand trajectories, and the browser operator console.
 
@@ -43,6 +46,7 @@ uv run pytest -q evals
 uv run ruff check src tests evals
 ```
 
-The simulator is not evidence of real-world calibration. A real device stream
-must carry a verified calibration profile before the glasses application is
-allowed to render world-aligned feedback.
+The direct video path has passed a real-device first-frame check. The simulator
+is not evidence of real-world calibration, trajectory quality, or long-session
+stability. A real feedback stream must carry a verified calibration profile
+before the glasses application is allowed to render world-aligned feedback.

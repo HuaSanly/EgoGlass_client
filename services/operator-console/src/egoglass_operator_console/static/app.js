@@ -1,5 +1,6 @@
 const elements = {
   canvas: document.querySelector("#scene-canvas"),
+  liveVideo: document.querySelector("#live-video-source"),
   viewerStage: document.querySelector("#viewer-stage"),
   connectionLight: document.querySelector("#connection-light"),
   connectionLabel: document.querySelector("#connection-label"),
@@ -14,6 +15,8 @@ const elements = {
   overlayButton: document.querySelector("#overlay-button"),
   leftToggle: document.querySelector("#left-trajectory-toggle"),
   rightToggle: document.querySelector("#right-trajectory-toggle"),
+  liveBadge: document.querySelector("#live-badge"),
+  liveBadgeLabel: document.querySelector("#live-badge-label"),
   resolutionBadge: document.querySelector("#resolution-badge"),
   calibrationBanner: document.querySelector("#calibration-banner"),
   calibrationProfile: document.querySelector("#calibration-profile"),
@@ -37,6 +40,7 @@ const elements = {
   gpuMemory: document.querySelector("#gpu-memory"),
   sessionSize: document.querySelector("#session-size"),
   sourcePill: document.querySelector("#source-pill"),
+  previewStatusProperty: document.querySelector("#preview-status-property"),
   eventRows: document.querySelector("#event-rows"),
   clearEventsButton: document.querySelector("#clear-events-button"),
   settingsForm: document.querySelector("#settings-form"),
@@ -51,12 +55,17 @@ const state = {
   reconnectTimer: null,
   reconnectDelayMs: 700,
   lastTelemetryAt: 0,
-  overlayVisible: true,
+  overlayVisible: false,
   events: [],
   frameAccumulator: 0,
+  liveVideoReady: false,
+  liveVideoTimer: null,
+  telemetryMode: "connecting",
+  telemetryLabel: "正在连接",
 };
 
-const context = elements.canvas.getContext("2d", { alpha: false });
+const context = elements.canvas.getContext("2d", { alpha: true });
+const liveVideoEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/frame.jpg";
 
 if (window.location.search) {
   window.history.replaceState({}, "", window.location.pathname);
@@ -64,6 +73,35 @@ if (window.location.search) {
 
 function apiUrl(path) {
   return `${window.location.origin}${path}`;
+}
+
+function connectLiveVideo() {
+  const refresh = (delayMs) => {
+    window.clearTimeout(state.liveVideoTimer);
+    state.liveVideoTimer = window.setTimeout(() => {
+      elements.liveVideo.src = `${liveVideoEndpoint}?frame=${Date.now()}`;
+    }, delayMs);
+  };
+
+  elements.liveVideo.addEventListener("load", () => {
+    const becameReady = !state.liveVideoReady;
+    state.liveVideoReady = true;
+    renderConnectionState();
+    if (becameReady) {
+      addEvent("OK", "Glass3 video connected", "WebRTC H264");
+    }
+    refresh(100);
+  });
+  elements.liveVideo.addEventListener("error", () => {
+    const wasReady = state.liveVideoReady;
+    state.liveVideoReady = false;
+    renderConnectionState();
+    if (wasReady) {
+      addEvent("WARN", "Glass3 video disconnected", "Waiting for the next frame");
+    }
+    refresh(500);
+  });
+  refresh(0);
 }
 
 async function request(path, options = {}) {
@@ -93,6 +131,7 @@ async function initialize() {
     addEvent("WARN", "状态加载失败", error.message);
   }
   connectTelemetry();
+  connectLiveVideo();
   requestAnimationFrame(drawFrame);
   window.setInterval(checkFreshness, 500);
 }
@@ -104,7 +143,7 @@ function bindControls() {
 
   elements.overlayButton.addEventListener("click", () => {
     state.overlayVisible = !state.overlayVisible;
-    elements.overlayButton.textContent = state.overlayVisible ? "隐藏轨迹" : "显示轨迹";
+    elements.overlayButton.textContent = state.overlayVisible ? "隐藏模拟轨迹" : "显示模拟轨迹";
     elements.overlayButton.setAttribute("aria-pressed", String(state.overlayVisible));
   });
 
@@ -179,12 +218,27 @@ function checkFreshness() {
 }
 
 function setConnectionState(mode, label) {
-  elements.connectionLight.classList.toggle("is-live", mode === "live");
-  elements.connectionLight.classList.toggle("is-offline", mode === "offline");
-  elements.connectionLabel.textContent = label;
-  if (elements.sourcePill) {
-    elements.sourcePill.textContent = mode === "live" ? "模拟在线" : "无数据";
-    elements.sourcePill.classList.toggle("pill-success", mode === "live");
+  state.telemetryMode = mode;
+  state.telemetryLabel = label;
+  renderConnectionState();
+}
+
+function renderConnectionState() {
+  const videoReady = state.liveVideoReady;
+  const telemetryOffline = state.telemetryMode === "offline";
+  elements.connectionLight.classList.toggle("is-live", videoReady);
+  elements.connectionLight.classList.toggle("is-offline", !videoReady && telemetryOffline);
+  elements.connectionLabel.textContent = videoReady
+    ? "GLASS3 视频在线"
+    : telemetryOffline ? "客户端服务异常" : "等待 GLASS3 视频";
+  elements.sourcePill.textContent = videoReady ? "GLASS3 LIVE" : "等待首帧";
+  elements.sourcePill.classList.toggle("pill-success", videoReady);
+  elements.previewStatusProperty.textContent = videoReady ? "实时画面已连接" : "等待首帧";
+  elements.liveBadge.classList.toggle("badge-live", videoReady);
+  elements.liveBadgeLabel.textContent = videoReady ? "LIVE" : "WAITING";
+  elements.liveVideo.classList.toggle("is-ready", videoReady);
+  if (videoReady && elements.liveVideo.naturalWidth > 0) {
+    elements.resolutionBadge.textContent = `${elements.liveVideo.naturalWidth} × ${elements.liveVideo.naturalHeight} · LIVE`;
   }
 }
 
@@ -235,7 +289,9 @@ function renderTelemetry(telemetry) {
 }
 
 function renderSettingsSummary(settings) {
-  elements.resolutionBadge.textContent = `${settings.video_width} × ${settings.video_height} · ${settings.capture_fps} FPS`;
+  if (!state.liveVideoReady) {
+    elements.resolutionBadge.textContent = `${settings.video_width} × ${settings.video_height} · 请求配置`;
+  }
   elements.modelInputProperty.textContent = `${settings.history_frames} × 224² RGB`;
   elements.historyProperty.textContent = `${(settings.history_frames / settings.inference_fps).toFixed(1)} s`;
   elements.horizonProperty.textContent = `${(settings.prediction_steps * settings.prediction_interval_ms / 1000).toFixed(1)} s`;
@@ -415,8 +471,30 @@ function drawFrame() {
   resizeCanvas();
   const width = elements.canvas.width;
   const height = elements.canvas.height;
-  drawSyntheticScene(context, width, height, state.telemetry);
+  if (state.liveVideoReady) {
+    context.clearRect(0, 0, width, height);
+    drawLiveOverlay(context, width, height, state.telemetry);
+  } else {
+    drawSyntheticScene(context, width, height, state.telemetry);
+  }
   requestAnimationFrame(drawFrame);
+}
+
+function drawLiveOverlay(ctx, width, height, telemetry) {
+  const left = telemetry?.hands?.find((hand) => hand.side === "left");
+  const right = telemetry?.hands?.find((hand) => hand.side === "right");
+  if (state.overlayVisible && telemetry && telemetry.session_phase === "live") {
+    if (elements.leftToggle.checked && left) drawTrajectory(ctx, left, width, height, "#32bdd0");
+    if (elements.rightToggle.checked && right) drawTrajectory(ctx, right, width, height, "#ff7168");
+  }
+  ctx.strokeStyle = "rgba(242,245,241,0.32)";
+  ctx.lineWidth = Math.max(1, width / 1000);
+  ctx.beginPath();
+  ctx.moveTo(width / 2 - 10, height / 2);
+  ctx.lineTo(width / 2 + 10, height / 2);
+  ctx.moveTo(width / 2, height / 2 - 10);
+  ctx.lineTo(width / 2, height / 2 + 10);
+  ctx.stroke();
 }
 
 function drawSyntheticScene(ctx, width, height, telemetry) {

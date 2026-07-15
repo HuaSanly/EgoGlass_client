@@ -4,9 +4,9 @@ The operator console is a self-contained FastAPI service for Windows. It serves
 the browser UI, owns operator settings, and streams telemetry through a
 versioned WebSocket endpoint.
 
-The current media source is deterministic and synthetic. Its output follows the
-same coordinate, calibration, and freshness rules expected from the future
-Glass3 ingest gateway.
+The primary viewer displays the live Glass3 WebRTC preview from the local
+ingest gateway. Hand trajectories and inference telemetry remain deterministic
+and synthetic until the online inference service replaces them.
 
 ## Run as a Windows app
 
@@ -26,7 +26,8 @@ The browser development server remains available for UI development:
 uv run egoglass-console
 ```
 
-Only a future ingest gateway will bind to the LAN by default.
+The separate ingest gateway is the only service that binds to the LAN. The
+desktop server and browser development server remain loopback-only.
 
 ## Build
 

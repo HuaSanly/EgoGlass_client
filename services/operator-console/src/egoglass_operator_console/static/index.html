@@ -47,30 +47,31 @@
           <section class="viewer-tool" aria-labelledby="viewer-title">
             <div class="tool-header viewer-header">
               <div>
-                <span class="eyebrow">SIMULATED SOURCE</span>
+                <span class="eyebrow">GLASS3 LIVE SOURCE</span>
                 <h1 id="viewer-title">第一视角视频</h1>
               </div>
               <div class="viewer-controls" aria-label="画面控制">
                 <label class="toggle-control">
-                  <input id="left-trajectory-toggle" type="checkbox" aria-label="左手轨迹" checked>
+                  <input id="left-trajectory-toggle" type="checkbox" aria-label="左手模拟轨迹">
                   <span class="toggle-track" aria-hidden="true"></span>
-                  <span>左手</span>
+                  <span>左手模拟</span>
                 </label>
                 <label class="toggle-control">
-                  <input id="right-trajectory-toggle" type="checkbox" aria-label="右手轨迹" checked>
+                  <input id="right-trajectory-toggle" type="checkbox" aria-label="右手模拟轨迹">
                   <span class="toggle-track" aria-hidden="true"></span>
-                  <span>右手</span>
+                  <span>右手模拟</span>
                 </label>
-                <button class="icon-text-button" id="overlay-button" type="button" aria-pressed="true">
-                  隐藏轨迹
+                <button class="icon-text-button" id="overlay-button" type="button" aria-pressed="false">
+                  显示模拟轨迹
                 </button>
               </div>
             </div>
 
             <div class="viewer-stage" id="viewer-stage">
-              <canvas id="scene-canvas" aria-label="模拟第一视角视频与左右手预测轨迹"></canvas>
+              <img id="live-video-source" class="live-video-source" alt="Glass3 live video">
+              <canvas id="scene-canvas" aria-label="第一视角视频的左右手模拟预测轨迹叠加层"></canvas>
               <div class="viewer-badges">
-                <span class="badge badge-live"><span aria-hidden="true"></span>LIVE</span>
+                <span class="badge" id="live-badge"><span aria-hidden="true"></span><span id="live-badge-label">WAITING</span></span>
                 <span class="badge" id="resolution-badge">1280 × 720 · 20 FPS</span>
               </div>
               <div class="calibration-banner" id="calibration-banner">
@@ -110,31 +111,32 @@
               <div class="panel-section">
                 <div class="section-heading">
                   <h2>信号链路</h2>
-                  <span class="pill pill-success" id="source-pill">模拟在线</span>
+                  <span class="pill" id="source-pill">等待首帧</span>
                 </div>
                 <dl class="property-list">
-                  <div><dt>媒体源</dt><dd>SyntheticFrameSource</dd></div>
-                  <div><dt>传输</dt><dd>WebSocket v1</dd></div>
-                  <div><dt>编解码</dt><dd>模拟 H.264</dd></div>
-                  <div><dt>端到端</dt><dd id="feedback-latency-property">114 ms</dd></div>
+                  <div><dt>媒体源</dt><dd>Rokid Glass3 相机</dd></div>
+                  <div><dt>传输</dt><dd>WebRTC / DTLS-SRTP</dd></div>
+                  <div><dt>编解码</dt><dd>H.264</dd></div>
+                  <div><dt>预览</dt><dd id="preview-status-property">等待首帧</dd></div>
                 </dl>
               </div>
 
               <div class="panel-section">
                 <div class="section-heading">
                   <h2>推理窗口</h2>
-                  <span class="pill">FP16 READY</span>
+                  <span class="pill">模拟数据</span>
                 </div>
                 <dl class="property-list">
                   <div><dt>输入</dt><dd id="model-input-property">8 × 224² RGB</dd></div>
                   <div><dt>历史时域</dt><dd id="history-property">0.8 s</dd></div>
                   <div><dt>预测时域</dt><dd id="horizon-property">1.0 s</dd></div>
+                  <div><dt>模拟反馈</dt><dd id="feedback-latency-property">114 ms</dd></div>
                   <div><dt>GPU</dt><dd>RTX 3060 · 待接入</dd></div>
                 </dl>
               </div>
 
               <div class="panel-section trajectory-legend">
-                <h2>轨迹</h2>
+                <h2>模拟轨迹</h2>
                 <div><span class="legend-line left-hand"></span><span>左手</span><strong id="left-confidence">96%</strong></div>
                 <div><span class="legend-line right-hand"></span><span>右手</span><strong id="right-confidence">96%</strong></div>
               </div>
