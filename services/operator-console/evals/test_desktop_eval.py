@@ -28,7 +28,9 @@ def test_repeated_desktop_server_lifecycle_is_private_and_recoverable() -> None:
                 assert response.status == 200
             with opener.open(f"{server.origin}/assets/app.js", timeout=5) as response:
                 script = response.read()
-                assert b"frame.jpg" in script
+                assert b"/api/v1/webrtc/viewer/sessions" in script
+                assert b"RTCPeerConnection" in script
+                assert b"frame.jpg" not in script
                 assert b"WebSocket" not in script
         finally:
             server.stop()

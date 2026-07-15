@@ -5,6 +5,10 @@ an authenticated local UI that displays the live Glass3 WebRTC preview from the
 ingest gateway. It does not create placeholder media, trajectories, metrics,
 calibration, recording, or session state.
 
+WebView2 receives a real WebRTC video track from the gateway and measures the
+displayed cadence from rendered frames. There is no JPEG polling path. The UI
+keeps the negotiated frame dimensions and cadence unchanged.
+
 ## Run as a Windows app
 
 ```powershell

@@ -9,17 +9,26 @@ from typing import Annotated
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .adapters.rtsp import RtspProbeError
 from .models import IngestStatus, ProbeResult, RtspSourceConfig
 from .runtime import IngestRuntime, ProbeBusyError
-from .webrtc_models import WebRtcAnswer, WebRtcOffer, WebRtcStatus
+from .webrtc_models import (
+    WebRtcAnswer,
+    WebRtcOffer,
+    WebRtcStatus,
+    WebRtcViewerAnswer,
+    WebRtcViewerOffer,
+)
 from .webrtc_runtime import (
     PairingTokenError,
     WebRtcSessionBusyError,
     WebRtcSessionError,
     WebRtcSessionRuntime,
+    WebRtcViewerSessionError,
+    WebRtcViewerUnavailableError,
 )
 
 
@@ -27,7 +36,7 @@ def create_app(
     runtime: IngestRuntime | None = None,
     webrtc_runtime: WebRtcSessionRuntime | None = None,
     *,
-    preview_allowed_hosts: frozenset[str] = frozenset({"127.0.0.1", "::1"}),
+    viewer_allowed_hosts: frozenset[str] = frozenset({"127.0.0.1", "::1"}),
 ) -> FastAPI:
     ingest_runtime = runtime or IngestRuntime()
     active_webrtc_runtime = webrtc_runtime or WebRtcSessionRuntime(secrets.token_urlsafe(24))
@@ -46,6 +55,12 @@ def create_app(
     )
     app.state.ingest_runtime = ingest_runtime
     app.state.webrtc_runtime = active_webrtc_runtime
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^http://127\.0\.0\.1(?::\d+)?$",
+        allow_methods=["POST"],
+        allow_headers=["content-type"],
+    )
 
     @app.exception_handler(RequestValidationError)
     async def redact_validation_input(
@@ -79,19 +94,20 @@ def create_app(
     async def webrtc_status() -> WebRtcStatus:
         return await active_webrtc_runtime.status()
 
-    @app.get("/api/v1/webrtc/frame.jpg", response_class=Response)
-    async def webrtc_preview_frame(request: Request) -> Response:
+    @app.post("/api/v1/webrtc/viewer/sessions", response_model=WebRtcViewerAnswer)
+    async def create_webrtc_viewer_session(
+        offer: WebRtcViewerOffer,
+        request: Request,
+    ) -> WebRtcViewerAnswer:
         client_host = request.client.host if request.client is not None else ""
-        if client_host not in preview_allowed_hosts:
-            raise HTTPException(status_code=403, detail="preview is available on loopback only")
-        payload = await active_webrtc_runtime.latest_preview_jpeg()
-        if payload is None:
-            raise HTTPException(status_code=503, detail="video preview is not ready")
-        return Response(
-            content=payload,
-            media_type="image/jpeg",
-            headers={"Cache-Control": "no-store, max-age=0"},
-        )
+        if client_host not in viewer_allowed_hosts:
+            raise HTTPException(status_code=403, detail="viewer is available on loopback only")
+        try:
+            return await active_webrtc_runtime.accept_viewer_offer(offer)
+        except WebRtcViewerUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except WebRtcViewerSessionError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
 
     @app.post("/api/v1/webrtc/sessions", response_model=WebRtcAnswer)
     async def create_webrtc_session(

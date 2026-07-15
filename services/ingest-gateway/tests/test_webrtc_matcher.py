@@ -17,7 +17,7 @@ def metadata(frame_id: int, rtp_timestamp: int, sdk_timestamp_ms: int = 1000) ->
         width=1280,
         height=720,
         rotation_degrees=0,
-        capture_config_id="720p20",
+        capture_config_id="720p30",
     )
 
 

@@ -1,6 +1,7 @@
 from aiortc import RTCBundlePolicy
 
 from egoglass_ingest_gateway.adapters.aiortc_peer import (
+    h264_video_codecs,
     lan_rtc_configuration,
     negotiated_video_codec_from_sdp,
 )
@@ -28,3 +29,10 @@ def test_negotiated_video_codec_is_parsed_from_structured_sdp() -> None:
     )
 
     assert negotiated_video_codec_from_sdp(sdp) == "H264"
+
+
+def test_viewer_forwarding_uses_only_h264_video_codecs() -> None:
+    codecs = h264_video_codecs()
+
+    assert codecs
+    assert {codec.mimeType.casefold() for codec in codecs} == {"video/h264"}

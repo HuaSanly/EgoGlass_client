@@ -21,10 +21,13 @@ def test_health_and_real_video_console_are_served() -> None:
     }
     assert page.status_code == 200
     assert script.status_code == 200
-    assert 'id="live-video-source"' in page.text
+    assert '<video\n                id="live-video-source"' in page.text
     assert "GLASS3 LIVE SOURCE" in page.text
     assert "WebRTC / DTLS-SRTP" in page.text
-    assert "127.0.0.1:8770/api/v1/webrtc/frame.jpg" in script.text
+    assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text
+    assert "new RTCPeerConnection" in script.text
+    assert "requestVideoFrameCallback" in script.text
+    assert "frame.jpg" not in script.text
     assert "EgoGlass Operator Console" in page.text
 
 

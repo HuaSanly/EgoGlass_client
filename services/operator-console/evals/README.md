@@ -5,8 +5,9 @@ gate tests. The shipped runtime consumes only the real Glass3 preview.
 
 Current pass criteria:
 
-- the Glass3 preview endpoint is the only viewer source;
-- waiting, connected, and disconnected UI states follow real image load events;
+- the Glass3 WebRTC viewer endpoint is the only viewer source;
+- waiting, connected, and disconnected UI states follow real video frames;
+- displayed FPS is measured from rendered WebView2 video frames;
 - no placeholder data generator, WebSocket, canvas renderer, or stale control
   API is present in the shipped package;
 - desktop authentication and repeated start/stop lifecycle remain recoverable.

@@ -7,15 +7,20 @@ from egoglass_ingest_gateway.adapters.rtsp import RtspProbeError
 from egoglass_ingest_gateway.app import create_app
 from egoglass_ingest_gateway.models import ProbeResult, RtspSourceConfig, RtspTransport
 from egoglass_ingest_gateway.runtime import IngestRuntime
-from egoglass_ingest_gateway.webrtc_models import WebRtcOffer
+from egoglass_ingest_gateway.webrtc_models import (
+    WebRtcOffer,
+    WebRtcViewerAnswer,
+    WebRtcViewerOffer,
+)
 from egoglass_ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
 
 PAIRING_TOKEN = "api-pairing-token-123456"
 
 
-class PreviewRuntime:
-    async def latest_preview_jpeg(self) -> bytes:
-        return b"\xff\xd8preview\xff\xd9"
+class ViewerRuntime:
+    async def accept_viewer_offer(self, offer: WebRtcViewerOffer) -> WebRtcViewerAnswer:
+        assert "viewer-offer" in offer.sdp
+        return WebRtcViewerAnswer(sdp="v=0\r\nviewer-answer-description")
 
     async def close(self) -> None:
         return None
@@ -145,24 +150,48 @@ def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:
     assert status.json()["phase"] == "negotiating"
 
 
-def test_preview_frame_is_jpeg_no_store_and_loopback_only() -> None:
+def test_viewer_offer_is_loopback_only_and_allows_desktop_origin() -> None:
+    payload = {
+        "schema_version": "1.0",
+        "type": "offer",
+        "sdp": "v=0\r\nviewer-offer-description",
+    }
     app = create_app(
-        webrtc_runtime=PreviewRuntime(),  # type: ignore[arg-type]
-        preview_allowed_hosts=frozenset({"testclient"}),
+        webrtc_runtime=ViewerRuntime(),  # type: ignore[arg-type]
+        viewer_allowed_hosts=frozenset({"testclient"}),
     )
     with TestClient(app) as client:
-        response = client.get("/api/v1/webrtc/frame.jpg")
+        response = client.post(
+            "/api/v1/webrtc/viewer/sessions",
+            json=payload,
+            headers={"Origin": "http://127.0.0.1:8765"},
+        )
 
     assert response.status_code == 200
-    assert response.headers["content-type"] == "image/jpeg"
-    assert response.headers["cache-control"] == "no-store, max-age=0"
-    assert response.content == b"\xff\xd8preview\xff\xd9"
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:8765"
+    assert response.json()["type"] == "answer"
 
     with TestClient(
-        create_app(webrtc_runtime=PreviewRuntime())  # type: ignore[arg-type]
+        create_app(webrtc_runtime=ViewerRuntime())  # type: ignore[arg-type]
     ) as client:
-        forbidden = client.get("/api/v1/webrtc/frame.jpg")
+        forbidden = client.post("/api/v1/webrtc/viewer/sessions", json=payload)
     assert forbidden.status_code == 403
+
+
+def test_viewer_offer_reports_unavailable_until_glass3_track_arrives() -> None:
+    runtime = WebRtcSessionRuntime(PAIRING_TOKEN)
+    payload = {
+        "schema_version": "1.0",
+        "type": "offer",
+        "sdp": "v=0\r\nviewer-offer-description",
+    }
+    with TestClient(
+        create_app(webrtc_runtime=runtime, viewer_allowed_hosts=frozenset({"testclient"}))
+    ) as client:
+        response = client.post("/api/v1/webrtc/viewer/sessions", json=payload)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Glass3 video is not ready"
 
 
 def test_cli_disables_high_frequency_preview_access_logs(monkeypatch) -> None:

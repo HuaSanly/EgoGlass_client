@@ -8,14 +8,16 @@ from aiortc import (
     RTCBundlePolicy,
     RTCConfiguration,
     RTCPeerConnection,
+    RTCRtpCodecCapability,
+    RTCRtpSender,
     RTCSessionDescription,
 )
+from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import MediaStreamError
 from aiortc.sdp import SessionDescription
 
-from ..webrtc_models import WebRtcOffer
-from .preview_encoder import MjpegPreviewEncoder
-from .webrtc import DecodedVideoFrame, WebRtcPeerCallbacks
+from ..webrtc_models import WebRtcOffer, WebRtcViewerOffer
+from .webrtc import DecodedVideoFrame, WebRtcPeerCallbacks, WebRtcVideoSource
 
 
 def lan_rtc_configuration() -> RTCConfiguration:
@@ -36,6 +38,24 @@ def negotiated_video_codec_from_sdp(sdp: str) -> str | None:
     return None
 
 
+def h264_video_codecs() -> list[RTCRtpCodecCapability]:
+    capabilities = RTCRtpSender.getCapabilities("video")
+    return [
+        codec
+        for codec in capabilities.codecs
+        if codec.mimeType.casefold() == "video/h264"
+    ]
+
+
+class AiortcVideoSource(WebRtcVideoSource):
+    def __init__(self, track: object) -> None:
+        self._track = track
+        self._relay = MediaRelay()
+
+    def subscribe(self, *, buffered: bool) -> object:
+        return self._relay.subscribe(self._track, buffered=buffered)
+
+
 class AiortcPeer:
     """One aiortc peer that receives a video track and metadata DataChannel."""
 
@@ -44,6 +64,7 @@ class AiortcPeer:
         self._peer = RTCPeerConnection(configuration=lan_rtc_configuration())
         self._tasks: set[asyncio.Task[None]] = set()
         self._negotiated_video_codec: str | None = None
+        self._video_source: AiortcVideoSource | None = None
 
         @self._peer.on("connectionstatechange")
         async def on_connectionstatechange() -> None:
@@ -61,7 +82,10 @@ class AiortcPeer:
         @self._peer.on("track")
         def on_track(track: object) -> None:
             if getattr(track, "kind", None) == "video":
-                self._schedule(self._consume_video(track))
+                source = AiortcVideoSource(track)
+                self._video_source = source
+                self._schedule(self._callbacks.on_video_source(source))
+                self._schedule(self._consume_video(source.subscribe(buffered=True)))
 
     @property
     def negotiated_video_codec(self) -> str | None:
@@ -85,23 +109,19 @@ class AiortcPeer:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         await self._peer.close()
+        self._video_source = None
 
     async def _consume_video(self, track: object) -> None:
-        preview_encoder = MjpegPreviewEncoder()
-        frame_index = 0
         try:
             while True:
                 frame = await track.recv()
                 time_base = getattr(frame, "time_base", None)
-                preview_jpeg = preview_encoder.encode(frame) if frame_index % 2 == 0 else None
-                frame_index += 1
                 await self._callbacks.on_video_frame(
                     DecodedVideoFrame(
                         width=int(frame.width),
                         height=int(frame.height),
                         pts=getattr(frame, "pts", None),
                         time_base=Fraction(time_base) if time_base is not None else None,
-                        preview_jpeg=preview_jpeg,
                     )
                 )
         except (MediaStreamError, asyncio.CancelledError):
@@ -111,3 +131,28 @@ class AiortcPeer:
         task = asyncio.create_task(awaitable)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+
+class AiortcViewerPeer:
+    """One loopback peer that forwards the live Glass3 track to WebView2."""
+
+    def __init__(self, video_track: object) -> None:
+        self._peer = RTCPeerConnection(configuration=lan_rtc_configuration())
+        transceiver = self._peer.addTransceiver(video_track, direction="sendonly")
+        codecs = h264_video_codecs()
+        if not codecs:
+            raise RuntimeError("aiortc has no H.264 video encoder")
+        transceiver.setCodecPreferences(codecs)
+
+    async def accept_offer(self, offer: WebRtcViewerOffer) -> str:
+        await self._peer.setRemoteDescription(
+            RTCSessionDescription(sdp=offer.sdp, type=offer.type)
+        )
+        answer = await self._peer.createAnswer()
+        await self._peer.setLocalDescription(answer)
+        if self._peer.localDescription is None:
+            raise RuntimeError("aiortc produced no local viewer description")
+        return self._peer.localDescription.sdp
+
+    async def close(self) -> None:
+        await self._peer.close()

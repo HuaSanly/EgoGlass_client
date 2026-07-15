@@ -6,12 +6,20 @@ from fractions import Fraction
 
 import pytest
 
-from egoglass_ingest_gateway.adapters.webrtc import DecodedVideoFrame, WebRtcPeerCallbacks
-from egoglass_ingest_gateway.webrtc_models import WebRtcOffer, WebRtcPhase
+from egoglass_ingest_gateway.adapters.webrtc import (
+    DecodedVideoFrame,
+    WebRtcPeerCallbacks,
+)
+from egoglass_ingest_gateway.webrtc_models import (
+    WebRtcOffer,
+    WebRtcPhase,
+    WebRtcViewerOffer,
+)
 from egoglass_ingest_gateway.webrtc_runtime import (
     PairingTokenError,
     WebRtcSessionBusyError,
     WebRtcSessionRuntime,
+    WebRtcViewerUnavailableError,
 )
 
 TOKEN = "test-pairing-token-123456"
@@ -29,6 +37,29 @@ class FakePeer:
     async def accept_offer(self, offer: WebRtcOffer) -> str:
         assert offer.type == "offer"
         return "v=0\r\nanswer-session-description"
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeVideoSource:
+    def __init__(self) -> None:
+        self.subscriptions: list[tuple[object, bool]] = []
+
+    def subscribe(self, *, buffered: bool) -> object:
+        track = object()
+        self.subscriptions.append((track, buffered))
+        return track
+
+
+class FakeViewerPeer:
+    def __init__(self, track: object) -> None:
+        self.track = track
+        self.closed = False
+
+    async def accept_offer(self, offer: WebRtcViewerOffer) -> str:
+        assert offer.type == "offer"
+        return "v=0\r\nviewer-answer-description"
 
     async def close(self) -> None:
         self.closed = True
@@ -55,13 +86,14 @@ def metadata_json(frame_id: int = 1, rtp_timestamp: int = 90_000) -> str:
             "width": 1280,
             "height": 720,
             "rotation_degrees": 0,
-            "capture_config_id": "720p20",
+            "capture_config_id": "720p30",
         }
     )
 
 
 def test_authenticated_session_receives_and_matches_video_metadata() -> None:
     peers: list[FakePeer] = []
+    viewers: list[FakeViewerPeer] = []
     perf_values = iter([1_000_000_000, 1_120_000_000])
 
     def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
@@ -69,27 +101,31 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
         peers.append(peer)
         return peer
 
+    def viewer_factory(track: object) -> FakeViewerPeer:
+        viewer = FakeViewerPeer(track)
+        viewers.append(viewer)
+        return viewer
+
     async def scenario() -> None:
         runtime = WebRtcSessionRuntime(
             TOKEN,
             factory,
+            viewer_factory,
             perf_clock=lambda: next(perf_values),
         )
         answer = await runtime.accept_offer(offer(), TOKEN)
         assert answer.type == "answer"
         await peers[0].callbacks.on_connection_state("connected")
+        source = FakeVideoSource()
+        await peers[0].callbacks.on_video_source(source)
         await peers[0].callbacks.on_metadata(metadata_json())
         await peers[0].callbacks.on_video_frame(
-            DecodedVideoFrame(
-                1280,
-                720,
-                0,
-                Fraction(1, 90_000),
-                preview_jpeg=b"\xff\xd8preview\xff\xd9",
-            )
+            DecodedVideoFrame(1280, 720, 0, Fraction(1, 90_000))
+        )
+        viewer_answer = await runtime.accept_viewer_offer(
+            WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
         )
         status = await runtime.status()
-        preview = await runtime.latest_preview_jpeg()
 
         assert status.phase is WebRtcPhase.STREAMING
         assert status.frames_received == 1
@@ -97,7 +133,8 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
         assert status.metadata_matched == 1
         assert status.metadata_rtp_origin_90khz == 90_000
         assert status.video_codec == "H264"
-        assert preview == b"\xff\xd8preview\xff\xd9"
+        assert viewer_answer.type == "answer"
+        assert source.subscriptions == [(viewers[0].track, False)]
         assert status.first_frame_latency_ms == 120.0
         assert (status.width, status.height) == (1280, 720)
 
@@ -114,6 +151,10 @@ def test_auth_busy_malformed_and_reconnect_paths_are_explicit() -> None:
 
     async def scenario() -> None:
         runtime = WebRtcSessionRuntime(TOKEN, factory)
+        with pytest.raises(WebRtcViewerUnavailableError):
+            await runtime.accept_viewer_offer(
+                WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
+            )
         with pytest.raises(PairingTokenError):
             await runtime.accept_offer(offer(), "wrong-pairing-token")
 

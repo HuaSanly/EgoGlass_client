@@ -25,6 +25,11 @@ WebRTC video is encrypted with DTLS-SRTP. The HTTP signaling exchange is
 cleartext in v1 and must stay on a trusted LAN; the pairing token is never
 returned by status or error APIs.
 
+The gateway uses aiortc's `MediaRelay` to expose the active decoded track to
+one loopback WebRTC viewer. The viewer subscription is unbuffered so stale
+frames do not accumulate. It does not create JPEG snapshots or reduce the
+incoming frame size or cadence.
+
 ## Confirmed Rokid path
 
 Rokid's public Glass3 Enterprise guide documents this sequence:
@@ -88,8 +93,8 @@ rate, first-frame PTS/time base, and probe latency.
 - GET /api/v1/status
 - POST /api/v1/rtsp/probe
 - GET /api/v1/webrtc/status
-- GET /api/v1/webrtc/frame.jpg (loopback-only live preview)
 - POST /api/v1/webrtc/sessions
+- POST /api/v1/webrtc/viewer/sessions (loopback-only WebRTC preview)
 - Interactive schema: http://127.0.0.1:8770/api/docs
 
 ## Verification

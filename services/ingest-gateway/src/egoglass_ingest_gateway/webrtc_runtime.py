@@ -13,7 +13,10 @@ from .adapters.webrtc import (
     DecodedVideoFrame,
     WebRtcPeer,
     WebRtcPeerCallbacks,
+    WebRtcVideoSource,
+    WebRtcViewerPeer,
     create_aiortc_peer,
+    create_aiortc_viewer_peer,
 )
 from .webrtc_matcher import DuplicateMetadataError, FrameMetadataMatcher
 from .webrtc_models import (
@@ -22,6 +25,8 @@ from .webrtc_models import (
     WebRtcOffer,
     WebRtcPhase,
     WebRtcStatus,
+    WebRtcViewerAnswer,
+    WebRtcViewerOffer,
 )
 
 
@@ -37,7 +42,16 @@ class WebRtcSessionError(RuntimeError):
     """A safe signaling failure that never contains SDP or credentials."""
 
 
+class WebRtcViewerUnavailableError(RuntimeError):
+    """Raised when no Glass3 video track is available for local preview."""
+
+
+class WebRtcViewerSessionError(RuntimeError):
+    """A safe local viewer signaling failure."""
+
+
 WebRtcPeerFactory = Callable[[WebRtcPeerCallbacks], WebRtcPeer]
+WebRtcViewerPeerFactory = Callable[[object], WebRtcViewerPeer]
 
 
 class WebRtcSessionRuntime:
@@ -47,6 +61,7 @@ class WebRtcSessionRuntime:
         self,
         pairing_token: str,
         peer_factory: WebRtcPeerFactory = create_aiortc_peer,
+        viewer_peer_factory: WebRtcViewerPeerFactory = create_aiortc_viewer_peer,
         *,
         perf_clock: Callable[[], int] = time.perf_counter_ns,
         max_pending_metadata: int = 256,
@@ -55,11 +70,14 @@ class WebRtcSessionRuntime:
             raise ValueError("pairing_token must contain at least 16 characters")
         self._pairing_token = pairing_token
         self._peer_factory = peer_factory
+        self._viewer_peer_factory = viewer_peer_factory
         self._perf_clock = perf_clock
         self._max_pending_metadata = max_pending_metadata
         self._session_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._peer: WebRtcPeer | None = None
+        self._viewer_peer: WebRtcViewerPeer | None = None
+        self._video_source: WebRtcVideoSource | None = None
         self._generation = 0
         self._reset_state()
 
@@ -103,10 +121,6 @@ class WebRtcSessionRuntime:
                 last_error=self._last_error,
             )
 
-    async def latest_preview_jpeg(self) -> bytes | None:
-        async with self._state_lock:
-            return self._latest_preview_jpeg
-
     async def accept_offer(self, offer: WebRtcOffer, pairing_token: str) -> WebRtcAnswer:
         if not hmac.compare_digest(pairing_token, self._pairing_token):
             raise PairingTokenError("invalid pairing token")
@@ -122,11 +136,16 @@ class WebRtcSessionRuntime:
 
             if self._peer is not None:
                 await self._peer.close()
+            if self._viewer_peer is not None:
+                await self._viewer_peer.close()
+                self._viewer_peer = None
+            self._video_source = None
 
             self._generation += 1
             generation = self._generation
             callbacks = WebRtcPeerCallbacks(
                 on_connection_state=lambda state: self._on_connection_state(generation, state),
+                on_video_source=lambda source: self._on_video_source(generation, source),
                 on_video_frame=lambda frame: self._on_video_frame(generation, frame),
                 on_metadata=lambda payload: self._on_metadata(generation, payload),
             )
@@ -154,10 +173,34 @@ class WebRtcSessionRuntime:
 
             return WebRtcAnswer(session_id=session_id, sdp=answer_sdp)
 
+    async def accept_viewer_offer(self, offer: WebRtcViewerOffer) -> WebRtcViewerAnswer:
+        async with self._session_lock:
+            source = self._video_source
+            if source is None:
+                raise WebRtcViewerUnavailableError("Glass3 video is not ready")
+
+            if self._viewer_peer is not None:
+                await self._viewer_peer.close()
+            peer = self._viewer_peer_factory(source.subscribe(buffered=False))
+            self._viewer_peer = peer
+            try:
+                answer_sdp = await peer.accept_offer(offer)
+            except Exception as error:
+                await peer.close()
+                if self._viewer_peer is peer:
+                    self._viewer_peer = None
+                message = f"viewer negotiation failed: {type(error).__name__}"
+                raise WebRtcViewerSessionError(message) from error
+            return WebRtcViewerAnswer(sdp=answer_sdp)
+
     async def close(self) -> None:
         async with self._session_lock:
             self._generation += 1
             peer, self._peer = self._peer, None
+            viewer_peer, self._viewer_peer = self._viewer_peer, None
+            self._video_source = None
+            if viewer_peer is not None:
+                await viewer_peer.close()
             if peer is not None:
                 await peer.close()
             async with self._state_lock:
@@ -177,6 +220,14 @@ class WebRtcSessionRuntime:
                 self._phase = WebRtcPhase.FAILED
                 self._last_error = "WebRTC peer connection failed"
 
+    async def _on_video_source(
+        self,
+        generation: int,
+        source: WebRtcVideoSource,
+    ) -> None:
+        if generation == self._generation:
+            self._video_source = source
+
     async def _on_video_frame(self, generation: int, frame: DecodedVideoFrame) -> None:
         if generation != self._generation:
             return
@@ -188,8 +239,6 @@ class WebRtcSessionRuntime:
             self._height = frame.height
             self._last_frame_pts = frame.pts
             self._last_frame_at_ns = now_ns
-            if frame.preview_jpeg is not None:
-                self._latest_preview_jpeg = frame.preview_jpeg
             if frame.time_base is not None:
                 self._last_frame_time_base_num = frame.time_base.numerator
                 self._last_frame_time_base_den = frame.time_base.denominator
@@ -246,5 +295,4 @@ class WebRtcSessionRuntime:
         self._last_frame_time_base_num: int | None = None
         self._last_frame_time_base_den: int | None = None
         self._last_error: str | None = None
-        self._latest_preview_jpeg: bytes | None = None
         self._matcher = FrameMetadataMatcher(self._max_pending_metadata)

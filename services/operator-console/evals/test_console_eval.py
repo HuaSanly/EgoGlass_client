@@ -6,11 +6,16 @@ def test_live_glass3_preview_is_the_only_viewer_source() -> None:
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
     assert 'id="live-video-source"' in html
-    assert "127.0.0.1:8770/api/v1/webrtc/frame.jpg" in script
+    assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script
     assert "state.liveVideoReady" in script
+    assert "new RTCPeerConnection" in script
+    assert 'addTransceiver("video", { direction: "recvonly" })' in script
+    assert "requestVideoFrameCallback" in script
+    assert "frame.jpg" not in script
     assert 'id="live-badge-label">WAITING</span>' in html
     assert "renderVideoState" in script
     assert "Glass3 视频在线" in script
+    assert 'id="preview-fps"' in html
     assert 'id="viewer-empty"' in html
 
 

@@ -10,6 +10,7 @@ const elements = {
   sourcePill: document.querySelector("#source-pill"),
   previewStatus: document.querySelector("#preview-status-property"),
   frameSize: document.querySelector("#frame-size-property"),
+  previewFps: document.querySelector("#preview-fps"),
   lastFrameTime: document.querySelector("#last-frame-time"),
   linkState: document.querySelector("#link-state"),
   fullscreenButton: document.querySelector("#fullscreen-button"),
@@ -19,46 +20,212 @@ const elements = {
 
 const state = {
   liveVideoReady: false,
-  liveVideoTimer: null,
+  connecting: false,
+  peer: null,
+  reconnectTimer: null,
+  frameCallbackId: null,
+  fallbackFrameTimer: null,
+  lastPresentedFrames: null,
+  lastFpsSampleAt: null,
+  lastDetailsAt: 0,
+  lastSignalingError: null,
   events: [],
 };
 
-const liveVideoEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/frame.jpg";
+const viewerSignalingEndpoint =
+  "http://127.0.0.1:8770/api/v1/webrtc/viewer/sessions";
 
 if (window.location.search) {
   window.history.replaceState({}, "", window.location.pathname);
 }
 
-function scheduleFrame(delayMs) {
-  window.clearTimeout(state.liveVideoTimer);
-  if (document.hidden) return;
-  state.liveVideoTimer = window.setTimeout(() => {
-    elements.liveVideo.src = `${liveVideoEndpoint}?frame=${Date.now()}`;
-  }, delayMs);
+class ViewerSignalingError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
 }
 
-function connectLiveVideo() {
-  elements.liveVideo.addEventListener("load", () => {
-    const becameReady = !state.liveVideoReady;
-    state.liveVideoReady = true;
-    renderVideoState();
-    if (becameReady) {
-      addEvent("OK", "Glass3 视频已连接", "WebRTC H.264");
+function scheduleViewerRetry(delayMs = 1000) {
+  window.clearTimeout(state.reconnectTimer);
+  if (document.hidden) return;
+  state.reconnectTimer = window.setTimeout(connectLiveVideo, delayMs);
+}
+
+function waitForIceGathering(peer) {
+  if (peer.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      peer.removeEventListener("icegatheringstatechange", handleStateChange);
+      reject(new Error("本机 WebRTC ICE 收集超时"));
+    }, 5000);
+
+    function handleStateChange() {
+      if (peer.iceGatheringState !== "complete") return;
+      window.clearTimeout(timeout);
+      peer.removeEventListener("icegatheringstatechange", handleStateChange);
+      resolve();
     }
-    scheduleFrame(100);
+
+    peer.addEventListener("icegatheringstatechange", handleStateChange);
+  });
+}
+
+async function exchangeViewerSdp(description) {
+  const response = await fetch(viewerSignalingEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      schema_version: "1.0",
+      type: description.type,
+      sdp: description.sdp,
+    }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new ViewerSignalingError(
+      response.status,
+      payload.detail || `Viewer signaling HTTP ${response.status}`,
+    );
+  }
+  return response.json();
+}
+
+async function connectLiveVideo() {
+  if (state.connecting || state.peer || document.hidden) return;
+  state.connecting = true;
+  window.clearTimeout(state.reconnectTimer);
+
+  const peer = new RTCPeerConnection({
+    iceServers: [],
+    bundlePolicy: "max-bundle",
+  });
+  state.peer = peer;
+  peer.addTransceiver("video", { direction: "recvonly" });
+
+  peer.addEventListener("track", (event) => {
+    if (state.peer !== peer || event.track.kind !== "video") return;
+    const stream = event.streams[0] || new MediaStream([event.track]);
+    elements.liveVideo.srcObject = stream;
+    event.track.addEventListener("ended", () => handleViewerDisconnect(peer, "视频轨道已结束"));
+    elements.liveVideo.play().catch((error) => {
+      handleViewerDisconnect(peer, `视频播放失败: ${error.message}`);
+    });
+    startFrameMonitoring();
   });
 
-  elements.liveVideo.addEventListener("error", () => {
-    const wasReady = state.liveVideoReady;
-    state.liveVideoReady = false;
-    renderVideoState();
-    if (wasReady) {
-      addEvent("WARN", "Glass3 视频已断开", "等待新的首帧");
+  peer.addEventListener("connectionstatechange", () => {
+    if (["failed", "disconnected", "closed"].includes(peer.connectionState)) {
+      handleViewerDisconnect(peer, `WebRTC ${peer.connectionState}`);
     }
-    scheduleFrame(500);
   });
 
-  scheduleFrame(0);
+  try {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await waitForIceGathering(peer);
+    if (peer.localDescription === null) throw new Error("本机 WebRTC offer 不可用");
+    const answer = await exchangeViewerSdp(peer.localDescription);
+    await peer.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
+    state.lastSignalingError = null;
+  } catch (error) {
+    const status = error instanceof ViewerSignalingError ? error.status : null;
+    if (status !== 503 && state.lastSignalingError !== error.message) {
+      addEvent("WARN", "本机预览连接失败", error.message);
+      state.lastSignalingError = error.message;
+    }
+    closeViewerPeer(peer, error.message);
+    scheduleViewerRetry(status === 503 ? 500 : 1500);
+  } finally {
+    state.connecting = false;
+  }
+}
+
+function handleViewerDisconnect(peer, detail) {
+  if (state.peer !== peer) return;
+  closeViewerPeer(peer, detail);
+  scheduleViewerRetry();
+}
+
+function closeViewerPeer(peer, detail = "等待重新连接") {
+  if (state.peer !== peer) return;
+  state.peer = null;
+  peer.onconnectionstatechange = null;
+  peer.close();
+  stopFrameMonitoring();
+  elements.liveVideo.srcObject = null;
+  const wasReady = state.liveVideoReady;
+  state.liveVideoReady = false;
+  renderVideoState();
+  if (wasReady) addEvent("WARN", "Glass3 视频已断开", detail);
+}
+
+function startFrameMonitoring() {
+  stopFrameMonitoring();
+  if ("requestVideoFrameCallback" in elements.liveVideo) {
+    state.frameCallbackId = elements.liveVideo.requestVideoFrameCallback(handleVideoFrame);
+    return;
+  }
+  state.fallbackFrameTimer = window.setInterval(readFallbackFrameStats, 1000);
+}
+
+function stopFrameMonitoring() {
+  if (state.frameCallbackId !== null && "cancelVideoFrameCallback" in elements.liveVideo) {
+    elements.liveVideo.cancelVideoFrameCallback(state.frameCallbackId);
+  }
+  window.clearInterval(state.fallbackFrameTimer);
+  state.frameCallbackId = null;
+  state.fallbackFrameTimer = null;
+  state.lastPresentedFrames = null;
+  state.lastFpsSampleAt = null;
+  state.lastDetailsAt = 0;
+  elements.previewFps.textContent = "--";
+}
+
+function handleVideoFrame(now, metadata) {
+  markVideoReady();
+  updateFrameDetails(now);
+  updateDisplayedFps(now, metadata.presentedFrames);
+  state.frameCallbackId = elements.liveVideo.requestVideoFrameCallback(handleVideoFrame);
+}
+
+function readFallbackFrameStats() {
+  const quality = elements.liveVideo.getVideoPlaybackQuality?.();
+  markVideoReady();
+  updateFrameDetails(performance.now());
+  if (quality) updateDisplayedFps(performance.now(), quality.totalVideoFrames);
+}
+
+function updateDisplayedFps(now, presentedFrames) {
+  if (state.lastPresentedFrames === null || state.lastFpsSampleAt === null) {
+    state.lastPresentedFrames = presentedFrames;
+    state.lastFpsSampleAt = now;
+    return;
+  }
+  const elapsedMs = now - state.lastFpsSampleAt;
+  if (elapsedMs < 1000) return;
+  const fps = ((presentedFrames - state.lastPresentedFrames) * 1000) / elapsedMs;
+  elements.previewFps.textContent = `${fps.toFixed(1)} FPS`;
+  state.lastPresentedFrames = presentedFrames;
+  state.lastFpsSampleAt = now;
+}
+
+function updateFrameDetails(now) {
+  if (now - state.lastDetailsAt < 500) return;
+  state.lastDetailsAt = now;
+  const frameSize = `${elements.liveVideo.videoWidth} × ${elements.liveVideo.videoHeight}`;
+  elements.resolutionBadge.textContent = `${frameSize} · LIVE`;
+  elements.frameSize.textContent = frameSize;
+  elements.lastFrameTime.textContent = new Date().toLocaleTimeString("zh-CN", {
+    hour12: false,
+  });
+}
+
+function markVideoReady() {
+  if (state.liveVideoReady) return;
+  state.liveVideoReady = true;
+  renderVideoState();
+  addEvent("OK", "Glass3 视频已连接", "WebRTC H.264 实时轨道");
 }
 
 function renderVideoState() {
@@ -74,14 +241,7 @@ function renderVideoState() {
   elements.viewerEmpty.hidden = ready;
   elements.linkState.classList.toggle("is-live", ready);
 
-  if (ready && elements.liveVideo.naturalWidth > 0) {
-    const frameSize = `${elements.liveVideo.naturalWidth} × ${elements.liveVideo.naturalHeight}`;
-    elements.resolutionBadge.textContent = `${frameSize} · LIVE`;
-    elements.frameSize.textContent = frameSize;
-    elements.lastFrameTime.textContent = new Date().toLocaleTimeString("zh-CN", {
-      hour12: false,
-    });
-  } else {
+  if (!ready) {
     elements.resolutionBadge.textContent = "等待画面";
     elements.frameSize.textContent = "--";
     elements.lastFrameTime.textContent = "--";
@@ -138,13 +298,12 @@ document.addEventListener("fullscreenchange", () => {
   elements.fullscreenButton.textContent = document.fullscreenElement ? "退出全屏" : "全屏";
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    window.clearTimeout(state.liveVideoTimer);
-  } else {
-    scheduleFrame(0);
-  }
+  if (!document.hidden && state.peer === null) scheduleViewerRetry(0);
 });
-window.addEventListener("beforeunload", () => window.clearTimeout(state.liveVideoTimer));
+window.addEventListener("beforeunload", () => {
+  window.clearTimeout(state.reconnectTimer);
+  if (state.peer !== null) closeViewerPeer(state.peer);
+});
 
 addEvent("INFO", "客户端已启动", "等待 Glass3 首帧");
 renderVideoState();

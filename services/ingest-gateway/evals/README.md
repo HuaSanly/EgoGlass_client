@@ -1,7 +1,9 @@
 # Ingest Gateway Evals
 
-The periodic eval verifies that an RTSP source can recover after a transient
-disconnect and that credentials never appear in operator-visible status.
+The periodic eval verifies RTSP recovery, bounded WebRTC metadata matching,
+unbuffered viewer subscription, and a real aiortc H.264 negotiation with a
+browser-style receive-only offer. Credentials must never appear in
+operator-visible status.
 
 Run from this service directory:
 

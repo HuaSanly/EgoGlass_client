@@ -48,7 +48,14 @@
             </div>
 
             <div class="viewer-stage" id="viewer-stage">
-              <img id="live-video-source" class="live-video-source" alt="Glass3 实时第一视角视频">
+              <video
+                id="live-video-source"
+                class="live-video-source"
+                aria-label="Glass3 实时第一视角视频"
+                autoplay
+                muted
+                playsinline
+              ></video>
               <div class="viewer-badges">
                 <span class="badge" id="live-badge">
                   <span class="badge-dot" aria-hidden="true"></span>
@@ -69,8 +76,8 @@
                 <strong id="last-frame-time">--</strong>
               </div>
               <div>
-                <span>预览刷新</span>
-                <strong>10 FPS</strong>
+                <span>显示帧率</span>
+                <strong id="preview-fps">--</strong>
               </div>
             </div>
           </section>
