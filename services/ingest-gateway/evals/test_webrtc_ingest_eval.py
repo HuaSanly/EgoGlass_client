@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from fractions import Fraction
 
@@ -8,6 +9,12 @@ from egoglass_ingest_gateway.adapters.aiortc_peer import lan_rtc_configuration
 from egoglass_ingest_gateway.adapters.webrtc import DecodedVideoFrame, WebRtcPeerCallbacks
 from egoglass_ingest_gateway.webrtc_models import WebRtcOffer, WebRtcPhase
 from egoglass_ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
+
+
+def test_preview_polling_does_not_generate_per_frame_access_logs() -> None:
+    from egoglass_ingest_gateway.app import main
+
+    assert "access_log=False" in inspect.getsource(main)
 
 
 def test_reordered_metadata_disconnect_and_resume_stay_bounded() -> None:

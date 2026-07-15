@@ -1,5 +1,8 @@
+import sys
+
 from starlette.testclient import TestClient
 
+import egoglass_ingest_gateway.app as app_module
 from egoglass_ingest_gateway.adapters.rtsp import RtspProbeError
 from egoglass_ingest_gateway.app import create_app
 from egoglass_ingest_gateway.models import ProbeResult, RtspSourceConfig, RtspTransport
@@ -160,3 +163,17 @@ def test_preview_frame_is_jpeg_no_store_and_loopback_only() -> None:
     ) as client:
         forbidden = client.get("/api/v1/webrtc/frame.jpg")
     assert forbidden.status_code == 403
+
+
+def test_cli_disables_high_frequency_preview_access_logs(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def run(_application: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(sys, "argv", ["egoglass-ingest-gateway", "--pairing-token", PAIRING_TOKEN])
+    monkeypatch.setattr(app_module.uvicorn, "run", run)
+
+    app_module.main()
+
+    assert captured["access_log"] is False

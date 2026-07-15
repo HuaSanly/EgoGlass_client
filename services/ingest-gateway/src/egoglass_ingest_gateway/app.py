@@ -146,6 +146,7 @@ def main() -> None:
         create_app(webrtc_runtime=WebRtcSessionRuntime(pairing_token)),
         host=args.host,
         port=args.port,
+        access_log=False,
     )
 
 
