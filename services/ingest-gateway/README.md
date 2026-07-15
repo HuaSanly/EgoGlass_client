@@ -1,0 +1,106 @@
+# Ingest Gateway
+
+The ingest gateway terminates the direct Glass3 WebRTC stream and also keeps an
+independent RTSP probe for the GB28181 fallback path. It is a standalone client
+service and does not depend on the operator console.
+
+## Direct WebRTC path
+
+Start the LAN listener with a runtime-only pairing token:
+
+~~~powershell
+uv run egoglass-ingest-gateway --host 0.0.0.0 --port 8770
+~~~
+
+The command prints a generated pairing token. Pass the client LAN URL and that
+token to the glasses launcher without writing either value into Git:
+
+~~~powershell
+adb shell am start -n com.egoglass.glasses/.MainActivity `
+  --es signaling_url http://192.168.1.20:8770/api/v1/webrtc/sessions `
+  --es pairing_token <runtime-token>
+~~~
+
+WebRTC video is encrypted with DTLS-SRTP. The HTTP signaling exchange is
+cleartext in v1 and must stay on a trusted LAN; the pairing token is never
+returned by status or error APIs.
+
+## Confirmed Rokid path
+
+Rokid's public Glass3 Enterprise guide documents this sequence:
+
+1. Register the Glass3 device in the Lingmou platform.
+2. Associate the device with the built-in or a third-party GB28181 platform.
+3. Scan the platform login QR code with the glasses.
+4. Read the device GB identifier from the device editor.
+5. Start live view from the platform. The RTSP stream is unavailable before
+   this point.
+6. Consume the generated URL:
+
+~~~text
+rtsp://<host>:<port>/rtp/<device_id>_<channel_id>
+~~~
+
+The public SDK's sendVideoStreamDataV2() method is a different path. It sends
+H.264 through Rokid's phone/P2P messaging channel and is not the documented
+GB28181-to-RTSP workflow.
+
+Official references:
+
+- https://x-docs.rokid.com/docs/scenario-guides/国标RTSP推流接入.html
+- https://gitee.com/as_pixar/glass3sdkdemo
+
+## Run
+
+This service uses PyAV, the maintained Python binding for FFmpeg, so a separate
+system ffmpeg.exe is not required.
+
+~~~powershell
+uv sync --group dev
+uv run egoglass-ingest-gateway
+~~~
+
+The API binds to 127.0.0.1:8770 by default.
+
+## Probe a Glass3 stream
+
+Replace the sample values with the RTSP service and device identifier shown by
+your platform. Passwords are accepted but never returned in API status or error
+messages.
+
+~~~powershell
+$body = @{
+  host = "ar-security-media.rokid.com"
+  port = 5540
+  device_id = "34020000001550000668"
+  transport = "tcp"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8770/api/v1/rtsp/probe" -ContentType "application/json" -Body $body
+~~~
+
+A successful probe reports the codec, dimensions, pixel format, average frame
+rate, first-frame PTS/time base, and probe latency.
+
+## API
+
+- GET /api/v1/health
+- GET /api/v1/status
+- POST /api/v1/rtsp/probe
+- GET /api/v1/webrtc/status
+- GET /api/v1/webrtc/frame.jpg (loopback-only live preview)
+- POST /api/v1/webrtc/sessions
+- Interactive schema: http://127.0.0.1:8770/api/docs
+
+## Verification
+
+~~~powershell
+uv run ruff check src tests evals
+uv run pytest
+uv run pytest -q evals
+~~~
+
+Gate tests use injected decoder adapters and never access an external stream.
+The real-device gate requires an online Glass3, a successful platform live-view
+request, a reachable RTSP endpoint, and the device identifier recorded with the
+test result.
