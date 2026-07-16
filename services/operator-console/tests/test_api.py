@@ -30,6 +30,7 @@ def test_health_and_real_video_console_are_served() -> None:
         health = client.get("/api/v1/health")
         page = client.get("/")
         script = client.get("/assets/app.js")
+        styles = client.get("/assets/styles.css")
 
     assert health.json() == {
         "status": "ok",
@@ -41,11 +42,43 @@ def test_health_and_real_video_console_are_served() -> None:
     parser = ElementIdParser()
     parser.feed(page.text)
     assert parser.tags_by_id["live-video-source"] == "video"
+    assert 'class="topbar"' not in page.text
+    assert 'class="brand"' not in page.text
+    viewer_header = page.text.split('<section class="viewer-tool"', maxsplit=1)[1].split(
+        '<div class="viewer-stage"', maxsplit=1
+    )[0]
+    assert 'id="connection-label"' in viewer_header
+    assert 'id="fullscreen-button"' in viewer_header
+    right_column = page.text.split('<aside class="right-column"', maxsplit=1)[1].split(
+        "</aside>", maxsplit=1
+    )[0]
+    assert right_column.index('class="signal-tool"') < right_column.index(
+        'class="event-tool"'
+    )
+    assert "<th>详情</th>" not in right_column
+    assert 'class="event-time-column"' in right_column
+    assert 'class="event-level-column"' in right_column
+    assert 'class="event-message-column"' in right_column
     assert "GLASS3 LIVE SOURCE" in page.text
     assert "WebRTC / DTLS-SRTP" in page.text
     assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text
     assert "new RTCPeerConnection" in script.text
     assert "requestVideoFrameCallback" in script.text
+    assert 'id="link-state"' not in page.text
+    assert "LAN DIRECT" not in page.text
+    assert parser.tags_by_id["start-stream-button"] == "button"
+    assert parser.tags_by_id["stop-stream-button"] == "button"
+    assert 'id="stream-control-status"' in right_column
+    assert "127.0.0.1:8770/api/v1/webrtc/control" in script.text
+    assert 'body: JSON.stringify({ action })' in script.text
+    assert "controllableStreamStates" in script.text
+    assert 'state.controlState === "streaming"' in script.text
+    assert 'state.controlState === "stopped"' in script.text
+    assert 'event.className = "event-message"' in script.text
+    assert "event.append(eventTitle, eventDetail)" in script.text
+    assert "aspect-ratio: 16 / 9" in styles.text
+    assert "object-fit: cover" in styles.text
+    assert "object-fit: contain" not in styles.text
     assert "frame.jpg" not in script.text
     assert "EgoGlass Operator Console" in page.text
 

@@ -8,11 +8,19 @@ from egoglass_ingest_gateway.app import create_app
 from egoglass_ingest_gateway.models import ProbeResult, RtspSourceConfig, RtspTransport
 from egoglass_ingest_gateway.runtime import IngestRuntime
 from egoglass_ingest_gateway.webrtc_models import (
+    StreamControlCommand,
+    StreamControlState,
+    StreamControlStatus,
     WebRtcOffer,
     WebRtcViewerAnswer,
     WebRtcViewerOffer,
 )
-from egoglass_ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
+from egoglass_ingest_gateway.webrtc_runtime import (
+    StreamControlCommandError,
+    StreamControlCommandTimeoutError,
+    StreamControlUnavailableError,
+    WebRtcSessionRuntime,
+)
 
 PAIRING_TOKEN = "api-pairing-token-123456"
 
@@ -21,6 +29,34 @@ class ViewerRuntime:
     async def accept_viewer_offer(self, offer: WebRtcViewerOffer) -> WebRtcViewerAnswer:
         assert "viewer-offer" in offer.sdp
         return WebRtcViewerAnswer(sdp="v=0\r\nviewer-answer-description")
+
+    async def close(self) -> None:
+        return None
+
+
+class ControlRuntime:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.commands: list[StreamControlCommand] = []
+
+    async def control_status(self) -> StreamControlStatus:
+        return StreamControlStatus(state=StreamControlState.READY)
+
+    async def send_control_command(
+        self,
+        command: StreamControlCommand,
+    ) -> StreamControlStatus:
+        if self.error is not None:
+            raise self.error
+        self.commands.append(command)
+        return StreamControlStatus(
+            command_id=command.command_id,
+            state=(
+                StreamControlState.STARTING
+                if command.action == "start"
+                else StreamControlState.STOPPED
+            ),
+        )
 
     async def close(self) -> None:
         return None
@@ -205,6 +241,78 @@ def test_viewer_offer_reports_unavailable_until_glass3_track_arrives() -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Glass3 video is not ready"
+
+
+def test_stream_control_api_is_loopback_only_and_supports_get_post_cors() -> None:
+    runtime = ControlRuntime()
+    app = create_app(
+        webrtc_runtime=runtime,  # type: ignore[arg-type]
+        viewer_allowed_hosts=frozenset({"testclient"}),
+    )
+    payload = {"action": "start"}
+    origin = "http://127.0.0.1:8765"
+    with TestClient(app) as client:
+        status = client.get(
+            "/api/v1/webrtc/control",
+            headers={"Origin": origin},
+        )
+        command = client.post(
+            "/api/v1/webrtc/control/commands",
+            json=payload,
+            headers={"Origin": origin},
+        )
+        preflight = client.options(
+            "/api/v1/webrtc/control",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+    assert status.status_code == 200
+    assert status.json()["state"] == "ready"
+    assert status.headers["access-control-allow-origin"] == origin
+    assert command.status_code == 200
+    command_id = command.json()["command_id"]
+    assert len(command_id) == 32
+    assert all(character in "0123456789abcdef" for character in command_id)
+    assert command.json()["state"] == "starting"
+    assert runtime.commands[0].command_id == command_id
+    assert runtime.commands[0].action == "start"
+    assert preflight.status_code == 200
+    assert "GET" in preflight.headers["access-control-allow-methods"]
+
+    with TestClient(
+        create_app(webrtc_runtime=ControlRuntime())  # type: ignore[arg-type]
+    ) as client:
+        forbidden_get = client.get("/api/v1/webrtc/control")
+        forbidden_post = client.post(
+            "/api/v1/webrtc/control/commands",
+            json=payload,
+        )
+    assert forbidden_get.status_code == 403
+    assert forbidden_post.status_code == 403
+
+
+def test_stream_control_api_maps_safe_runtime_failures() -> None:
+    command = {"action": "stop"}
+    cases = (
+        (StreamControlUnavailableError("channel unavailable"), 503),
+        (StreamControlCommandTimeoutError("ack timed out"), 504),
+        (StreamControlCommandError("send failed"), 502),
+    )
+    for error, expected_status in cases:
+        app = create_app(
+            webrtc_runtime=ControlRuntime(error),  # type: ignore[arg-type]
+            viewer_allowed_hosts=frozenset({"testclient"}),
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/webrtc/control/commands",
+                json=command,
+            )
+        assert response.status_code == expected_status
+        assert response.json()["detail"] == str(error)
 
 
 def test_cli_disables_high_frequency_preview_access_logs(monkeypatch, capsys) -> None:

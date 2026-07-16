@@ -26,6 +26,72 @@ def test_live_video_contract_is_independent_of_checkout_line_endings() -> None:
         assert b'id="live-video-source"' in content
 
 
+def test_video_status_replaces_the_removed_global_topbar() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+    viewer_header = html.split('<section class="viewer-tool"', maxsplit=1)[1].split(
+        '<div class="viewer-stage"', maxsplit=1
+    )[0]
+
+    assert 'class="topbar"' not in html
+    assert 'class="brand"' not in html
+    assert 'id="connection-label"' in viewer_header
+    assert 'id="fullscreen-button"' in viewer_header
+    assert "--topbar-height" not in styles
+    assert ".topbar" not in styles
+
+
+def test_main_window_uses_fixed_viewport_with_events_in_the_right_column() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    right_column = html.split('<aside class="right-column"', maxsplit=1)[1].split(
+        "</aside>", maxsplit=1
+    )[0]
+
+    assert right_column.index('class="signal-tool"') < right_column.index(
+        'class="event-tool"'
+    )
+    assert "height: 100vh" in styles
+    assert ".event-table-wrap" in styles
+    assert "overflow-y: auto" in styles
+    assert 'event.className = "event-message"' in script
+    assert '<col class="event-time-column">' in right_column
+    assert '<col class="event-level-column">' in right_column
+    assert "vertical-align: middle" in styles
+
+
+def test_video_stage_preserves_source_ratio_and_reserves_lower_workspace() -> None:
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "aspect-ratio: 16 / 9" in styles
+    assert "object-fit: cover" in styles
+    assert "align-self: start" in styles
+    assert "grid-template-rows: auto auto auto" in styles
+
+
+def test_stream_controls_replace_lan_status_and_follow_gateway_state() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert 'class="link-state"' not in html
+    assert "LAN DIRECT" not in html
+    assert 'id="start-stream-button"' in html
+    assert 'id="stop-stream-button"' in html
+    assert 'id="stream-control-status"' in html
+    assert "streamControlEndpoint" in script
+    assert "pollStreamControlStatus" in script
+    assert 'method: "POST"' in script
+    assert 'body: JSON.stringify({ action })' in script
+    assert 'new Set(["ready", "streaming", "stopped"])' in script
+    assert 'state.controlState === "streaming"' in script
+    assert 'state.controlState === "stopped"' in script
+    assert 'state.controlCommandInFlight || ["starting", "stopping"]' in script
+    assert ".stream-control-actions" in styles
+    assert ".button:disabled" in styles
+
+
 def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
     service_package = STATIC_DIR.parent
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")

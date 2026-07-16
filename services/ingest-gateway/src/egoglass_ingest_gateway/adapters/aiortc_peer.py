@@ -17,7 +17,15 @@ from aiortc.mediastreams import MediaStreamError
 from aiortc.sdp import SessionDescription
 
 from ..webrtc_models import WebRtcOffer, WebRtcViewerOffer
-from .webrtc import DecodedVideoFrame, WebRtcPeerCallbacks, WebRtcVideoSource
+from .webrtc import (
+    DecodedVideoFrame,
+    WebRtcControlChannel,
+    WebRtcPeerCallbacks,
+    WebRtcVideoSource,
+)
+
+FRAME_METADATA_CHANNEL_LABEL = "frame-metadata-v1"
+STREAM_CONTROL_CHANNEL_LABEL = "stream-control-v1"
 
 
 def lan_rtc_configuration() -> RTCConfiguration:
@@ -56,6 +64,20 @@ class AiortcVideoSource(WebRtcVideoSource):
         return self._relay.subscribe(self._track, buffered=buffered)
 
 
+class AiortcControlChannel(WebRtcControlChannel):
+    def __init__(self, channel: object) -> None:
+        self._channel = channel
+
+    @property
+    def is_open(self) -> bool:
+        return getattr(self._channel, "readyState", None) == "open"
+
+    def send(self, message: str) -> None:
+        if not self.is_open:
+            raise ConnectionError("stream control channel is not open")
+        self._channel.send(message)  # type: ignore[attr-defined]
+
+
 class AiortcPeer:
     """One aiortc peer that receives a video track and metadata DataChannel."""
 
@@ -72,12 +94,12 @@ class AiortcPeer:
 
         @self._peer.on("datachannel")
         def on_datachannel(channel: object) -> None:
-            if getattr(channel, "label", None) != "frame-metadata-v1":
+            label = getattr(channel, "label", None)
+            if label == FRAME_METADATA_CHANNEL_LABEL:
+                self._bind_metadata_channel(channel)
                 return
-
-            @channel.on("message")
-            def on_message(message: str | bytes) -> None:
-                self._schedule(self._callbacks.on_metadata(message))
+            if label == STREAM_CONTROL_CHANNEL_LABEL:
+                self._bind_control_channel(channel)
 
         @self._peer.on("track")
         def on_track(track: object) -> None:
@@ -126,6 +148,36 @@ class AiortcPeer:
                 )
         except (MediaStreamError, asyncio.CancelledError):
             return
+
+    def _bind_metadata_channel(self, channel: object) -> None:
+        @channel.on("message")  # type: ignore[attr-defined]
+        def on_message(message: str | bytes) -> None:
+            self._schedule(self._callbacks.on_metadata(message))
+
+    def _bind_control_channel(self, channel: object) -> None:
+        if (
+            getattr(channel, "ordered", None) is not True
+            or getattr(channel, "maxRetransmits", None) is not None
+            or getattr(channel, "maxPacketLifeTime", None) is not None
+        ):
+            return
+
+        control_channel = AiortcControlChannel(channel)
+
+        @channel.on("open")  # type: ignore[attr-defined]
+        def on_open() -> None:
+            self._schedule(self._callbacks.on_control_channel_ready(control_channel))
+
+        @channel.on("close")  # type: ignore[attr-defined]
+        def on_close() -> None:
+            self._schedule(self._callbacks.on_control_channel_closed(control_channel))
+
+        @channel.on("message")  # type: ignore[attr-defined]
+        def on_message(message: str | bytes) -> None:
+            self._schedule(self._callbacks.on_control_status(control_channel, message))
+
+        if control_channel.is_open:
+            self._schedule(self._callbacks.on_control_channel_ready(control_channel))
 
     def _schedule(self, awaitable: Awaitable[None]) -> None:
         task = asyncio.create_task(awaitable)

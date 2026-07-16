@@ -9,6 +9,14 @@ WebView2 receives a real WebRTC video track from the gateway and measures the
 displayed cadence from rendered frames. There is no JPEG polling path. The UI
 keeps the negotiated frame dimensions and cadence unchanged.
 
+When the Glass3 control DataChannel is online, the signal panel shows its real
+capture state and enables start/stop commands. The console polls
+`GET http://127.0.0.1:8770/api/v1/webrtc/control` and sends commands to
+`POST http://127.0.0.1:8770/api/v1/webrtc/control/commands`. Unavailable,
+transitioning, and failed control states keep both buttons disabled. A command
+or status error is shown in the control panel without interrupting the live
+preview connection.
+
 ## Run as a Windows app
 
 For the complete workspace client, use `..\..\scripts\start-client.ps1` from
@@ -59,5 +67,6 @@ uv run ruff check src tests evals
 ```
 
 Gate tests cover desktop authentication, static application delivery, removed
-API behavior, and the real preview connection state. The eval suite prevents
-placeholder data paths from returning to the shipped runtime.
+API behavior, real preview connection state, and stream-control state binding.
+The eval suite prevents placeholder data paths or independently invented
+control state from returning to the shipped runtime.

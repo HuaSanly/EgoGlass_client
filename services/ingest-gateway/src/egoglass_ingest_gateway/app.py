@@ -17,6 +17,10 @@ from .discovery import DISCOVERY_PORT, LanDiscoveryService
 from .models import IngestStatus, ProbeResult, RtspSourceConfig
 from .runtime import IngestRuntime, ProbeBusyError
 from .webrtc_models import (
+    StreamControlAction,
+    StreamControlCommand,
+    StreamControlRequest,
+    StreamControlStatus,
     WebRtcAnswer,
     WebRtcOffer,
     WebRtcStatus,
@@ -25,6 +29,9 @@ from .webrtc_models import (
 )
 from .webrtc_runtime import (
     PairingTokenError,
+    StreamControlCommandError,
+    StreamControlCommandTimeoutError,
+    StreamControlUnavailableError,
     WebRtcSessionError,
     WebRtcSessionRuntime,
     WebRtcViewerSessionError,
@@ -66,7 +73,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^http://127\.0\.0\.1(?::\d+)?$",
-        allow_methods=["POST"],
+        allow_methods=["GET", "POST"],
         allow_headers=["content-type"],
     )
 
@@ -107,14 +114,39 @@ def create_app(
         offer: WebRtcViewerOffer,
         request: Request,
     ) -> WebRtcViewerAnswer:
-        client_host = request.client.host if request.client is not None else ""
-        if client_host not in viewer_allowed_hosts:
-            raise HTTPException(status_code=403, detail="viewer is available on loopback only")
+        _require_loopback(request, viewer_allowed_hosts, "viewer")
         try:
             return await active_webrtc_runtime.accept_viewer_offer(offer)
         except WebRtcViewerUnavailableError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except WebRtcViewerSessionError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @app.get("/api/v1/webrtc/control", response_model=StreamControlStatus)
+    async def get_stream_control_status(request: Request) -> StreamControlStatus:
+        _require_loopback(request, viewer_allowed_hosts, "stream control")
+        return await active_webrtc_runtime.control_status()
+
+    @app.post(
+        "/api/v1/webrtc/control/commands",
+        response_model=StreamControlStatus,
+    )
+    async def send_stream_control_command(
+        control_request: StreamControlRequest,
+        request: Request,
+    ) -> StreamControlStatus:
+        _require_loopback(request, viewer_allowed_hosts, "stream control")
+        command = StreamControlCommand(
+            command_id=secrets.token_hex(16),
+            action=StreamControlAction(control_request.action),
+        )
+        try:
+            return await active_webrtc_runtime.send_control_command(command)
+        except StreamControlUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except StreamControlCommandTimeoutError as error:
+            raise HTTPException(status_code=504, detail=str(error)) from error
+        except StreamControlCommandError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
 
     @app.post("/api/v1/webrtc/sessions", response_model=WebRtcAnswer)
@@ -141,6 +173,16 @@ def _bearer_token(authorization: str | None) -> str:
     if not token:
         raise HTTPException(status_code=401, detail="Bearer pairing token required")
     return token
+
+
+def _require_loopback(
+    request: Request,
+    allowed_hosts: frozenset[str],
+    resource: str,
+) -> None:
+    client_host = request.client.host if request.client is not None else ""
+    if client_host not in allowed_hosts:
+        raise HTTPException(status_code=403, detail=f"{resource} is available on loopback only")
 
 
 _default_pairing_token = os.environ.get("EGOGLASS_PAIRING_TOKEN") or secrets.token_urlsafe(24)
