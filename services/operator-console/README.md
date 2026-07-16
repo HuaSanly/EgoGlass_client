@@ -24,7 +24,10 @@ vendored Madgwick filter from `ahrs`. The model shows relative orientation from
 the current reference, raw vector magnitudes, arrival rates, and the device
 axes. It does not integrate position or claim an absolute heading because the
 verified Glass3 sensor set has no magnetometer. The reset control makes the
-current orientation the new relative origin.
+current orientation the new relative origin. The display adapter reverses the
+relative pitch when converting the fused Glass3 pose to the Three.js model so
+downward head motion renders downward; raw IMU samples and fusion inputs remain
+unchanged.
 
 ## Run as a Windows app
 

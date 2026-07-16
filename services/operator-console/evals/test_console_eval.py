@@ -137,3 +137,13 @@ def test_imu_scene_uses_real_samples_and_vendored_sensor_fusion() -> None:
     assert three.stat().st_size > 300_000
     assert three_core.stat().st_size > 100_000
     assert ahrs.stat().st_size > 20_000
+
+
+def test_imu_display_mapping_reverses_pitch_after_fusion_only() -> None:
+    imu_scene = (STATIC_DIR / "imu-scene.js").read_text(encoding="utf-8")
+
+    assert "mapRelativeOrientationForDisplay(relative)" in imu_scene
+    assert "displayEuler.y = -sensorEuler.y" in imu_scene
+    assert "this.targetQuaternion.copy(displayOrientation.quaternion)" in imu_scene
+    assert "pitch: THREE.MathUtils.radToDeg(displayOrientation.euler.y)" in imu_scene
+    assert "this.filter.update(\n      gx,\n      gy,\n      gz," in imu_scene

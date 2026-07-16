@@ -101,6 +101,18 @@ function readAhrsConstructor() {
   return constructor;
 }
 
+export function mapRelativeOrientationForDisplay(relative) {
+  const sensorEuler = new THREE.Euler().setFromQuaternion(relative, "XYZ");
+  const displayEuler = sensorEuler.clone();
+
+  // Glass3 pitch is opposite to the Three.js display convention used by the model.
+  displayEuler.y = -sensorEuler.y;
+  return {
+    quaternion: new THREE.Quaternion().setFromEuler(displayEuler).normalize(),
+    euler: displayEuler,
+  };
+}
+
 export class ImuSceneController {
   constructor(canvas, onOrientation) {
     this.canvas = canvas;
@@ -258,13 +270,13 @@ export class ImuSceneController {
     }
 
     const relative = this.referenceInverse.clone().multiply(this.rawQuaternion).normalize();
-    this.targetQuaternion.copy(relative);
-    const euler = new THREE.Euler().setFromQuaternion(relative, "XYZ");
+    const displayOrientation = mapRelativeOrientationForDisplay(relative);
+    this.targetQuaternion.copy(displayOrientation.quaternion);
     this.onOrientation({
       ready: true,
-      roll: THREE.MathUtils.radToDeg(euler.x),
-      pitch: THREE.MathUtils.radToDeg(euler.y),
-      yaw: THREE.MathUtils.radToDeg(euler.z),
+      roll: THREE.MathUtils.radToDeg(displayOrientation.euler.x),
+      pitch: THREE.MathUtils.radToDeg(displayOrientation.euler.y),
+      yaw: THREE.MathUtils.radToDeg(displayOrientation.euler.z),
     });
     return true;
   }
