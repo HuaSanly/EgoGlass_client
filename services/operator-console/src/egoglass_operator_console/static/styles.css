@@ -13,7 +13,6 @@
   --cyan: #43b9c7;
   --amber: #e0aa52;
   --red: #e16a72;
-  --topbar-height: 64px;
   --rail-width: 80px;
   font-family: Inter, "Segoe UI", sans-serif;
 }
@@ -58,63 +57,11 @@ a {
   min-height: 100vh;
 }
 
-.topbar {
-  position: fixed;
-  z-index: 20;
-  inset: 0 0 auto 0;
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr);
-  align-items: center;
-  height: var(--topbar-height);
-  padding: 0 18px;
-  border-bottom: 1px solid var(--border);
-  background: #141816;
-}
-
-.brand {
-  display: inline-flex;
-  width: fit-content;
-  align-items: center;
-  gap: 10px;
-}
-
-.brand-mark {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid #3f8f72;
-  border-radius: 4px;
-  background: #173328;
-  color: #9aebbc;
-  font-family: Consolas, monospace;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.brand-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.brand-copy strong {
-  font-size: 15px;
-  letter-spacing: 0;
-}
-
-.brand-copy span {
-  color: var(--text-muted);
-  font-family: Consolas, monospace;
-  font-size: 9px;
-  text-transform: uppercase;
-}
-
 .connection-summary {
   display: flex;
-  min-width: 210px;
+  min-width: 0;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 10px;
 }
 
@@ -174,10 +121,6 @@ a {
   outline-offset: 2px;
 }
 
-.topbar > .button {
-  justify-self: end;
-}
-
 .button-small {
   min-height: 30px;
   padding: 0 11px;
@@ -187,7 +130,7 @@ a {
 .nav-rail {
   position: fixed;
   z-index: 15;
-  top: var(--topbar-height);
+  top: 0;
   bottom: 0;
   left: 0;
   display: flex;
@@ -227,7 +170,7 @@ a {
 .main-content {
   min-height: 100vh;
   margin-left: var(--rail-width);
-  padding: calc(var(--topbar-height) + 18px) 18px 24px;
+  padding: 18px 18px 24px;
 }
 
 .workspace {
@@ -261,6 +204,21 @@ a {
   min-width: 0;
 }
 
+.viewer-header-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
+}
+
+.viewer-header-actions .connection-summary {
+  max-width: 240px;
+}
+
+.viewer-header-actions .button {
+  flex: 0 0 auto;
+}
+
 .tool-header h1,
 .tool-header h2 {
   margin: 3px 0 0;
@@ -277,20 +235,12 @@ a {
   min-height: 58px;
 }
 
-.eyebrow,
-.endpoint-label {
+.eyebrow {
   color: var(--text-muted);
   font-family: Consolas, monospace;
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
-}
-
-.endpoint-label {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .viewer-stage {
@@ -597,15 +547,6 @@ a {
     --rail-width: 0px;
   }
 
-  .topbar {
-    grid-template-columns: minmax(150px, 1fr) auto auto;
-    gap: 10px;
-  }
-
-  .connection-summary {
-    min-width: 0;
-  }
-
   .nav-rail {
     top: auto;
     right: 0;
@@ -633,28 +574,6 @@ a {
 }
 
 @media (max-width: 620px) {
-  .topbar {
-    grid-template-columns: minmax(48px, 1fr) auto;
-    padding: 0 10px;
-  }
-
-  .brand-copy,
-  .connection-summary span:last-child {
-    display: none;
-  }
-
-  .connection-summary {
-    justify-content: flex-end;
-  }
-
-  .connection-summary strong {
-    max-width: 150px;
-  }
-
-  .topbar > .button {
-    display: none;
-  }
-
   .main-content {
     padding-right: 10px;
     padding-left: 10px;
@@ -665,8 +584,19 @@ a {
     padding: 10px 12px;
   }
 
-  .endpoint-label {
-    max-width: 116px;
+  .viewer-tool > .tool-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .viewer-header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .viewer-header-actions .connection-summary {
+    max-width: calc(100% - 64px);
   }
 
   .viewer-stage {

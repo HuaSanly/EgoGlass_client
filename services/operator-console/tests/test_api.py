@@ -41,6 +41,13 @@ def test_health_and_real_video_console_are_served() -> None:
     parser = ElementIdParser()
     parser.feed(page.text)
     assert parser.tags_by_id["live-video-source"] == "video"
+    assert 'class="topbar"' not in page.text
+    assert 'class="brand"' not in page.text
+    viewer_header = page.text.split('<section class="viewer-tool"', maxsplit=1)[1].split(
+        '<div class="viewer-stage"', maxsplit=1
+    )[0]
+    assert 'id="connection-label"' in viewer_header
+    assert 'id="fullscreen-button"' in viewer_header
     assert "GLASS3 LIVE SOURCE" in page.text
     assert "WebRTC / DTLS-SRTP" in page.text
     assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text

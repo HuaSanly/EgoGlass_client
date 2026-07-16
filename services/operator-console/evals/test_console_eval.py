@@ -26,6 +26,21 @@ def test_live_video_contract_is_independent_of_checkout_line_endings() -> None:
         assert b'id="live-video-source"' in content
 
 
+def test_video_status_replaces_the_removed_global_topbar() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+    viewer_header = html.split('<section class="viewer-tool"', maxsplit=1)[1].split(
+        '<div class="viewer-stage"', maxsplit=1
+    )[0]
+
+    assert 'class="topbar"' not in html
+    assert 'class="brand"' not in html
+    assert 'id="connection-label"' in viewer_header
+    assert 'id="fullscreen-button"' in viewer_header
+    assert "--topbar-height" not in styles
+    assert ".topbar" not in styles
+
+
 def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
     service_package = STATIC_DIR.parent
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")

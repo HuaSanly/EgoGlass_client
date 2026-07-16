@@ -9,26 +9,6 @@
   </head>
   <body>
     <div class="app-shell">
-      <header class="topbar">
-        <a class="brand" href="/" aria-label="EgoGlass 操作台">
-          <span class="brand-mark" aria-hidden="true">EG</span>
-          <span class="brand-copy">
-            <strong>EgoGlass</strong>
-            <span>Operator Console</span>
-          </span>
-        </a>
-
-        <div class="connection-summary" aria-live="polite">
-          <span class="status-light" id="connection-light" aria-hidden="true"></span>
-          <div>
-            <strong id="connection-label">等待 Glass3 视频</strong>
-            <span>DIRECT WEBRTC</span>
-          </div>
-        </div>
-
-        <button class="button" id="fullscreen-button" type="button">全屏</button>
-      </header>
-
       <nav class="nav-rail" aria-label="主导航">
         <a class="nav-item is-active" href="/" aria-current="page" title="主页">
           <span class="nav-glyph" aria-hidden="true">HOME</span>
@@ -44,7 +24,18 @@
                 <span class="eyebrow">GLASS3 LIVE SOURCE</span>
                 <h1 id="viewer-title">第一视角视频</h1>
               </div>
-              <span class="endpoint-label">127.0.0.1:8770</span>
+              <div class="viewer-header-actions">
+                <div class="connection-summary" aria-live="polite">
+                  <span class="status-light" id="connection-light" aria-hidden="true"></span>
+                  <div>
+                    <strong id="connection-label">等待 Glass3 视频</strong>
+                    <span>DIRECT WEBRTC</span>
+                  </div>
+                </div>
+                <button class="button button-small" id="fullscreen-button" type="button">
+                  全屏
+                </button>
+              </div>
             </div>
 
             <div class="viewer-stage" id="viewer-stage">
