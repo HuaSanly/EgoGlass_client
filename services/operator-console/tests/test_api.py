@@ -1,7 +1,24 @@
+from html.parser import HTMLParser
+
 import pytest
 from starlette.testclient import TestClient
 
 from egoglass_operator_console.app import create_app
+
+
+class ElementIdParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tags_by_id: dict[str, str] = {}
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        element_id = dict(attrs).get("id")
+        if element_id is not None:
+            self.tags_by_id[element_id] = tag
 
 
 def make_client() -> TestClient:
@@ -21,7 +38,9 @@ def test_health_and_real_video_console_are_served() -> None:
     }
     assert page.status_code == 200
     assert script.status_code == 200
-    assert '<video\n                id="live-video-source"' in page.text
+    parser = ElementIdParser()
+    parser.feed(page.text)
+    assert parser.tags_by_id["live-video-source"] == "video"
     assert "GLASS3 LIVE SOURCE" in page.text
     assert "WebRTC / DTLS-SRTP" in page.text
     assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text

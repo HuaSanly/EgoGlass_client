@@ -19,6 +19,13 @@ def test_live_glass3_preview_is_the_only_viewer_source() -> None:
     assert 'id="viewer-empty"' in html
 
 
+def test_live_video_contract_is_independent_of_checkout_line_endings() -> None:
+    html = (STATIC_DIR / "index.html").read_bytes().replace(b"\r\n", b"\n")
+
+    for content in (html, html.replace(b"\n", b"\r\n")):
+        assert b'id="live-video-source"' in content
+
+
 def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
     service_package = STATIC_DIR.parent
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
