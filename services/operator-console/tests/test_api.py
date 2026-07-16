@@ -30,6 +30,7 @@ def test_health_and_real_video_console_are_served() -> None:
         health = client.get("/api/v1/health")
         page = client.get("/")
         script = client.get("/assets/app.js")
+        styles = client.get("/assets/styles.css")
 
     assert health.json() == {
         "status": "ok",
@@ -65,6 +66,9 @@ def test_health_and_real_video_console_are_served() -> None:
     assert "requestVideoFrameCallback" in script.text
     assert 'event.className = "event-message"' in script.text
     assert "event.append(eventTitle, eventDetail)" in script.text
+    assert "aspect-ratio: 16 / 9" in styles.text
+    assert "object-fit: cover" in styles.text
+    assert "object-fit: contain" not in styles.text
     assert "frame.jpg" not in script.text
     assert "EgoGlass Operator Console" in page.text
 

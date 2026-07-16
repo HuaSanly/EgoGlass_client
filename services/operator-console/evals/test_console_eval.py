@@ -61,6 +61,15 @@ def test_main_window_uses_fixed_viewport_with_events_in_the_right_column() -> No
     assert "vertical-align: middle" in styles
 
 
+def test_video_stage_preserves_source_ratio_and_reserves_lower_workspace() -> None:
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "aspect-ratio: 16 / 9" in styles
+    assert "object-fit: cover" in styles
+    assert "align-self: start" in styles
+    assert "grid-template-rows: auto auto auto" in styles
+
+
 def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
     service_package = STATIC_DIR.parent
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
