@@ -6,12 +6,14 @@ import json
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from pydantic import ValidationError
 
 from .adapters.webrtc import (
     DecodedVideoFrame,
     WebRtcControlChannel,
+    WebRtcImuChannel,
     WebRtcPeer,
     WebRtcPeerCallbacks,
     WebRtcVideoSource,
@@ -21,6 +23,13 @@ from .adapters.webrtc import (
 )
 from .webrtc_matcher import DuplicateMetadataError, FrameMetadataMatcher
 from .webrtc_models import (
+    IMU_TELEMETRY_ADAPTER,
+    ImuCapabilities,
+    ImuChannelState,
+    ImuSample,
+    ImuSensorStatus,
+    ImuSensorType,
+    ImuTelemetryStatus,
     StreamControlCommand,
     StreamControlState,
     StreamControlStatus,
@@ -32,6 +41,8 @@ from .webrtc_models import (
     WebRtcViewerAnswer,
     WebRtcViewerOffer,
 )
+
+IMU_MAX_PAYLOAD_BYTES = 16_384
 
 
 class PairingTokenError(RuntimeError):
@@ -64,6 +75,20 @@ class StreamControlCommandError(RuntimeError):
 
 WebRtcPeerFactory = Callable[[WebRtcPeerCallbacks], WebRtcPeer]
 WebRtcViewerPeerFactory = Callable[[object], WebRtcViewerPeer]
+
+
+@dataclass
+class _ImuSensorAccumulator:
+    sample_count: int = 0
+    first_received_at_ns: int | None = None
+    last_received_at_ns: int | None = None
+    latest_sequence_number: int | None = None
+    sequence_gaps: int = 0
+    out_of_order_samples: int = 0
+    last_event_to_callback_delta_ns: int | None = None
+    min_event_to_callback_delta_ns: int | None = None
+    max_event_to_callback_delta_ns: int | None = None
+    last_sample: ImuSample | None = None
 
 
 class WebRtcSessionRuntime:
@@ -144,6 +169,64 @@ class WebRtcSessionRuntime:
     async def control_status(self) -> StreamControlStatus:
         async with self._state_lock:
             return self._control_status.model_copy(deep=True)
+
+    async def imu_status(self) -> ImuTelemetryStatus:
+        async with self._state_lock:
+            sensors: dict[ImuSensorType, ImuSensorStatus] = {}
+            for sensor_type, accumulator in self._imu_sensors.items():
+                observed_rate_hz = None
+                if (
+                    accumulator.sample_count > 1
+                    and accumulator.first_received_at_ns is not None
+                    and accumulator.last_received_at_ns is not None
+                ):
+                    duration_ns = (
+                        accumulator.last_received_at_ns
+                        - accumulator.first_received_at_ns
+                    )
+                    if duration_ns > 0:
+                        observed_rate_hz = round(
+                            (accumulator.sample_count - 1) * 1_000_000_000 / duration_ns,
+                            3,
+                        )
+                sensors[sensor_type] = ImuSensorStatus(
+                    sample_count=accumulator.sample_count,
+                    observed_rate_hz=observed_rate_hz,
+                    first_received_at_perf_counter_ns=accumulator.first_received_at_ns,
+                    last_received_at_perf_counter_ns=accumulator.last_received_at_ns,
+                    latest_sequence_number=accumulator.latest_sequence_number,
+                    sequence_gaps=accumulator.sequence_gaps,
+                    out_of_order_samples=accumulator.out_of_order_samples,
+                    last_event_to_callback_delta_ns=(
+                        accumulator.last_event_to_callback_delta_ns
+                    ),
+                    min_event_to_callback_delta_ns=(
+                        accumulator.min_event_to_callback_delta_ns
+                    ),
+                    max_event_to_callback_delta_ns=(
+                        accumulator.max_event_to_callback_delta_ns
+                    ),
+                    last_sample=(
+                        accumulator.last_sample.model_copy(deep=True)
+                        if accumulator.last_sample is not None
+                        else None
+                    ),
+                )
+            return ImuTelemetryStatus(
+                session_id=self._session_id,
+                device_session_id=self._device_session_id,
+                channel_state=self._imu_channel_state,
+                messages_received=self._imu_messages_received,
+                capabilities_received=self._imu_capabilities_received,
+                samples_received=self._imu_samples_received,
+                malformed_messages=self._imu_malformed_messages,
+                capabilities=(
+                    self._imu_capabilities.model_copy(deep=True)
+                    if self._imu_capabilities is not None
+                    else None
+                ),
+                sensors=sensors,
+            )
 
     async def send_control_command(
         self,
@@ -238,6 +321,15 @@ class WebRtcSessionRuntime:
                 on_control_status=lambda channel, payload: self._on_control_status(
                     generation, channel, payload
                 ),
+                on_imu_channel_ready=lambda channel: self._on_imu_channel_ready(
+                    generation, channel
+                ),
+                on_imu_channel_closed=lambda channel: self._on_imu_channel_closed(
+                    generation, channel
+                ),
+                on_imu_telemetry=lambda channel, payload: self._on_imu_telemetry(
+                    generation, channel, payload
+                ),
             )
             peer = self._peer_factory(callbacks)
             self._peer = peer
@@ -294,6 +386,7 @@ class WebRtcSessionRuntime:
                     state=StreamControlState.UNAVAILABLE,
                     detail="WebRTC session is closed",
                 )
+                self._set_imu_unavailable_locked()
             peer, self._peer = self._peer, None
             viewer_peer, self._viewer_peer = self._viewer_peer, None
             self._video_source = None
@@ -316,10 +409,12 @@ class WebRtcSessionRuntime:
                 self._phase = WebRtcPhase.DISCONNECTED
                 if state == "closed":
                     self._set_control_unavailable_locked("control channel is closed")
+                    self._set_imu_unavailable_locked()
             elif state == "failed":
                 self._phase = WebRtcPhase.FAILED
                 self._last_error = "WebRTC peer connection failed"
                 self._set_control_unavailable_locked("WebRTC peer connection failed")
+                self._set_imu_unavailable_locked()
 
     async def _on_video_source(
         self,
@@ -437,6 +532,107 @@ class WebRtcSessionRuntime:
                 if pending is not None and not pending.done():
                     pending.set_result(status)
 
+    async def _on_imu_channel_ready(
+        self,
+        generation: int,
+        channel: WebRtcImuChannel,
+    ) -> None:
+        if generation != self._generation or not channel.is_open:
+            return
+        async with self._state_lock:
+            if generation != self._generation or not channel.is_open:
+                return
+            if self._imu_channel is channel:
+                return
+            self._imu_channel = channel
+            self._imu_channel_state = (
+                ImuChannelState.RECEIVING
+                if self._imu_samples_received > 0
+                else ImuChannelState.READY
+            )
+
+    async def _on_imu_channel_closed(
+        self,
+        generation: int,
+        channel: WebRtcImuChannel,
+    ) -> None:
+        if generation != self._generation:
+            return
+        async with self._state_lock:
+            if generation == self._generation and self._imu_channel is channel:
+                self._set_imu_unavailable_locked()
+
+    async def _on_imu_telemetry(
+        self,
+        generation: int,
+        channel: WebRtcImuChannel,
+        payload: str | bytes,
+    ) -> None:
+        if generation != self._generation:
+            return
+        message: ImuCapabilities | ImuSample | None = None
+        malformed = False
+        try:
+            if isinstance(payload, bytes):
+                if len(payload) > IMU_MAX_PAYLOAD_BYTES:
+                    raise ValueError("IMU telemetry payload too large")
+                raw: str | bytes = payload
+            else:
+                if len(payload.encode("utf-8")) > IMU_MAX_PAYLOAD_BYTES:
+                    raise ValueError("IMU telemetry payload too large")
+                raw = payload
+            message = IMU_TELEMETRY_ADAPTER.validate_json(raw)
+        except (UnicodeError, ValueError, ValidationError):
+            malformed = True
+
+        received_at_ns = self._perf_clock() if isinstance(message, ImuSample) else None
+        async with self._state_lock:
+            if generation != self._generation or self._imu_channel is not channel:
+                return
+            self._imu_messages_received += 1
+            if malformed or message is None:
+                self._imu_malformed_messages += 1
+                return
+            if isinstance(message, ImuCapabilities):
+                self._imu_capabilities_received += 1
+                self._imu_capabilities = message
+                return
+
+            self._imu_samples_received += 1
+            self._imu_channel_state = ImuChannelState.RECEIVING
+            accumulator = self._imu_sensors[message.sensor_type]
+            accumulator.sample_count += 1
+            if accumulator.first_received_at_ns is None:
+                accumulator.first_received_at_ns = received_at_ns
+            accumulator.last_received_at_ns = received_at_ns
+            previous_sequence = accumulator.latest_sequence_number
+            if previous_sequence is None:
+                accumulator.latest_sequence_number = message.sequence_number
+            elif message.sequence_number <= previous_sequence:
+                accumulator.out_of_order_samples += 1
+            else:
+                accumulator.sequence_gaps += max(
+                    0,
+                    message.sequence_number - previous_sequence - 1,
+                )
+                accumulator.latest_sequence_number = message.sequence_number
+            delta_ns = (
+                message.received_at_elapsed_realtime_ns
+                - message.sensor_event_monotonic_ns
+            )
+            accumulator.last_event_to_callback_delta_ns = delta_ns
+            accumulator.min_event_to_callback_delta_ns = (
+                delta_ns
+                if accumulator.min_event_to_callback_delta_ns is None
+                else min(accumulator.min_event_to_callback_delta_ns, delta_ns)
+            )
+            accumulator.max_event_to_callback_delta_ns = (
+                delta_ns
+                if accumulator.max_event_to_callback_delta_ns is None
+                else max(accumulator.max_event_to_callback_delta_ns, delta_ns)
+            )
+            accumulator.last_sample = message
+
     def _set_control_unavailable_locked(self, detail: str) -> None:
         self._control_channel = None
         self._control_status = StreamControlStatus(
@@ -444,6 +640,10 @@ class WebRtcSessionRuntime:
             detail=detail,
         )
         self._fail_pending_control_locked(StreamControlUnavailableError(detail))
+
+    def _set_imu_unavailable_locked(self) -> None:
+        self._imu_channel = None
+        self._imu_channel_state = ImuChannelState.UNAVAILABLE
 
     def _fail_pending_control_locked(self, error: Exception) -> None:
         for pending in self._pending_control_commands.values():
@@ -475,4 +675,14 @@ class WebRtcSessionRuntime:
             state=StreamControlState.UNAVAILABLE,
             detail="control channel is not ready",
         )
+        self._imu_channel: WebRtcImuChannel | None = None
+        self._imu_channel_state = ImuChannelState.UNAVAILABLE
+        self._imu_messages_received = 0
+        self._imu_capabilities_received = 0
+        self._imu_samples_received = 0
+        self._imu_malformed_messages = 0
+        self._imu_capabilities: ImuCapabilities | None = None
+        self._imu_sensors = {
+            sensor_type: _ImuSensorAccumulator() for sensor_type in ImuSensorType
+        }
         self._matcher = FrameMetadataMatcher(self._max_pending_metadata)

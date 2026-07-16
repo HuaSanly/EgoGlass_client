@@ -27,6 +27,11 @@ class WebRtcControlChannel(Protocol):
     def send(self, message: str) -> None: ...
 
 
+class WebRtcImuChannel(Protocol):
+    @property
+    def is_open(self) -> bool: ...
+
+
 @dataclass(frozen=True)
 class WebRtcPeerCallbacks:
     on_connection_state: Callable[[str], Awaitable[None]]
@@ -38,6 +43,9 @@ class WebRtcPeerCallbacks:
     on_control_status: Callable[
         [WebRtcControlChannel, str | bytes], Awaitable[None]
     ]
+    on_imu_channel_ready: Callable[[WebRtcImuChannel], Awaitable[None]]
+    on_imu_channel_closed: Callable[[WebRtcImuChannel], Awaitable[None]]
+    on_imu_telemetry: Callable[[WebRtcImuChannel, str | bytes], Awaitable[None]]
 
 
 class WebRtcPeer(Protocol):

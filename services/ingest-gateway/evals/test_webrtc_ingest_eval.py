@@ -15,9 +15,11 @@ from egoglass_ingest_gateway.adapters.aiortc_peer import (
 from egoglass_ingest_gateway.adapters.webrtc import (
     DecodedVideoFrame,
     WebRtcControlChannel,
+    WebRtcImuChannel,
     WebRtcPeerCallbacks,
 )
 from egoglass_ingest_gateway.webrtc_models import (
+    ImuChannelState,
     StreamControlAction,
     StreamControlCommand,
     StreamControlState,
@@ -242,4 +244,133 @@ def test_stream_control_round_trip_reuses_the_connected_peer() -> None:
         assert (await runtime.control_status()).state is StreamControlState.STREAMING
 
     runtime: WebRtcSessionRuntime
+    asyncio.run(scenario())
+
+
+def test_experimental_imu_stream_reports_both_sensors_and_resets_on_replacement() -> None:
+    peers: list[Peer] = []
+    clock_value = 0
+
+    class Peer:
+        def __init__(self, callbacks: WebRtcPeerCallbacks) -> None:
+            self.callbacks = callbacks
+            self.closed = False
+            peers.append(self)
+
+        @property
+        def negotiated_video_codec(self) -> str:
+            return "H264"
+
+        async def accept_offer(self, _offer: WebRtcOffer) -> str:
+            return "v=0\r\nanswer-session-description"
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class ImuChannel(WebRtcImuChannel):
+        @property
+        def is_open(self) -> bool:
+            return True
+
+    def perf_clock() -> int:
+        nonlocal clock_value
+        current = clock_value
+        clock_value += 5_000_000
+        return current
+
+    def capabilities() -> str:
+        return json.dumps(
+            {
+                "schema_version": "0.1",
+                "message_type": "imu_capabilities",
+                "source": "android_sensor_manager",
+                "requested_sampling_period_us": 10_000,
+                "sensors": [
+                    {
+                        "sensor_type": sensor_type,
+                        "android_sensor_type": android_type,
+                        "name": f"eval {sensor_type}",
+                        "vendor": "eval",
+                        "version": 1,
+                        "unit": unit,
+                        "resolution": 0.001,
+                        "max_range": 100.0,
+                        "min_delay_us": 2500,
+                        "max_delay_us": 100000,
+                        "is_wake_up": False,
+                    }
+                    for sensor_type, android_type, unit in (
+                        ("accelerometer", 1, "m_s2"),
+                        ("gyroscope", 4, "rad_s"),
+                    )
+                ],
+                "missing_sensor_types": [],
+            }
+        )
+
+    def sample(sensor_type: str, sequence_number: int) -> str:
+        event_ns = 1_000_000_000 + sequence_number * 10_000_000
+        return json.dumps(
+            {
+                "schema_version": "0.1",
+                "message_type": "imu_sample",
+                "sensor_type": sensor_type,
+                "android_sensor_type": 1 if sensor_type == "accelerometer" else 4,
+                "sequence_number": sequence_number,
+                "sensor_event_monotonic_ns": event_ns,
+                "received_at_elapsed_realtime_ns": event_ns + 250_000,
+                "accuracy": 3,
+                "values": [0.1, 0.2, 0.3],
+            }
+        )
+
+    async def scenario() -> None:
+        token = "eval-pairing-token-123456"
+        runtime = WebRtcSessionRuntime(token, Peer, perf_clock=perf_clock)
+        await runtime.accept_offer(
+            WebRtcOffer(
+                device_session_id="device-session-imu-eval01",
+                sdp="v=0\r\noffer-session-description",
+            ),
+            token,
+        )
+        channel = ImuChannel()
+        await peers[0].callbacks.on_imu_channel_ready(channel)
+        await peers[0].callbacks.on_imu_telemetry(channel, capabilities())
+        for sequence_number in range(100):
+            await peers[0].callbacks.on_imu_telemetry(
+                channel,
+                sample("accelerometer", sequence_number),
+            )
+            await peers[0].callbacks.on_imu_telemetry(
+                channel,
+                sample("gyroscope", sequence_number),
+            )
+
+        status = await runtime.imu_status()
+        assert status.channel_state is ImuChannelState.RECEIVING
+        assert status.samples_received == 200
+        assert status.malformed_messages == 0
+        assert status.sensors["accelerometer"].sample_count == 100
+        assert status.sensors["gyroscope"].sample_count == 100
+        assert status.sensors["accelerometer"].observed_rate_hz == 100.0
+        assert status.sensors["gyroscope"].observed_rate_hz == 100.0
+        assert status.sensors["accelerometer"].last_event_to_callback_delta_ns == 250_000
+
+        await runtime.accept_offer(
+            WebRtcOffer(
+                device_session_id="device-session-imu-eval02",
+                sdp="v=0\r\noffer-session-description",
+            ),
+            token,
+        )
+        await peers[0].callbacks.on_imu_telemetry(
+            channel,
+            sample("accelerometer", 100),
+        )
+        replacement = await runtime.imu_status()
+        assert peers[0].closed
+        assert replacement.channel_state is ImuChannelState.UNAVAILABLE
+        assert replacement.samples_received == 0
+
     asyncio.run(scenario())

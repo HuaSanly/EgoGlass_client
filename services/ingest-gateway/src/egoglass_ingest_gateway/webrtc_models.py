@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 
 class WebRtcPhase(StrEnum):
@@ -116,6 +116,128 @@ class VideoFrameMetadata(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9_.-]+$",
     )
+
+
+class ImuSensorType(StrEnum):
+    ACCELEROMETER = "accelerometer"
+    GYROSCOPE = "gyroscope"
+
+
+class ImuChannelState(StrEnum):
+    UNAVAILABLE = "unavailable"
+    READY = "ready"
+    RECEIVING = "receiving"
+
+
+class ImuSensorDescriptor(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    sensor_type: ImuSensorType
+    android_sensor_type: Literal[1, 4]
+    name: str = Field(min_length=1, max_length=128)
+    vendor: str = Field(max_length=128)
+    version: int = Field(ge=0)
+    unit: Literal["m_s2", "rad_s"]
+    resolution: float = Field(ge=0)
+    max_range: float = Field(gt=0)
+    min_delay_us: int = Field(ge=0)
+    max_delay_us: int = Field(ge=0)
+    is_wake_up: bool
+
+    @model_validator(mode="after")
+    def validate_sensor_mapping(self) -> ImuSensorDescriptor:
+        expected = {
+            ImuSensorType.ACCELEROMETER: (1, "m_s2"),
+            ImuSensorType.GYROSCOPE: (4, "rad_s"),
+        }[self.sensor_type]
+        if (self.android_sensor_type, self.unit) != expected:
+            raise ValueError("sensor type, Android type, and unit do not match")
+        return self
+
+
+class ImuCapabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    schema_version: Literal["0.1"] = "0.1"
+    message_type: Literal["imu_capabilities"] = "imu_capabilities"
+    source: Literal["android_sensor_manager"] = "android_sensor_manager"
+    requested_sampling_period_us: int = Field(ge=5_000, le=1_000_000)
+    sensors: list[ImuSensorDescriptor] = Field(max_length=2)
+    missing_sensor_types: list[ImuSensorType] = Field(max_length=2)
+
+    @model_validator(mode="after")
+    def validate_requested_sensor_coverage(self) -> ImuCapabilities:
+        available = [descriptor.sensor_type for descriptor in self.sensors]
+        missing = self.missing_sensor_types
+        if len(set(available)) != len(available) or len(set(missing)) != len(missing):
+            raise ValueError("IMU sensor types must be unique")
+        if set(available).intersection(missing):
+            raise ValueError("IMU sensor cannot be both available and missing")
+        if set(available).union(missing) != set(ImuSensorType):
+            raise ValueError("capabilities must cover both requested IMU sensor types")
+        return self
+
+
+class ImuSample(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    schema_version: Literal["0.1"] = "0.1"
+    message_type: Literal["imu_sample"] = "imu_sample"
+    sensor_type: ImuSensorType
+    android_sensor_type: Literal[1, 4]
+    sequence_number: int = Field(ge=0)
+    sensor_event_monotonic_ns: int = Field(ge=0)
+    received_at_elapsed_realtime_ns: int = Field(ge=0)
+    accuracy: int = Field(ge=-1, le=3)
+    values: tuple[float, float, float]
+
+    @model_validator(mode="after")
+    def validate_android_sensor_type(self) -> ImuSample:
+        expected = {
+            ImuSensorType.ACCELEROMETER: 1,
+            ImuSensorType.GYROSCOPE: 4,
+        }[self.sensor_type]
+        if self.android_sensor_type != expected:
+            raise ValueError("sensor type and Android type do not match")
+        return self
+
+
+ImuTelemetryMessage = Annotated[
+    ImuCapabilities | ImuSample,
+    Field(discriminator="message_type"),
+]
+IMU_TELEMETRY_ADAPTER = TypeAdapter(ImuTelemetryMessage)
+
+
+class ImuSensorStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sample_count: int = Field(default=0, ge=0)
+    observed_rate_hz: float | None = Field(default=None, ge=0)
+    first_received_at_perf_counter_ns: int | None = Field(default=None, ge=0)
+    last_received_at_perf_counter_ns: int | None = Field(default=None, ge=0)
+    latest_sequence_number: int | None = Field(default=None, ge=0)
+    sequence_gaps: int = Field(default=0, ge=0)
+    out_of_order_samples: int = Field(default=0, ge=0)
+    last_event_to_callback_delta_ns: int | None = None
+    min_event_to_callback_delta_ns: int | None = None
+    max_event_to_callback_delta_ns: int | None = None
+    last_sample: ImuSample | None = None
+
+
+class ImuTelemetryStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["0.1"] = "0.1"
+    session_id: str | None = None
+    device_session_id: str | None = None
+    channel_state: ImuChannelState = ImuChannelState.UNAVAILABLE
+    messages_received: int = Field(default=0, ge=0)
+    capabilities_received: int = Field(default=0, ge=0)
+    samples_received: int = Field(default=0, ge=0)
+    malformed_messages: int = Field(default=0, ge=0)
+    capabilities: ImuCapabilities | None = None
+    sensors: dict[ImuSensorType, ImuSensorStatus]
 
 
 class WebRtcStatus(BaseModel):

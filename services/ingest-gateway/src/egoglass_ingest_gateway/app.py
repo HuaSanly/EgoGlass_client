@@ -17,6 +17,7 @@ from .discovery import DISCOVERY_PORT, LanDiscoveryService
 from .models import IngestStatus, ProbeResult, RtspSourceConfig
 from .runtime import IngestRuntime, ProbeBusyError
 from .webrtc_models import (
+    ImuTelemetryStatus,
     StreamControlAction,
     StreamControlCommand,
     StreamControlRequest,
@@ -108,6 +109,11 @@ def create_app(
     @app.get("/api/v1/webrtc/status", response_model=WebRtcStatus)
     async def webrtc_status() -> WebRtcStatus:
         return await active_webrtc_runtime.status()
+
+    @app.get("/api/v1/webrtc/imu/status", response_model=ImuTelemetryStatus)
+    async def imu_telemetry_status(request: Request) -> ImuTelemetryStatus:
+        _require_loopback(request, viewer_allowed_hosts, "IMU telemetry")
+        return await active_webrtc_runtime.imu_status()
 
     @app.post("/api/v1/webrtc/viewer/sessions", response_model=WebRtcViewerAnswer)
     async def create_webrtc_viewer_session(

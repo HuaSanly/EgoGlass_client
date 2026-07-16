@@ -6,6 +6,7 @@ from collections.abc import Callable
 from aiortc import RTCBundlePolicy
 
 from egoglass_ingest_gateway.adapters.aiortc_peer import (
+    IMU_TELEMETRY_CHANNEL_LABEL,
     STREAM_CONTROL_CHANNEL_LABEL,
     AiortcPeer,
     h264_video_codecs,
@@ -22,11 +23,12 @@ class FakeDataChannel:
         label: str = STREAM_CONTROL_CHANNEL_LABEL,
         ordered: bool = True,
         max_retransmits: int | None = None,
+        max_packet_lifetime: int | None = None,
     ) -> None:
         self.label = label
         self.ordered = ordered
         self.maxRetransmits = max_retransmits
-        self.maxPacketLifeTime = None
+        self.maxPacketLifeTime = max_packet_lifetime
         self.readyState = "open"
         self.sent: list[str] = []
         self._handlers: dict[str, Callable[..., None]] = {}
@@ -93,6 +95,9 @@ def test_remote_reliable_stream_control_channel_is_bidirectional() -> None:
             on_control_channel_ready=lambda channel: append_async(ready_channels, channel),
             on_control_channel_closed=lambda channel: append_async(closed_channels, channel),
             on_control_status=lambda _channel, payload: append_async(statuses, payload),
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=ignore,
         )
         peer = AiortcPeer(callbacks)
         channel = FakeDataChannel()
@@ -132,6 +137,9 @@ def test_unreliable_stream_control_channel_is_rejected() -> None:
             on_control_channel_ready=lambda channel: append_async(ready_channels, channel),
             on_control_channel_closed=ignore,
             on_control_status=ignore,
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=ignore,
         )
         peer = AiortcPeer(callbacks)
         try:
@@ -139,6 +147,101 @@ def test_unreliable_stream_control_channel_is_rejected() -> None:
                 "datachannel",
                 FakeDataChannel(ordered=False, max_retransmits=0),
             )
+            await asyncio.sleep(0)
+            assert ready_channels == []
+        finally:
+            await peer.close()
+
+    asyncio.run(scenario())
+
+
+def test_unordered_zero_retransmit_imu_channel_forwards_messages() -> None:
+    async def scenario() -> None:
+        ready_channels: list[object] = []
+        closed_channels: list[object] = []
+        payloads: list[str | bytes] = []
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=ignore,
+            on_video_frame=ignore,
+            on_metadata=ignore,
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=lambda channel: append_async(ready_channels, channel),
+            on_imu_channel_closed=lambda channel: append_async(closed_channels, channel),
+            on_imu_telemetry=lambda _channel, payload: append_async(payloads, payload),
+        )
+        peer = AiortcPeer(callbacks)
+        channel = FakeDataChannel(
+            label=IMU_TELEMETRY_CHANNEL_LABEL,
+            ordered=False,
+            max_retransmits=0,
+        )
+        try:
+            peer._peer.emit("datachannel", channel)
+            await asyncio.sleep(0)
+            assert len(ready_channels) == 1
+
+            channel.emit("message", b'{"message_type":"imu_sample"}')
+            await asyncio.sleep(0)
+            assert payloads == [b'{"message_type":"imu_sample"}']
+
+            channel.readyState = "closed"
+            channel.emit("close")
+            await asyncio.sleep(0)
+            assert closed_channels == ready_channels
+        finally:
+            await peer.close()
+
+    asyncio.run(scenario())
+
+
+def test_imu_channel_rejects_wrong_reliability_policy() -> None:
+    async def scenario() -> None:
+        ready_channels: list[object] = []
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=ignore,
+            on_video_frame=ignore,
+            on_metadata=ignore,
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=lambda channel: append_async(ready_channels, channel),
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=ignore,
+        )
+        peer = AiortcPeer(callbacks)
+        invalid_channels = (
+            FakeDataChannel(
+                label=IMU_TELEMETRY_CHANNEL_LABEL,
+                ordered=True,
+                max_retransmits=0,
+            ),
+            FakeDataChannel(
+                label=IMU_TELEMETRY_CHANNEL_LABEL,
+                ordered=False,
+                max_retransmits=None,
+            ),
+            FakeDataChannel(
+                label=IMU_TELEMETRY_CHANNEL_LABEL,
+                ordered=False,
+                max_retransmits=0,
+                max_packet_lifetime=10,
+            ),
+        )
+        try:
+            for channel in invalid_channels:
+                peer._peer.emit("datachannel", channel)
             await asyncio.sleep(0)
             assert ready_channels == []
         finally:

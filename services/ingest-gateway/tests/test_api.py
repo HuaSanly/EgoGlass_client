@@ -8,6 +8,10 @@ from egoglass_ingest_gateway.app import create_app
 from egoglass_ingest_gateway.models import ProbeResult, RtspSourceConfig, RtspTransport
 from egoglass_ingest_gateway.runtime import IngestRuntime
 from egoglass_ingest_gateway.webrtc_models import (
+    ImuChannelState,
+    ImuSensorStatus,
+    ImuSensorType,
+    ImuTelemetryStatus,
     StreamControlCommand,
     StreamControlState,
     StreamControlStatus,
@@ -56,6 +60,25 @@ class ControlRuntime:
                 if command.action == "start"
                 else StreamControlState.STOPPED
             ),
+        )
+
+    async def close(self) -> None:
+        return None
+
+
+class ImuRuntime:
+    async def imu_status(self) -> ImuTelemetryStatus:
+        return ImuTelemetryStatus(
+            session_id="session-imu-test",
+            device_session_id="device-session-imu-test",
+            channel_state=ImuChannelState.RECEIVING,
+            messages_received=3,
+            capabilities_received=1,
+            samples_received=2,
+            sensors={
+                ImuSensorType.ACCELEROMETER: ImuSensorStatus(sample_count=2),
+                ImuSensorType.GYROSCOPE: ImuSensorStatus(),
+            },
         )
 
     async def close(self) -> None:
@@ -292,6 +315,33 @@ def test_stream_control_api_is_loopback_only_and_supports_get_post_cors() -> Non
         )
     assert forbidden_get.status_code == 403
     assert forbidden_post.status_code == 403
+
+
+def test_imu_status_api_is_loopback_only_and_exposes_no_sample_history() -> None:
+    origin = "http://127.0.0.1:8765"
+    app = create_app(
+        webrtc_runtime=ImuRuntime(),  # type: ignore[arg-type]
+        viewer_allowed_hosts=frozenset({"testclient"}),
+    )
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/webrtc/imu/status",
+            headers={"Origin": origin},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    payload = response.json()
+    assert payload["channel_state"] == "receiving"
+    assert payload["samples_received"] == 2
+    assert payload["sensors"]["accelerometer"]["sample_count"] == 2
+    assert "history" not in response.text
+
+    with TestClient(
+        create_app(webrtc_runtime=ImuRuntime())  # type: ignore[arg-type]
+    ) as client:
+        forbidden = client.get("/api/v1/webrtc/imu/status")
+    assert forbidden.status_code == 403
 
 
 def test_stream_control_api_maps_safe_runtime_failures() -> None:

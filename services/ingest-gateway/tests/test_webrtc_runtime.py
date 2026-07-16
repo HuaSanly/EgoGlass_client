@@ -9,9 +9,11 @@ import pytest
 from egoglass_ingest_gateway.adapters.webrtc import (
     DecodedVideoFrame,
     WebRtcControlChannel,
+    WebRtcImuChannel,
     WebRtcPeerCallbacks,
 )
 from egoglass_ingest_gateway.webrtc_models import (
+    ImuChannelState,
     StreamControlAction,
     StreamControlCommand,
     StreamControlState,
@@ -20,6 +22,7 @@ from egoglass_ingest_gateway.webrtc_models import (
     WebRtcViewerOffer,
 )
 from egoglass_ingest_gateway.webrtc_runtime import (
+    IMU_MAX_PAYLOAD_BYTES,
     PairingTokenError,
     StreamControlCommandError,
     StreamControlCommandTimeoutError,
@@ -87,6 +90,15 @@ class FakeControlChannel(WebRtcControlChannel):
         self.sent.append(message)
 
 
+class FakeImuChannel(WebRtcImuChannel):
+    def __init__(self) -> None:
+        self.open = True
+
+    @property
+    def is_open(self) -> bool:
+        return self.open
+
+
 def offer(device_session_id: str = "device-session-0001") -> WebRtcOffer:
     return WebRtcOffer(
         device_session_id=device_session_id,
@@ -109,6 +121,67 @@ def metadata_json(frame_id: int = 1, rtp_timestamp: int = 90_000) -> str:
             "height": 720,
             "rotation_degrees": 0,
             "capture_config_id": "720p30",
+        }
+    )
+
+
+def imu_capabilities_json() -> str:
+    return json.dumps(
+        {
+            "schema_version": "0.1",
+            "message_type": "imu_capabilities",
+            "source": "android_sensor_manager",
+            "requested_sampling_period_us": 10_000,
+            "sensors": [
+                {
+                    "sensor_type": "accelerometer",
+                    "android_sensor_type": 1,
+                    "name": "BMI acceleration",
+                    "vendor": "Bosch",
+                    "version": 1,
+                    "unit": "m_s2",
+                    "resolution": 0.001,
+                    "max_range": 78.4,
+                    "min_delay_us": 2500,
+                    "max_delay_us": 100000,
+                    "is_wake_up": False,
+                },
+                {
+                    "sensor_type": "gyroscope",
+                    "android_sensor_type": 4,
+                    "name": "BMI gyroscope",
+                    "vendor": "Bosch",
+                    "version": 1,
+                    "unit": "rad_s",
+                    "resolution": 0.001,
+                    "max_range": 34.9,
+                    "min_delay_us": 2500,
+                    "max_delay_us": 100000,
+                    "is_wake_up": False,
+                },
+            ],
+            "missing_sensor_types": [],
+        }
+    )
+
+
+def imu_sample_json(
+    sensor_type: str,
+    sequence_number: int,
+    event_ns: int,
+    callback_ns: int,
+) -> str:
+    return json.dumps(
+        {
+            "schema_version": "0.1",
+            "message_type": "imu_sample",
+            "sensor_type": sensor_type,
+            "android_sensor_type": 1 if sensor_type == "accelerometer" else 4,
+            "sequence_number": sequence_number,
+            "sensor_event_monotonic_ns": event_ns,
+            "received_at_elapsed_realtime_ns": callback_ns,
+            "accuracy": 3,
+            "values": [0.1, -0.2, 0.3],
         }
     )
 
@@ -163,6 +236,85 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
     asyncio.run(scenario())
 
 
+def test_imu_telemetry_tracks_rates_gaps_clocks_and_malformed_messages() -> None:
+    peers: list[FakePeer] = []
+    perf_values = iter(
+        [
+            10,
+            1_000_000_000,
+            1_010_000_000,
+            1_020_000_000,
+            2_000_000_000,
+            2_020_000_000,
+        ]
+    )
+
+    def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
+        peer = FakePeer(callbacks)
+        peers.append(peer)
+        return peer
+
+    async def scenario() -> None:
+        runtime = WebRtcSessionRuntime(TOKEN, factory, perf_clock=lambda: next(perf_values))
+        await runtime.accept_offer(offer(), TOKEN)
+        channel = FakeImuChannel()
+        await peers[0].callbacks.on_imu_channel_ready(channel)
+        assert (await runtime.imu_status()).channel_state is ImuChannelState.READY
+
+        await peers[0].callbacks.on_imu_telemetry(channel, imu_capabilities_json())
+        await peers[0].callbacks.on_imu_telemetry(
+            channel, imu_sample_json("accelerometer", 0, 1_000, 1_100)
+        )
+        await peers[0].callbacks.on_imu_telemetry(
+            channel, imu_sample_json("accelerometer", 2, 2_000, 2_300)
+        )
+        await peers[0].callbacks.on_imu_telemetry(
+            channel, imu_sample_json("accelerometer", 1, 1_500, 1_700)
+        )
+        await peers[0].callbacks.on_imu_telemetry(
+            channel, imu_sample_json("gyroscope", 0, 3_000, 3_050)
+        )
+        await peers[0].callbacks.on_imu_telemetry(
+            channel, imu_sample_json("gyroscope", 1, 4_000, 4_070)
+        )
+        await peers[0].callbacks.on_imu_telemetry(channel, "not-json")
+        await peers[0].callbacks.on_imu_telemetry(
+            channel,
+            "x" * (IMU_MAX_PAYLOAD_BYTES + 1),
+        )
+
+        status = await runtime.imu_status()
+        assert status.channel_state is ImuChannelState.RECEIVING
+        assert status.messages_received == 8
+        assert status.capabilities_received == 1
+        assert status.samples_received == 5
+        assert status.malformed_messages == 2
+        assert status.capabilities is not None
+        accelerometer = status.sensors["accelerometer"]
+        gyroscope = status.sensors["gyroscope"]
+        assert accelerometer.sample_count == 3
+        assert accelerometer.observed_rate_hz == 100.0
+        assert accelerometer.latest_sequence_number == 2
+        assert accelerometer.sequence_gaps == 1
+        assert accelerometer.out_of_order_samples == 1
+        assert accelerometer.last_event_to_callback_delta_ns == 200
+        assert accelerometer.min_event_to_callback_delta_ns == 100
+        assert accelerometer.max_event_to_callback_delta_ns == 300
+        assert accelerometer.last_sample is not None
+        assert accelerometer.last_sample.sequence_number == 1
+        assert gyroscope.sample_count == 2
+        assert gyroscope.observed_rate_hz == 50.0
+
+        await peers[0].callbacks.on_connection_state("disconnected")
+        assert (await runtime.imu_status()).channel_state is ImuChannelState.RECEIVING
+
+        channel.open = False
+        await peers[0].callbacks.on_imu_channel_closed(channel)
+        assert (await runtime.imu_status()).channel_state is ImuChannelState.UNAVAILABLE
+
+    asyncio.run(scenario())
+
+
 def test_authenticated_offer_replaces_active_peer_and_ignores_stale_callbacks() -> None:
     peers: list[FakePeer] = []
     viewers: list[FakeViewerPeer] = []
@@ -194,10 +346,21 @@ def test_authenticated_offer_replaces_active_peer_and_ignores_stale_callbacks() 
             WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
         )
         await peers[0].callbacks.on_metadata("not-json")
+        old_imu_channel = FakeImuChannel()
+        await peers[0].callbacks.on_imu_channel_ready(old_imu_channel)
+        await peers[0].callbacks.on_imu_telemetry(
+            old_imu_channel,
+            imu_sample_json("accelerometer", 0, 1_000, 1_100),
+        )
         replacement = await runtime.accept_offer(offer("device-session-0002"), TOKEN)
         await peers[0].callbacks.on_connection_state("failed")
         await peers[0].callbacks.on_metadata("not-json")
+        await peers[0].callbacks.on_imu_telemetry(
+            old_imu_channel,
+            imu_sample_json("accelerometer", 1, 2_000, 2_100),
+        )
         status = await runtime.status()
+        imu_status = await runtime.imu_status()
 
         assert peers[0].closed
         assert viewers[0].closed
@@ -207,6 +370,9 @@ def test_authenticated_offer_replaces_active_peer_and_ignores_stale_callbacks() 
         assert status.device_session_id == "device-session-0002"
         assert status.connection_state is None
         assert status.malformed_metadata == 0
+        assert imu_status.channel_state is ImuChannelState.UNAVAILABLE
+        assert imu_status.messages_received == 0
+        assert imu_status.samples_received == 0
 
     asyncio.run(scenario())
 

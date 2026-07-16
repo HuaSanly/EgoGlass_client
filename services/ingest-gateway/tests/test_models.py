@@ -1,8 +1,13 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from egoglass_ingest_gateway.models import RtspSourceConfig
 from egoglass_ingest_gateway.webrtc_models import (
+    IMU_TELEMETRY_ADAPTER,
+    ImuCapabilities,
+    ImuSample,
     StreamControlAction,
     StreamControlCommand,
     StreamControlState,
@@ -101,3 +106,62 @@ def test_stream_control_contract_accepts_only_versioned_bounded_messages() -> No
 
     with pytest.raises(ValidationError):
         StreamControlStatus(state=StreamControlState.ERROR, detail="x" * 257)
+
+
+def test_imu_contract_strictly_validates_capabilities_and_samples() -> None:
+    capabilities_payload = {
+        "schema_version": "0.1",
+        "message_type": "imu_capabilities",
+        "source": "android_sensor_manager",
+        "requested_sampling_period_us": 10_000,
+        "sensors": [
+            {
+                "sensor_type": "accelerometer",
+                "android_sensor_type": 1,
+                "name": "BMI acceleration",
+                "vendor": "Bosch",
+                "version": 1,
+                "unit": "m_s2",
+                "resolution": 0.001,
+                "max_range": 78.4,
+                "min_delay_us": 2500,
+                "max_delay_us": 100000,
+                "is_wake_up": False,
+            }
+        ],
+        "missing_sensor_types": ["gyroscope"],
+    }
+    sample_payload = {
+        "schema_version": "0.1",
+        "message_type": "imu_sample",
+        "sensor_type": "gyroscope",
+        "android_sensor_type": 4,
+        "sequence_number": 7,
+        "sensor_event_monotonic_ns": 1_000,
+        "received_at_elapsed_realtime_ns": 1_125,
+        "accuracy": 3,
+        "values": [0.1, -0.2, 0.3],
+    }
+
+    capabilities = IMU_TELEMETRY_ADAPTER.validate_json(json.dumps(capabilities_payload))
+    sample = IMU_TELEMETRY_ADAPTER.validate_json(json.dumps(sample_payload))
+
+    assert isinstance(capabilities, ImuCapabilities)
+    assert capabilities.missing_sensor_types == ["gyroscope"]
+    assert isinstance(sample, ImuSample)
+    assert sample.values == (0.1, -0.2, 0.3)
+
+    invalid_payloads = (
+        {**sample_payload, "schema_version": "1.0"},
+        {**sample_payload, "android_sensor_type": 1},
+        {**sample_payload, "values": [0.1, 0.2]},
+        {**sample_payload, "values": [0.1, float("nan"), 0.3]},
+        {**sample_payload, "unexpected": True},
+        {
+            **capabilities_payload,
+            "missing_sensor_types": ["accelerometer"],
+        },
+    )
+    for payload in invalid_payloads:
+        with pytest.raises(ValidationError):
+            IMU_TELEMETRY_ADAPTER.validate_json(json.dumps(payload))

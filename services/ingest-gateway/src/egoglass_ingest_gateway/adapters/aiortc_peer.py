@@ -20,12 +20,14 @@ from ..webrtc_models import WebRtcOffer, WebRtcViewerOffer
 from .webrtc import (
     DecodedVideoFrame,
     WebRtcControlChannel,
+    WebRtcImuChannel,
     WebRtcPeerCallbacks,
     WebRtcVideoSource,
 )
 
 FRAME_METADATA_CHANNEL_LABEL = "frame-metadata-v1"
 STREAM_CONTROL_CHANNEL_LABEL = "stream-control-v1"
+IMU_TELEMETRY_CHANNEL_LABEL = "imu-telemetry-experimental-v0"
 
 
 def lan_rtc_configuration() -> RTCConfiguration:
@@ -78,6 +80,15 @@ class AiortcControlChannel(WebRtcControlChannel):
         self._channel.send(message)  # type: ignore[attr-defined]
 
 
+class AiortcImuChannel(WebRtcImuChannel):
+    def __init__(self, channel: object) -> None:
+        self._channel = channel
+
+    @property
+    def is_open(self) -> bool:
+        return getattr(self._channel, "readyState", None) == "open"
+
+
 class AiortcPeer:
     """One aiortc peer that receives a video track and metadata DataChannel."""
 
@@ -100,6 +111,9 @@ class AiortcPeer:
                 return
             if label == STREAM_CONTROL_CHANNEL_LABEL:
                 self._bind_control_channel(channel)
+                return
+            if label == IMU_TELEMETRY_CHANNEL_LABEL:
+                self._bind_imu_channel(channel)
 
         @self._peer.on("track")
         def on_track(track: object) -> None:
@@ -178,6 +192,31 @@ class AiortcPeer:
 
         if control_channel.is_open:
             self._schedule(self._callbacks.on_control_channel_ready(control_channel))
+
+    def _bind_imu_channel(self, channel: object) -> None:
+        if (
+            getattr(channel, "ordered", None) is not False
+            or getattr(channel, "maxRetransmits", None) != 0
+            or getattr(channel, "maxPacketLifeTime", None) is not None
+        ):
+            return
+
+        imu_channel = AiortcImuChannel(channel)
+
+        @channel.on("open")  # type: ignore[attr-defined]
+        def on_open() -> None:
+            self._schedule(self._callbacks.on_imu_channel_ready(imu_channel))
+
+        @channel.on("close")  # type: ignore[attr-defined]
+        def on_close() -> None:
+            self._schedule(self._callbacks.on_imu_channel_closed(imu_channel))
+
+        @channel.on("message")  # type: ignore[attr-defined]
+        def on_message(message: str | bytes) -> None:
+            self._schedule(self._callbacks.on_imu_telemetry(imu_channel, message))
+
+        if imu_channel.is_open:
+            self._schedule(self._callbacks.on_imu_channel_ready(imu_channel))
 
     def _schedule(self, awaitable: Awaitable[None]) -> None:
         task = asyncio.create_task(awaitable)
