@@ -55,6 +55,9 @@ def test_health_and_real_video_console_are_served() -> None:
         'class="event-tool"'
     )
     assert "<th>详情</th>" not in right_column
+    assert 'class="event-time-column"' in right_column
+    assert 'class="event-level-column"' in right_column
+    assert 'class="event-message-column"' in right_column
     assert "GLASS3 LIVE SOURCE" in page.text
     assert "WebRTC / DTLS-SRTP" in page.text
     assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text

@@ -56,6 +56,9 @@ def test_main_window_uses_fixed_viewport_with_events_in_the_right_column() -> No
     assert ".event-table-wrap" in styles
     assert "overflow-y: auto" in styles
     assert 'event.className = "event-message"' in script
+    assert '<col class="event-time-column">' in right_column
+    assert '<col class="event-level-column">' in right_column
+    assert "vertical-align: middle" in styles
 
 
 def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
