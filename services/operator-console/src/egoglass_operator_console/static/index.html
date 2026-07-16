@@ -73,48 +73,52 @@
             </div>
           </section>
 
-          <aside class="signal-tool" aria-labelledby="signal-title">
-            <div class="tool-header compact-header">
-              <div>
-                <span class="eyebrow">MEDIA LINK</span>
-                <h2 id="signal-title">信号链路</h2>
+          <aside class="right-column" aria-label="运行状态和事件">
+            <section class="signal-tool" aria-labelledby="signal-title">
+              <div class="tool-header compact-header">
+                <div>
+                  <span class="eyebrow">MEDIA LINK</span>
+                  <h2 id="signal-title">信号链路</h2>
+                </div>
+                <span class="pill" id="source-pill">等待首帧</span>
               </div>
-              <span class="pill" id="source-pill">等待首帧</span>
-            </div>
 
-            <dl class="property-list">
-              <div><dt>媒体源</dt><dd>Rokid Glass3 相机</dd></div>
-              <div><dt>传输</dt><dd>WebRTC / DTLS-SRTP</dd></div>
-              <div><dt>编解码</dt><dd>H.264</dd></div>
-              <div><dt>预览状态</dt><dd id="preview-status-property">等待首帧</dd></div>
-              <div><dt>画面尺寸</dt><dd id="frame-size-property">--</dd></div>
-              <div><dt>接收网关</dt><dd>127.0.0.1:8770</dd></div>
-            </dl>
+              <dl class="property-list">
+                <div><dt>媒体源</dt><dd>Rokid Glass3 相机</dd></div>
+                <div><dt>传输</dt><dd>WebRTC / DTLS-SRTP</dd></div>
+                <div><dt>编解码</dt><dd>H.264</dd></div>
+                <div><dt>预览状态</dt><dd id="preview-status-property">等待首帧</dd></div>
+                <div><dt>画面尺寸</dt><dd id="frame-size-property">--</dd></div>
+                <div><dt>接收网关</dt><dd>127.0.0.1:8770</dd></div>
+              </dl>
 
-            <div class="link-state" id="link-state">
-              <span class="link-state-mark" aria-hidden="true"></span>
-              <div>
-                <strong>LAN DIRECT</strong>
-                <span>Glass3 到 Windows 客户端</span>
+              <div class="link-state" id="link-state">
+                <span class="link-state-mark" aria-hidden="true"></span>
+                <div>
+                  <strong>LAN DIRECT</strong>
+                  <span>Glass3 到 Windows 客户端</span>
+                </div>
               </div>
-            </div>
+            </section>
+
+            <section class="event-tool" aria-labelledby="event-title">
+              <div class="tool-header compact-header">
+                <div>
+                  <span class="eyebrow">CLIENT EVENTS</span>
+                  <h2 id="event-title">事件记录</h2>
+                </div>
+                <button class="button button-small" id="clear-events-button" type="button">
+                  清空
+                </button>
+              </div>
+              <div class="event-table-wrap">
+                <table class="event-table">
+                  <thead><tr><th>时间</th><th>级别</th><th>事件</th></tr></thead>
+                  <tbody id="event-rows"></tbody>
+                </table>
+              </div>
+            </section>
           </aside>
-        </section>
-
-        <section class="event-tool" aria-labelledby="event-title">
-          <div class="tool-header compact-header">
-            <div>
-              <span class="eyebrow">CLIENT EVENTS</span>
-              <h2 id="event-title">事件记录</h2>
-            </div>
-            <button class="button button-small" id="clear-events-button" type="button">清空</button>
-          </div>
-          <div class="event-table-wrap">
-            <table class="event-table">
-              <thead><tr><th>时间</th><th>级别</th><th>事件</th><th>详情</th></tr></thead>
-              <tbody id="event-rows"></tbody>
-            </table>
-          </div>
         </section>
       </main>
     </div>

@@ -48,11 +48,20 @@ def test_health_and_real_video_console_are_served() -> None:
     )[0]
     assert 'id="connection-label"' in viewer_header
     assert 'id="fullscreen-button"' in viewer_header
+    right_column = page.text.split('<aside class="right-column"', maxsplit=1)[1].split(
+        "</aside>", maxsplit=1
+    )[0]
+    assert right_column.index('class="signal-tool"') < right_column.index(
+        'class="event-tool"'
+    )
+    assert "<th>详情</th>" not in right_column
     assert "GLASS3 LIVE SOURCE" in page.text
     assert "WebRTC / DTLS-SRTP" in page.text
     assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text
     assert "new RTCPeerConnection" in script.text
     assert "requestVideoFrameCallback" in script.text
+    assert 'event.className = "event-message"' in script.text
+    assert "event.append(eventTitle, eventDetail)" in script.text
     assert "frame.jpg" not in script.text
     assert "EgoGlass Operator Console" in page.text
 

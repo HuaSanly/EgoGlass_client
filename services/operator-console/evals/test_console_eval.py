@@ -41,6 +41,23 @@ def test_video_status_replaces_the_removed_global_topbar() -> None:
     assert ".topbar" not in styles
 
 
+def test_main_window_uses_fixed_viewport_with_events_in_the_right_column() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    right_column = html.split('<aside class="right-column"', maxsplit=1)[1].split(
+        "</aside>", maxsplit=1
+    )[0]
+
+    assert right_column.index('class="signal-tool"') < right_column.index(
+        'class="event-tool"'
+    )
+    assert "height: 100vh" in styles
+    assert ".event-table-wrap" in styles
+    assert "overflow-y: auto" in styles
+    assert 'event.className = "event-message"' in script
+
+
 def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
     service_package = STATIC_DIR.parent
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")

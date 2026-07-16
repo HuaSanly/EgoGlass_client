@@ -278,13 +278,16 @@ function renderEvents() {
     const time = document.createElement("td");
     const level = document.createElement("td");
     const event = document.createElement("td");
-    const detail = document.createElement("td");
+    const eventTitle = document.createElement("strong");
+    const eventDetail = document.createElement("span");
     time.textContent = entry.time;
     level.textContent = entry.level;
     level.className = `event-level ${entry.level.toLowerCase()}`;
-    event.textContent = entry.event;
-    detail.textContent = entry.detail;
-    row.append(time, level, event, detail);
+    event.className = "event-message";
+    eventTitle.textContent = entry.event;
+    eventDetail.textContent = entry.detail;
+    event.append(eventTitle, eventDetail);
+    row.append(time, level, event);
     elements.eventRows.append(row);
   });
 }
