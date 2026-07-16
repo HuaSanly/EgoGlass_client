@@ -143,7 +143,8 @@ def test_imu_display_mapping_reverses_pitch_after_fusion_only() -> None:
     imu_scene = (STATIC_DIR / "imu-scene.js").read_text(encoding="utf-8")
 
     assert "mapRelativeOrientationForDisplay(relative)" in imu_scene
-    assert "displayEuler.y = -sensorEuler.y" in imu_scene
+    assert "displayEuler.x = -sensorEuler.x" in imu_scene
+    assert "displayEuler.y = -sensorEuler.y" not in imu_scene
     assert "this.targetQuaternion.copy(displayOrientation.quaternion)" in imu_scene
-    assert "pitch: THREE.MathUtils.radToDeg(displayOrientation.euler.y)" in imu_scene
+    assert "pitch: THREE.MathUtils.radToDeg(displayOrientation.angles.pitch)" in imu_scene
     assert "this.filter.update(\n      gx,\n      gy,\n      gz," in imu_scene

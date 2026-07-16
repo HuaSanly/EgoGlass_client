@@ -105,11 +105,15 @@ export function mapRelativeOrientationForDisplay(relative) {
   const sensorEuler = new THREE.Euler().setFromQuaternion(relative, "XYZ");
   const displayEuler = sensorEuler.clone();
 
-  // Glass3 pitch is opposite to the Three.js display convention used by the model.
-  displayEuler.y = -sensorEuler.y;
+  // The model faces +Z, so nodding is rotation around its horizontal X axis.
+  displayEuler.x = -sensorEuler.x;
   return {
     quaternion: new THREE.Quaternion().setFromEuler(displayEuler).normalize(),
-    euler: displayEuler,
+    angles: {
+      roll: displayEuler.z,
+      pitch: displayEuler.x,
+      yaw: displayEuler.y,
+    },
   };
 }
 
@@ -274,9 +278,9 @@ export class ImuSceneController {
     this.targetQuaternion.copy(displayOrientation.quaternion);
     this.onOrientation({
       ready: true,
-      roll: THREE.MathUtils.radToDeg(displayOrientation.euler.x),
-      pitch: THREE.MathUtils.radToDeg(displayOrientation.euler.y),
-      yaw: THREE.MathUtils.radToDeg(displayOrientation.euler.z),
+      roll: THREE.MathUtils.radToDeg(displayOrientation.angles.roll),
+      pitch: THREE.MathUtils.radToDeg(displayOrientation.angles.pitch),
+      yaw: THREE.MathUtils.radToDeg(displayOrientation.angles.yaw),
     });
     return true;
   }

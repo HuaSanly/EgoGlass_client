@@ -13,7 +13,7 @@ STATIC_DIR = (
 )
 
 
-def test_display_mapping_reverses_pitch_without_changing_roll_or_yaw() -> None:
+def test_display_mapping_renders_nods_in_the_physical_direction() -> None:
     node = shutil.which("node")
     assert node is not None, "Node.js is required for the operator-console JavaScript gate"
     scene_uri = (STATIC_DIR / "imu-scene.js").resolve().as_uri()
@@ -24,17 +24,26 @@ def test_display_mapping_reverses_pitch_without_changing_roll_or_yaw() -> None:
 import * as THREE from {json.dumps(three_uri)};
 import {{ mapRelativeOrientationForDisplay }} from {json.dumps(scene_uri)};
 
-const source = new THREE.Euler(0.22, 0.31, -0.17, "XYZ");
-const relative = new THREE.Quaternion().setFromEuler(source);
-const mapped = mapRelativeOrientationForDisplay(relative);
-const rendered = new THREE.Euler().setFromQuaternion(mapped.quaternion, "XYZ");
+const sourceDown = new THREE.Euler(-0.31, 0.22, -0.17, "XYZ");
+const sourceUp = new THREE.Euler(0.31, 0.22, -0.17, "XYZ");
+const mappedDown = mapRelativeOrientationForDisplay(
+  new THREE.Quaternion().setFromEuler(sourceDown),
+);
+const mappedUp = mapRelativeOrientationForDisplay(
+  new THREE.Quaternion().setFromEuler(sourceUp),
+);
+const renderedDown = new THREE.Euler().setFromQuaternion(mappedDown.quaternion, "XYZ");
+const frontDown = new THREE.Vector3(0, 0, 1).applyQuaternion(mappedDown.quaternion);
+const frontUp = new THREE.Vector3(0, 0, 1).applyQuaternion(mappedUp.quaternion);
 console.log(JSON.stringify({{
-  roll: mapped.euler.x,
-  pitch: mapped.euler.y,
-  yaw: mapped.euler.z,
-  renderedRoll: rendered.x,
-  renderedPitch: rendered.y,
-  renderedYaw: rendered.z,
+  roll: mappedDown.angles.roll,
+  pitch: mappedDown.angles.pitch,
+  yaw: mappedDown.angles.yaw,
+  renderedX: renderedDown.x,
+  renderedY: renderedDown.y,
+  renderedZ: renderedDown.z,
+  frontDownY: frontDown.y,
+  frontUpY: frontUp.y,
 }}));
 """
 
@@ -47,9 +56,11 @@ console.log(JSON.stringify({{
     )
     mapped = json.loads(completed.stdout)
 
-    assert mapped["roll"] == pytest.approx(0.22)
-    assert mapped["pitch"] == pytest.approx(-0.31)
-    assert mapped["yaw"] == pytest.approx(-0.17)
-    assert mapped["renderedRoll"] == pytest.approx(0.22)
-    assert mapped["renderedPitch"] == pytest.approx(-0.31)
-    assert mapped["renderedYaw"] == pytest.approx(-0.17)
+    assert mapped["roll"] == pytest.approx(-0.17)
+    assert mapped["pitch"] == pytest.approx(0.31)
+    assert mapped["yaw"] == pytest.approx(0.22)
+    assert mapped["renderedX"] == pytest.approx(0.31)
+    assert mapped["renderedY"] == pytest.approx(0.22)
+    assert mapped["renderedZ"] == pytest.approx(-0.17)
+    assert mapped["frontDownY"] < 0
+    assert mapped["frontUpY"] > 0
