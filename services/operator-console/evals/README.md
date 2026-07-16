@@ -8,8 +8,9 @@ Current pass criteria:
 - the Glass3 WebRTC viewer endpoint is the only viewer source;
 - waiting, connected, and disconnected UI states follow real video frames;
 - displayed FPS is measured from rendered WebView2 video frames;
-- no placeholder data generator, WebSocket, canvas renderer, or stale control
-  API is present in the shipped package;
+- the Three.js canvas uses the real loopback IMU endpoint and the vendored
+  Madgwick filter, with no placeholder data generator or WebSocket;
+- the event table and its mutable history are absent from the shipped UI;
 - desktop authentication and repeated start/stop lifecycle remain recoverable.
 
 Run with:

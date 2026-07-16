@@ -179,7 +179,7 @@ a {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) minmax(350px, 380px);
   gap: 14px;
   width: 100%;
   height: 100%;
@@ -190,7 +190,7 @@ a {
 
 .viewer-tool,
 .signal-tool,
-.event-tool {
+.imu-tool {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -210,6 +210,24 @@ a {
   min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 14px;
+}
+
+.signal-tool .property-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 14px;
+  padding: 6px 13px 8px;
+}
+
+.signal-tool .property-list > div {
+  grid-template-columns: minmax(52px, 0.7fr) minmax(0, 1.3fr);
+  gap: 7px;
+  padding: 7px 0;
+}
+
+.signal-tool .property-list dt,
+.signal-tool .property-list dd {
+  font-size: 9px;
 }
 
 .tool-header {
@@ -564,102 +582,197 @@ a {
   white-space: nowrap;
 }
 
-.event-tool {
+.imu-tool {
   display: grid;
   min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
-.event-table-wrap {
+.imu-header-actions {
+  display: flex;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  align-items: center;
+  gap: 8px;
 }
 
-.event-table {
+.button-icon {
+  display: inline-grid;
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  place-items: center;
+  padding: 0;
+  font-family: "Segoe UI Symbol", sans-serif;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.imu-stage {
+  position: relative;
   width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-
-.event-table th,
-.event-table td {
-  height: 34px;
-  padding: 7px 9px;
+  min-height: 0;
   overflow: hidden;
-  border-bottom: 1px solid var(--border-soft);
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: top;
+  background: #0b0f0d;
 }
 
-.event-table th {
-  position: sticky;
-  z-index: 1;
-  top: 0;
-  height: 32px;
-  padding: 0 9px;
-  background: var(--surface);
-  color: var(--text-muted);
-  font-family: Consolas, monospace;
-  font-size: 9px;
-  text-transform: uppercase;
-  vertical-align: middle;
-}
-
-.event-time-column {
-  width: 72px;
-}
-
-.event-level-column {
-  width: 54px;
-}
-
-.event-table td:first-child {
-  font-family: Consolas, monospace;
-}
-
-.event-message {
-  white-space: normal !important;
-}
-
-.event-message strong,
-.event-message span {
+#imu-scene-canvas {
+  position: absolute;
+  inset: 0;
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: 100%;
+  height: 100%;
 }
 
-.event-message strong {
-  color: var(--text-secondary);
-  font-size: 10px;
+.imu-orientation-readout {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  left: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(58px, 1fr));
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 3px;
+  background: rgb(11 15 13 / 82%);
+  backdrop-filter: blur(4px);
 }
 
-.event-message span {
-  margin-top: 3px;
+.imu-orientation-readout > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+}
+
+.imu-orientation-readout > div + div {
+  border-left: 1px solid rgb(255 255 255 / 8%);
+}
+
+.imu-orientation-readout span,
+.imu-sensor-strip span,
+.imu-sensor-strip small {
   color: var(--text-muted);
-  font-size: 9px;
-}
-
-.event-level {
   font-family: Consolas, monospace;
+  font-size: 8px;
   font-weight: 700;
 }
 
-.event-level.ok {
-  color: var(--green);
+.imu-orientation-readout strong {
+  color: #e3ece6;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
-.event-level.warn {
-  color: var(--amber);
+.imu-axis-legend {
+  position: absolute;
+  z-index: 2;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 5px;
 }
 
-.event-level.info {
-  color: var(--cyan);
+.imu-axis-legend span {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid currentcolor;
+  border-radius: 3px;
+  background: rgb(11 15 13 / 80%);
+  font-family: Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.axis-x {
+  color: #ee6b72;
+}
+
+.axis-y {
+  color: #60d98f;
+}
+
+.axis-z {
+  color: #5ba5eb;
+}
+
+.imu-empty {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 54px 20px 20px;
+  background: rgb(11 15 13 / 68%);
+  color: var(--text-muted);
+  text-align: center;
+  pointer-events: none;
+}
+
+.imu-empty strong {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.imu-empty span:last-child {
+  max-width: 220px;
+  font-size: 10px;
+}
+
+.imu-empty .waiting-mark {
+  width: 24px;
+  height: 24px;
+}
+
+.imu-sensor-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 56px;
+  border-top: 1px solid var(--border-soft);
+  background: #141916;
+}
+
+.imu-sensor-strip > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-content: center;
+  gap: 2px 8px;
+  padding: 8px 11px;
+}
+
+.imu-sensor-strip > div + div {
+  border-left: 1px solid var(--border-soft);
+}
+
+.imu-sensor-strip span {
+  grid-column: 1;
+}
+
+.imu-sensor-strip strong {
+  grid-row: 2;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imu-sensor-strip small {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  color: #8bb8a1;
+  white-space: nowrap;
 }
 
 @media (max-width: 920px) {

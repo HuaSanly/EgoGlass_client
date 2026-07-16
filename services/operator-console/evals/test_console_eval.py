@@ -41,7 +41,7 @@ def test_video_status_replaces_the_removed_global_topbar() -> None:
     assert ".topbar" not in styles
 
 
-def test_main_window_uses_fixed_viewport_with_events_in_the_right_column() -> None:
+def test_main_window_uses_fixed_viewport_with_imu_in_the_right_column() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
@@ -49,16 +49,16 @@ def test_main_window_uses_fixed_viewport_with_events_in_the_right_column() -> No
         "</aside>", maxsplit=1
     )[0]
 
-    assert right_column.index('class="signal-tool"') < right_column.index(
-        'class="event-tool"'
-    )
+    assert right_column.index('class="signal-tool"') < right_column.index('class="imu-tool"')
+    assert 'class="event-tool"' not in right_column
+    assert "事件记录" not in right_column
     assert "height: 100vh" in styles
-    assert ".event-table-wrap" in styles
-    assert "overflow-y: auto" in styles
-    assert 'event.className = "event-message"' in script
-    assert '<col class="event-time-column">' in right_column
-    assert '<col class="event-level-column">' in right_column
-    assert "vertical-align: middle" in styles
+    assert "overflow: hidden" in styles
+    assert 'id="imu-scene-canvas"' in right_column
+    assert 'id="reset-imu-button"' in right_column
+    assert "pollImuStatus" in script
+    assert ".imu-stage" in styles
+    assert "grid-template-rows: auto minmax(0, 1fr) auto" in styles
 
 
 def test_video_stage_preserves_source_ratio_and_reserves_lower_workspace() -> None:
@@ -96,9 +96,10 @@ def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
     service_package = STATIC_DIR.parent
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    imu_scene = (STATIC_DIR / "imu-scene.js").read_text(encoding="utf-8")
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
     backend = (service_package / "app.py").read_text(encoding="utf-8")
-    shipped_runtime = "\n".join((html, script, styles, backend)).lower()
+    shipped_runtime = "\n".join((html, script, imu_scene, styles, backend)).lower()
 
     assert not (service_package / "models.py").exists()
     assert not (service_package / "runtime.py").exists()
@@ -107,7 +108,6 @@ def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
         "synthetic",
         "mock",
         "trajectory",
-        "telemetry",
         "calibration",
         "recording",
         "模拟",
@@ -115,3 +115,25 @@ def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
         assert forbidden not in shipped_runtime
     assert "/api/v1/state" not in backend
     assert "@app.websocket" not in backend
+
+
+def test_imu_scene_uses_real_samples_and_vendored_sensor_fusion() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    imu_scene = (STATIC_DIR / "imu-scene.js").read_text(encoding="utf-8")
+    three = STATIC_DIR / "vendor" / "three.module-0.185.1.min.js"
+    three_core = STATIC_DIR / "vendor" / "three.core.min.js"
+    ahrs = STATIC_DIR / "vendor" / "ahrs-1.3.3.js"
+
+    assert 'id="imu-scene-canvas"' in html
+    assert "127.0.0.1:8770/api/v1/webrtc/imu/status" in script
+    assert "setTimeout(pollImuStatus, delayMs)" in script
+    assert "readImuSample" in script
+    assert "sensor_event_monotonic_ns" in script
+    assert "new THREE.WebGLRenderer" in imu_scene
+    assert 'algorithm: "Madgwick"' in imu_scene
+    assert "this.filter.update" in imu_scene
+    assert "referenceInverse" in imu_scene
+    assert three.stat().st_size > 300_000
+    assert three_core.stat().st_size > 100_000
+    assert ahrs.stat().st_size > 20_000

@@ -30,7 +30,10 @@ def test_health_and_real_video_console_are_served() -> None:
         health = client.get("/api/v1/health")
         page = client.get("/")
         script = client.get("/assets/app.js")
+        imu_scene = client.get("/assets/imu-scene.js")
         styles = client.get("/assets/styles.css")
+        three = client.get("/assets/vendor/three.module-0.185.1.min.js")
+        ahrs = client.get("/assets/vendor/ahrs-1.3.3.js")
 
     assert health.json() == {
         "status": "ok",
@@ -39,6 +42,9 @@ def test_health_and_real_video_console_are_served() -> None:
     }
     assert page.status_code == 200
     assert script.status_code == 200
+    assert imu_scene.status_code == 200
+    assert three.status_code == 200
+    assert ahrs.status_code == 200
     parser = ElementIdParser()
     parser.feed(page.text)
     assert parser.tags_by_id["live-video-source"] == "video"
@@ -52,13 +58,11 @@ def test_health_and_real_video_console_are_served() -> None:
     right_column = page.text.split('<aside class="right-column"', maxsplit=1)[1].split(
         "</aside>", maxsplit=1
     )[0]
-    assert right_column.index('class="signal-tool"') < right_column.index(
-        'class="event-tool"'
-    )
-    assert "<th>详情</th>" not in right_column
-    assert 'class="event-time-column"' in right_column
-    assert 'class="event-level-column"' in right_column
-    assert 'class="event-message-column"' in right_column
+    assert right_column.index('class="signal-tool"') < right_column.index('class="imu-tool"')
+    assert 'class="event-tool"' not in right_column
+    assert "事件记录" not in right_column
+    assert parser.tags_by_id["imu-scene-canvas"] == "canvas"
+    assert parser.tags_by_id["reset-imu-button"] == "button"
     assert "GLASS3 LIVE SOURCE" in page.text
     assert "WebRTC / DTLS-SRTP" in page.text
     assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text
@@ -74,8 +78,14 @@ def test_health_and_real_video_console_are_served() -> None:
     assert "controllableStreamStates" in script.text
     assert 'state.controlState === "streaming"' in script.text
     assert 'state.controlState === "stopped"' in script.text
-    assert 'event.className = "event-message"' in script.text
-    assert "event.append(eventTitle, eventDetail)" in script.text
+    assert "127.0.0.1:8770/api/v1/webrtc/imu/status" in script.text
+    assert "pollImuStatus" in script.text
+    assert 'import { ImuSceneController } from "./imu-scene.js"' in script.text
+    assert "new THREE.WebGLRenderer" in imu_scene.text
+    assert "THREE.PCFShadowMap" in imu_scene.text
+    assert "THREE.PCFSoftShadowMap" not in imu_scene.text
+    assert 'algorithm: "Madgwick"' in imu_scene.text
+    assert 'browserRequire("ahrs")' in imu_scene.text
     assert "aspect-ratio: 16 / 9" in styles.text
     assert "object-fit: cover" in styles.text
     assert "object-fit: contain" not in styles.text
@@ -87,22 +97,23 @@ def test_runtime_contains_no_simulated_data_controls_or_transport() -> None:
     with make_client() as client:
         page = client.get("/").text
         script = client.get("/assets/app.js").text
+        imu_scene = client.get("/assets/imu-scene.js").text
         styles = client.get("/assets/styles.css").text
 
-    shipped_runtime = "\n".join((page, script, styles)).lower()
+    shipped_runtime = "\n".join((page, script, imu_scene, styles)).lower()
     for forbidden in (
         "simulation",
         "synthetic",
         "mock",
         "trajectory",
-        "telemetry",
         "calibration",
         "recording",
         "模拟",
     ):
         assert forbidden not in shipped_runtime
     assert "websocket" not in script.lower()
-    assert "scene-canvas" not in page
+    assert 'id="imu-scene-canvas"' in page
+    assert "event-tool" not in page
 
 
 @pytest.mark.parametrize(

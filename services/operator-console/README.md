@@ -2,8 +2,8 @@
 
 The operator console is a self-contained FastAPI service for Windows. It serves
 an authenticated local UI that displays the live Glass3 WebRTC preview from the
-ingest gateway. It does not create placeholder media, trajectories, metrics,
-calibration, recording, or session state.
+ingest gateway. It does not create placeholder media, trajectories, recording,
+or session state.
 
 WebView2 receives a real WebRTC video track from the gateway and measures the
 displayed cadence from rendered frames. There is no JPEG polling path. The UI
@@ -16,6 +16,15 @@ capture state and enables start/stop commands. The console polls
 transitioning, and failed control states keep both buttons disabled. A command
 or status error is shown in the control panel without interrupting the live
 preview connection.
+
+The lower right workspace renders the live Glass3 IMU as a Three.js model. It
+polls the loopback-only `GET http://127.0.0.1:8770/api/v1/webrtc/imu/status`
+endpoint and feeds the latest accelerometer and gyroscope samples into the
+vendored Madgwick filter from `ahrs`. The model shows relative orientation from
+the current reference, raw vector magnitudes, arrival rates, and the device
+axes. It does not integrate position or claim an absolute heading because the
+verified Glass3 sensor set has no magnetometer. The reset control makes the
+current orientation the new relative origin.
 
 ## Run as a Windows app
 
@@ -67,6 +76,7 @@ uv run ruff check src tests evals
 ```
 
 Gate tests cover desktop authentication, static application delivery, removed
-API behavior, real preview connection state, and stream-control state binding.
+API behavior, real preview connection state, stream-control state binding, and
+the local Three.js/AHRS IMU visualization contract.
 The eval suite prevents placeholder data paths or independently invented
 control state from returning to the shipped runtime.

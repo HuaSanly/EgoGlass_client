@@ -1,3 +1,5 @@
+import { ImuSceneController } from "./imu-scene.js";
+
 const elements = {
   liveVideo: document.querySelector("#live-video-source"),
   viewerStage: document.querySelector("#viewer-stage"),
@@ -18,8 +20,18 @@ const elements = {
   startStreamButton: document.querySelector("#start-stream-button"),
   stopStreamButton: document.querySelector("#stop-stream-button"),
   fullscreenButton: document.querySelector("#fullscreen-button"),
-  clearEventsButton: document.querySelector("#clear-events-button"),
-  eventRows: document.querySelector("#event-rows"),
+  imuCanvas: document.querySelector("#imu-scene-canvas"),
+  imuStatusPill: document.querySelector("#imu-status-pill"),
+  imuEmpty: document.querySelector("#imu-empty"),
+  imuEmptyDetail: document.querySelector("#imu-empty-detail"),
+  imuRoll: document.querySelector("#imu-roll"),
+  imuPitch: document.querySelector("#imu-pitch"),
+  imuYaw: document.querySelector("#imu-yaw"),
+  imuAcceleration: document.querySelector("#imu-acceleration"),
+  imuAngularRate: document.querySelector("#imu-angular-rate"),
+  imuAccelerationRate: document.querySelector("#imu-acceleration-rate"),
+  imuGyroscopeRate: document.querySelector("#imu-gyroscope-rate"),
+  resetImuButton: document.querySelector("#reset-imu-button"),
 };
 
 const state = {
@@ -40,13 +52,18 @@ const state = {
   controlCommandInFlight: false,
   controlPollError: null,
   controlCommandError: null,
-  events: [],
+  imuPollTimer: null,
+  imuPollInFlight: false,
+  imuConnected: false,
+  imuOrientationReady: false,
+  imuSceneError: null,
 };
 
 const viewerSignalingEndpoint =
   "http://127.0.0.1:8770/api/v1/webrtc/viewer/sessions";
 const streamControlEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/control";
 const streamControlCommandEndpoint = `${streamControlEndpoint}/commands`;
+const imuStatusEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/imu/status";
 const streamControlStates = new Set([
   "unavailable",
   "ready",
@@ -66,6 +83,7 @@ const streamControlLabels = {
   stopped: "视频已停止",
   error: "眼镜端控制失败",
 };
+let imuScene = null;
 
 if (window.location.search) {
   window.history.replaceState({}, "", window.location.pathname);
@@ -117,18 +135,11 @@ async function readJsonResponse(response, fallbackMessage) {
 }
 
 function applyStreamControlStatus(payload) {
-  const previousState = state.controlState;
   const status = readStreamControlStatus(payload);
   state.controlState = status.state;
   state.controlDetail = status.detail;
   state.controlPollError = null;
   renderStreamControl();
-
-  if (previousState !== status.state && status.state === "streaming") {
-    addEvent("OK", "眼镜端视频已启动", status.detail || "控制状态已确认");
-  } else if (previousState !== status.state && status.state === "stopped") {
-    addEvent("INFO", "眼镜端视频已停止", status.detail || "控制通路保持在线");
-  }
 }
 
 async function pollStreamControlStatus() {
@@ -175,7 +186,7 @@ async function sendStreamControlCommand(action) {
     applyStreamControlStatus(payload);
   } catch (error) {
     state.controlCommandError = error.message;
-    addEvent("WARN", action === "start" ? "启动视频失败" : "停止视频失败", error.message);
+    console.warn("Glass3 stream command failed", error);
   } finally {
     state.controlCommandInFlight = false;
     renderStreamControl();
@@ -280,7 +291,7 @@ async function connectLiveVideo() {
   } catch (error) {
     const status = error instanceof ViewerSignalingError ? error.status : null;
     if (status !== 503 && state.lastSignalingError !== error.message) {
-      addEvent("WARN", "本机预览连接失败", error.message);
+      console.warn("Local preview connection failed", error);
       state.lastSignalingError = error.message;
     }
     closeViewerPeer(peer, error.message);
@@ -296,17 +307,15 @@ function handleViewerDisconnect(peer, detail) {
   scheduleViewerRetry();
 }
 
-function closeViewerPeer(peer, detail = "等待重新连接") {
+function closeViewerPeer(peer) {
   if (state.peer !== peer) return;
   state.peer = null;
   peer.onconnectionstatechange = null;
   peer.close();
   stopFrameMonitoring();
   elements.liveVideo.srcObject = null;
-  const wasReady = state.liveVideoReady;
   state.liveVideoReady = false;
   renderVideoState();
-  if (wasReady) addEvent("WARN", "Glass3 视频已断开", detail);
 }
 
 function startFrameMonitoring() {
@@ -374,7 +383,6 @@ function markVideoReady() {
   if (state.liveVideoReady) return;
   state.liveVideoReady = true;
   renderVideoState();
-  addEvent("OK", "Glass3 视频已连接", "WebRTC H.264 实时轨道");
 }
 
 function renderVideoState() {
@@ -404,49 +412,181 @@ async function toggleFullscreen() {
       await elements.viewerStage.requestFullscreen();
     }
   } catch (error) {
-    addEvent("WARN", "全屏切换失败", error.message);
+    console.warn("Fullscreen toggle failed", error);
   }
 }
 
-function addEvent(level, event, detail) {
-  state.events.unshift({
-    time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
-    level,
-    event,
-    detail,
-  });
-  state.events = state.events.slice(0, 12);
-  renderEvents();
+function scheduleImuPoll(delayMs = state.imuConnected ? 50 : 500) {
+  window.clearTimeout(state.imuPollTimer);
+  if (document.hidden) return;
+  state.imuPollTimer = window.setTimeout(pollImuStatus, delayMs);
 }
 
-function renderEvents() {
-  elements.eventRows.replaceChildren();
-  state.events.forEach((entry) => {
-    const row = document.createElement("tr");
-    const time = document.createElement("td");
-    const level = document.createElement("td");
-    const event = document.createElement("td");
-    const eventTitle = document.createElement("strong");
-    const eventDetail = document.createElement("span");
-    time.textContent = entry.time;
-    level.textContent = entry.level;
-    level.className = `event-level ${entry.level.toLowerCase()}`;
-    event.className = "event-message";
-    eventTitle.textContent = entry.event;
-    eventDetail.textContent = entry.detail;
-    event.append(eventTitle, eventDetail);
-    row.append(time, level, event);
-    elements.eventRows.append(row);
-  });
+function readImuSample(sample, expectedType, expectedAndroidType) {
+  if (
+    sample === null ||
+    typeof sample !== "object" ||
+    sample.schema_version !== "0.1" ||
+    sample.message_type !== "imu_sample" ||
+    sample.sensor_type !== expectedType ||
+    sample.android_sensor_type !== expectedAndroidType ||
+    !Number.isSafeInteger(sample.sequence_number) ||
+    !Number.isSafeInteger(sample.sensor_event_monotonic_ns) ||
+    !Array.isArray(sample.values) ||
+    sample.values.length !== 3 ||
+    !sample.values.every(Number.isFinite)
+  ) {
+    throw new Error(`接收网关返回了无效的 ${expectedType} 样本`);
+  }
+  return sample;
+}
+
+function readImuStatus(payload) {
+  const channelStates = new Set(["unavailable", "ready", "receiving"]);
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    payload.schema_version !== "0.1" ||
+    !channelStates.has(payload.channel_state) ||
+    payload.sensors === null ||
+    typeof payload.sensors !== "object"
+  ) {
+    throw new Error("接收网关返回了无效的 IMU 状态");
+  }
+  if (payload.channel_state !== "receiving") {
+    return { ...payload, accelerometer: null, gyroscope: null };
+  }
+  const accelerometerStatus = payload.sensors.accelerometer;
+  const gyroscopeStatus = payload.sensors.gyroscope;
+  const accelerometer = readImuSample(
+    accelerometerStatus?.last_sample,
+    "accelerometer",
+    1,
+  );
+  const gyroscope = readImuSample(gyroscopeStatus?.last_sample, "gyroscope", 4);
+  return {
+    ...payload,
+    accelerometer,
+    gyroscope,
+    accelerometerRate: accelerometerStatus.observed_rate_hz,
+    gyroscopeRate: gyroscopeStatus.observed_rate_hz,
+  };
+}
+
+function vectorMagnitude(values) {
+  return Math.hypot(...values);
+}
+
+function formatVector(values) {
+  return values.map((value) => value.toFixed(3)).join(", ");
+}
+
+function renderImuOrientation(orientation) {
+  state.imuOrientationReady = orientation.ready;
+  if (!orientation.ready) {
+    elements.imuRoll.textContent = "--°";
+    elements.imuPitch.textContent = "--°";
+    elements.imuYaw.textContent = "--°";
+    elements.imuEmpty.hidden = false;
+    elements.imuEmptyDetail.textContent = "正在建立相对姿态参考";
+    return;
+  }
+  elements.imuRoll.textContent = `${orientation.roll.toFixed(1)}°`;
+  elements.imuPitch.textContent = `${orientation.pitch.toFixed(1)}°`;
+  elements.imuYaw.textContent = `${orientation.yaw.toFixed(1)}°`;
+  elements.imuEmpty.hidden = true;
+}
+
+function setImuUnavailable(detail) {
+  state.imuConnected = false;
+  state.imuOrientationReady = false;
+  elements.imuStatusPill.classList.remove("pill-success");
+  elements.imuStatusPill.textContent = "等待 IMU";
+  elements.imuEmpty.hidden = false;
+  elements.imuEmptyDetail.textContent = detail;
+  elements.imuAcceleration.textContent = "-- m/s²";
+  elements.imuAngularRate.textContent = "-- rad/s";
+  elements.imuAccelerationRate.textContent = "-- Hz";
+  elements.imuGyroscopeRate.textContent = "-- Hz";
+  elements.resetImuButton.disabled = true;
+  if (imuScene !== null) imuScene.setActive(false);
+}
+
+function applyImuStatus(payload) {
+  const status = readImuStatus(payload);
+  if (status.channel_state !== "receiving") {
+    setImuUnavailable(
+      status.channel_state === "ready" ? "IMU 通道已连接，等待首个样本" : "接收网关尚未收到姿态数据",
+    );
+    return;
+  }
+
+  state.imuConnected = true;
+  const accelerationMagnitude = vectorMagnitude(status.accelerometer.values);
+  const angularRateMagnitude = vectorMagnitude(status.gyroscope.values);
+  const accelerometerRate = Number.isFinite(status.accelerometerRate)
+    ? status.accelerometerRate
+    : null;
+  const gyroscopeRate = Number.isFinite(status.gyroscopeRate) ? status.gyroscopeRate : null;
+  const displayRate = Math.min(
+    accelerometerRate ?? Number.POSITIVE_INFINITY,
+    gyroscopeRate ?? Number.POSITIVE_INFINITY,
+  );
+  elements.imuStatusPill.classList.add("pill-success");
+  elements.imuStatusPill.textContent = Number.isFinite(displayRate)
+    ? `LIVE ${displayRate.toFixed(0)} HZ`
+    : "IMU LIVE";
+  elements.imuAcceleration.textContent = `${accelerationMagnitude.toFixed(2)} m/s²`;
+  elements.imuAcceleration.title = `x, y, z: ${formatVector(status.accelerometer.values)}`;
+  elements.imuAngularRate.textContent = `${angularRateMagnitude.toFixed(3)} rad/s`;
+  elements.imuAngularRate.title = `x, y, z: ${formatVector(status.gyroscope.values)}`;
+  elements.imuAccelerationRate.textContent = accelerometerRate === null
+    ? "-- Hz"
+    : `${accelerometerRate.toFixed(1)} Hz`;
+  elements.imuGyroscopeRate.textContent = gyroscopeRate === null
+    ? "-- Hz"
+    : `${gyroscopeRate.toFixed(1)} Hz`;
+  elements.resetImuButton.disabled = imuScene === null;
+
+  if (imuScene === null) {
+    elements.imuEmpty.hidden = false;
+    elements.imuEmptyDetail.textContent = state.imuSceneError || "3D 姿态视图不可用";
+    return;
+  }
+  imuScene.beginSession(status.session_id || status.device_session_id || "active");
+  imuScene.setActive(true);
+  imuScene.update(status.accelerometer, status.gyroscope);
+}
+
+async function pollImuStatus() {
+  if (state.imuPollInFlight || document.hidden) {
+    scheduleImuPoll();
+    return;
+  }
+  state.imuPollInFlight = true;
+  try {
+    const response = await fetch(imuStatusEndpoint, { cache: "no-store" });
+    const payload = await readJsonResponse(response, `IMU 状态 HTTP ${response.status}`);
+    applyImuStatus(payload);
+  } catch (error) {
+    setImuUnavailable(error.message);
+  } finally {
+    state.imuPollInFlight = false;
+    scheduleImuPoll();
+  }
+}
+
+try {
+  imuScene = new ImuSceneController(elements.imuCanvas, renderImuOrientation);
+} catch (error) {
+  state.imuSceneError = error.message;
+  console.warn("IMU scene initialization failed", error);
 }
 
 elements.fullscreenButton.addEventListener("click", toggleFullscreen);
 elements.startStreamButton.addEventListener("click", () => sendStreamControlCommand("start"));
 elements.stopStreamButton.addEventListener("click", () => sendStreamControlCommand("stop"));
-elements.clearEventsButton.addEventListener("click", () => {
-  state.events = [];
-  renderEvents();
-});
+elements.resetImuButton.addEventListener("click", () => imuScene?.resetReference());
 document.addEventListener("fullscreenchange", () => {
   elements.fullscreenButton.textContent = document.fullscreenElement ? "退出全屏" : "全屏";
 });
@@ -454,16 +594,20 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     if (state.peer === null) scheduleViewerRetry(0);
     scheduleControlPoll(0);
+    scheduleImuPoll(0);
   }
 });
 window.addEventListener("beforeunload", () => {
   window.clearTimeout(state.reconnectTimer);
   window.clearTimeout(state.controlPollTimer);
+  window.clearTimeout(state.imuPollTimer);
   if (state.peer !== null) closeViewerPeer(state.peer);
+  imuScene?.dispose();
 });
 
-addEvent("INFO", "客户端已启动", "等待 Glass3 首帧");
 renderVideoState();
 renderStreamControl();
+setImuUnavailable("接收网关尚未收到姿态数据");
 connectLiveVideo();
 pollStreamControlStatus();
+pollImuStatus();

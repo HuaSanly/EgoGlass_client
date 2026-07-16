@@ -12,7 +12,8 @@ data.
   frame-metadata channels, relays the live track to one loopback viewer, and
   also probes GB28181-generated RTSP as a fallback.
 - `services/operator-console/`: authenticated local UI for the real Glass3
-  WebRTC track, measured displayed FPS, and client-side connection events.
+  WebRTC track, measured displayed FPS, stream control, and relative IMU
+  orientation.
 
 Future services will be added behind versioned contracts rather than imported
 from the operator console.
