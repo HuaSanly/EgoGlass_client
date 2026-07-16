@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from .adapters.webrtc import (
     DecodedVideoFrame,
+    WebRtcControlChannel,
     WebRtcPeer,
     WebRtcPeerCallbacks,
     WebRtcVideoSource,
@@ -20,6 +21,9 @@ from .adapters.webrtc import (
 )
 from .webrtc_matcher import DuplicateMetadataError, FrameMetadataMatcher
 from .webrtc_models import (
+    StreamControlCommand,
+    StreamControlState,
+    StreamControlStatus,
     VideoFrameMetadata,
     WebRtcAnswer,
     WebRtcOffer,
@@ -46,6 +50,18 @@ class WebRtcViewerSessionError(RuntimeError):
     """A safe local viewer signaling failure."""
 
 
+class StreamControlUnavailableError(RuntimeError):
+    """Raised when no current Glass3 control channel can accept commands."""
+
+
+class StreamControlCommandTimeoutError(RuntimeError):
+    """Raised when Glass3 does not acknowledge a control command in time."""
+
+
+class StreamControlCommandError(RuntimeError):
+    """Raised when a control command cannot be sent safely."""
+
+
 WebRtcPeerFactory = Callable[[WebRtcPeerCallbacks], WebRtcPeer]
 WebRtcViewerPeerFactory = Callable[[object], WebRtcViewerPeer]
 
@@ -61,6 +77,7 @@ class WebRtcSessionRuntime:
         *,
         perf_clock: Callable[[], int] = time.perf_counter_ns,
         max_pending_metadata: int = 256,
+        control_command_timeout_seconds: float = 3.0,
     ) -> None:
         if len(pairing_token) < 16:
             raise ValueError("pairing_token must contain at least 16 characters")
@@ -69,11 +86,18 @@ class WebRtcSessionRuntime:
         self._viewer_peer_factory = viewer_peer_factory
         self._perf_clock = perf_clock
         self._max_pending_metadata = max_pending_metadata
+        if control_command_timeout_seconds <= 0:
+            raise ValueError("control_command_timeout_seconds must be positive")
+        self._control_command_timeout_seconds = control_command_timeout_seconds
         self._session_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
+        self._control_command_lock = asyncio.Lock()
         self._peer: WebRtcPeer | None = None
         self._viewer_peer: WebRtcViewerPeer | None = None
         self._video_source: WebRtcVideoSource | None = None
+        self._pending_control_commands: dict[
+            str, asyncio.Future[StreamControlStatus]
+        ] = {}
         self._generation = 0
         self._reset_state()
 
@@ -117,6 +141,69 @@ class WebRtcSessionRuntime:
                 last_error=self._last_error,
             )
 
+    async def control_status(self) -> StreamControlStatus:
+        async with self._state_lock:
+            return self._control_status.model_copy(deep=True)
+
+    async def send_control_command(
+        self,
+        command: StreamControlCommand,
+    ) -> StreamControlStatus:
+        async with self._control_command_lock:
+            loop = asyncio.get_running_loop()
+            acknowledgement: asyncio.Future[StreamControlStatus] = loop.create_future()
+            async with self._state_lock:
+                channel = self._control_channel
+                generation = self._generation
+                if channel is None or not channel.is_open:
+                    raise StreamControlUnavailableError(
+                        "Glass3 stream control channel is unavailable"
+                    )
+                self._pending_control_commands[command.command_id] = acknowledgement
+                transition = (
+                    StreamControlState.STARTING
+                    if command.action == "start"
+                    else StreamControlState.STOPPING
+                )
+                self._control_status = StreamControlStatus(
+                    command_id=command.command_id,
+                    state=transition,
+                )
+                try:
+                    channel.send(command.model_dump_json())
+                except Exception as error:
+                    self._pending_control_commands.pop(command.command_id, None)
+                    self._control_status = StreamControlStatus(
+                        command_id=command.command_id,
+                        state=StreamControlState.ERROR,
+                        detail="control command send failed",
+                    )
+                    raise StreamControlCommandError(
+                        "failed to send Glass3 stream control command"
+                    ) from error
+
+            try:
+                return await asyncio.wait_for(
+                    acknowledgement,
+                    timeout=self._control_command_timeout_seconds,
+                )
+            except TimeoutError as error:
+                async with self._state_lock:
+                    if generation == self._generation and self._control_channel is channel:
+                        self._control_status = StreamControlStatus(
+                            command_id=command.command_id,
+                            state=StreamControlState.ERROR,
+                            detail="control command acknowledgement timed out",
+                        )
+                raise StreamControlCommandTimeoutError(
+                    "Glass3 did not acknowledge the stream control command"
+                ) from error
+            finally:
+                async with self._state_lock:
+                    pending = self._pending_control_commands.get(command.command_id)
+                    if pending is acknowledgement:
+                        self._pending_control_commands.pop(command.command_id, None)
+
     async def accept_offer(self, offer: WebRtcOffer, pairing_token: str) -> WebRtcAnswer:
         if not hmac.compare_digest(pairing_token, self._pairing_token):
             raise PairingTokenError("invalid pairing token")
@@ -124,6 +211,11 @@ class WebRtcSessionRuntime:
         async with self._session_lock:
             self._generation += 1
             generation = self._generation
+            async with self._state_lock:
+                self._fail_pending_control_locked(
+                    StreamControlUnavailableError("WebRTC session was replaced")
+                )
+                self._reset_state()
             peer, self._peer = self._peer, None
             viewer_peer, self._viewer_peer = self._viewer_peer, None
             self._video_source = None
@@ -137,12 +229,20 @@ class WebRtcSessionRuntime:
                 on_video_source=lambda source: self._on_video_source(generation, source),
                 on_video_frame=lambda frame: self._on_video_frame(generation, frame),
                 on_metadata=lambda payload: self._on_metadata(generation, payload),
+                on_control_channel_ready=lambda channel: self._on_control_channel_ready(
+                    generation, channel
+                ),
+                on_control_channel_closed=lambda channel: self._on_control_channel_closed(
+                    generation, channel
+                ),
+                on_control_status=lambda channel, payload: self._on_control_status(
+                    generation, channel, payload
+                ),
             )
             peer = self._peer_factory(callbacks)
             self._peer = peer
             session_id = uuid.uuid4().hex
             async with self._state_lock:
-                self._reset_state()
                 self._phase = WebRtcPhase.NEGOTIATING
                 self._session_id = session_id
                 self._device_session_id = offer.device_session_id
@@ -185,6 +285,15 @@ class WebRtcSessionRuntime:
     async def close(self) -> None:
         async with self._session_lock:
             self._generation += 1
+            async with self._state_lock:
+                self._fail_pending_control_locked(
+                    StreamControlUnavailableError("WebRTC session closed")
+                )
+                self._control_channel = None
+                self._control_status = StreamControlStatus(
+                    state=StreamControlState.UNAVAILABLE,
+                    detail="WebRTC session is closed",
+                )
             peer, self._peer = self._peer, None
             viewer_peer, self._viewer_peer = self._viewer_peer, None
             self._video_source = None
@@ -205,9 +314,12 @@ class WebRtcSessionRuntime:
                 self._phase = WebRtcPhase.CONNECTED
             elif state in {"disconnected", "closed"}:
                 self._phase = WebRtcPhase.DISCONNECTED
+                if state == "closed":
+                    self._set_control_unavailable_locked("control channel is closed")
             elif state == "failed":
                 self._phase = WebRtcPhase.FAILED
                 self._last_error = "WebRTC peer connection failed"
+                self._set_control_unavailable_locked("WebRTC peer connection failed")
 
     async def _on_video_source(
         self,
@@ -265,6 +377,80 @@ class WebRtcSessionRuntime:
             except DuplicateMetadataError:
                 return
 
+    async def _on_control_channel_ready(
+        self,
+        generation: int,
+        channel: WebRtcControlChannel,
+    ) -> None:
+        if generation != self._generation or not channel.is_open:
+            return
+        async with self._state_lock:
+            if generation != self._generation:
+                return
+            if self._control_channel is not None and self._control_channel is not channel:
+                self._fail_pending_control_locked(
+                    StreamControlUnavailableError("stream control channel was replaced")
+                )
+            if self._control_channel is channel:
+                return
+            self._control_channel = channel
+            self._control_status = StreamControlStatus(state=StreamControlState.READY)
+
+    async def _on_control_channel_closed(
+        self,
+        generation: int,
+        channel: WebRtcControlChannel,
+    ) -> None:
+        if generation != self._generation:
+            return
+        async with self._state_lock:
+            if generation == self._generation and self._control_channel is channel:
+                self._set_control_unavailable_locked("control channel is closed")
+
+    async def _on_control_status(
+        self,
+        generation: int,
+        channel: WebRtcControlChannel,
+        payload: str | bytes,
+    ) -> None:
+        try:
+            if isinstance(payload, bytes):
+                if len(payload) > 4096:
+                    raise ValueError("control status payload too large")
+                raw = payload.decode("utf-8")
+            else:
+                raw = payload
+            if len(raw) > 4096:
+                raise ValueError("control status payload too large")
+            status = StreamControlStatus.model_validate_json(raw)
+        except (UnicodeDecodeError, ValueError, ValidationError):
+            return
+
+        if generation != self._generation:
+            return
+        async with self._state_lock:
+            if generation != self._generation or self._control_channel is not channel:
+                return
+            self._control_status = status
+            if status.command_id is not None:
+                pending = self._pending_control_commands.get(status.command_id)
+                if pending is not None and not pending.done():
+                    pending.set_result(status)
+
+    def _set_control_unavailable_locked(self, detail: str) -> None:
+        self._control_channel = None
+        self._control_status = StreamControlStatus(
+            state=StreamControlState.UNAVAILABLE,
+            detail=detail,
+        )
+        self._fail_pending_control_locked(StreamControlUnavailableError(detail))
+
+    def _fail_pending_control_locked(self, error: Exception) -> None:
+        for pending in self._pending_control_commands.values():
+            if not pending.done():
+                pending.set_exception(error)
+        self._pending_control_commands.clear()
+
     def _reset_state(self) -> None:
         self._phase = WebRtcPhase.IDLE
         self._session_id: str | None = None
@@ -284,4 +470,9 @@ class WebRtcSessionRuntime:
         self._last_frame_time_base_num: int | None = None
         self._last_frame_time_base_den: int | None = None
         self._last_error: str | None = None
+        self._control_channel: WebRtcControlChannel | None = None
+        self._control_status = StreamControlStatus(
+            state=StreamControlState.UNAVAILABLE,
+            detail="control channel is not ready",
+        )
         self._matcher = FrameMetadataMatcher(self._max_pending_metadata)

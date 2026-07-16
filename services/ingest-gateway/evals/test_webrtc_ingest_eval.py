@@ -12,8 +12,19 @@ from egoglass_ingest_gateway.adapters.aiortc_peer import (
     lan_rtc_configuration,
     negotiated_video_codec_from_sdp,
 )
-from egoglass_ingest_gateway.adapters.webrtc import DecodedVideoFrame, WebRtcPeerCallbacks
-from egoglass_ingest_gateway.webrtc_models import WebRtcOffer, WebRtcPhase, WebRtcViewerOffer
+from egoglass_ingest_gateway.adapters.webrtc import (
+    DecodedVideoFrame,
+    WebRtcControlChannel,
+    WebRtcPeerCallbacks,
+)
+from egoglass_ingest_gateway.webrtc_models import (
+    StreamControlAction,
+    StreamControlCommand,
+    StreamControlState,
+    WebRtcOffer,
+    WebRtcPhase,
+    WebRtcViewerOffer,
+)
 from egoglass_ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
 
 
@@ -146,4 +157,89 @@ def test_reordered_metadata_and_authenticated_replacement_stay_bounded() -> None
         assert replacement_status.device_session_id == "device-session-eval02"
         assert replacement_status.connection_state is None
 
+    asyncio.run(scenario())
+
+
+def test_stream_control_round_trip_reuses_the_connected_peer() -> None:
+    peers: list[Peer] = []
+
+    class Peer:
+        def __init__(self, callbacks: WebRtcPeerCallbacks) -> None:
+            self.callbacks = callbacks
+            self.closed = False
+            peers.append(self)
+
+        @property
+        def negotiated_video_codec(self) -> str:
+            return "H264"
+
+        async def accept_offer(self, _offer: WebRtcOffer) -> str:
+            return "v=0\r\nanswer-session-description"
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class ControlChannel(WebRtcControlChannel):
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        @property
+        def is_open(self) -> bool:
+            return True
+
+        def send(self, message: str) -> None:
+            self.sent.append(message)
+
+    async def acknowledge(
+        channel: ControlChannel,
+        command: StreamControlCommand,
+        state: StreamControlState,
+    ) -> None:
+        pending = asyncio.create_task(runtime.send_control_command(command))
+        await asyncio.sleep(0)
+        assert json.loads(channel.sent[-1]) == command.model_dump(mode="json")
+        await peers[0].callbacks.on_control_status(
+            channel,
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "message_type": "stream_control_status",
+                    "command_id": command.command_id,
+                    "state": state,
+                    "detail": None,
+                }
+            ),
+        )
+        assert (await pending).state is state
+
+    async def scenario() -> None:
+        token = "eval-pairing-token-123456"
+        nonlocal runtime
+        runtime = WebRtcSessionRuntime(token, Peer)
+        await runtime.accept_offer(
+            WebRtcOffer(
+                device_session_id="device-session-control-eval",
+                sdp="v=0\r\noffer-session-description",
+            ),
+            token,
+        )
+        channel = ControlChannel()
+        await peers[0].callbacks.on_control_channel_ready(channel)
+
+        await acknowledge(
+            channel,
+            StreamControlCommand(command_id="1" * 32, action=StreamControlAction.STOP),
+            StreamControlState.STOPPED,
+        )
+        await acknowledge(
+            channel,
+            StreamControlCommand(command_id="2" * 32, action=StreamControlAction.START),
+            StreamControlState.STREAMING,
+        )
+
+        assert not peers[0].closed
+        assert channel.is_open
+        assert (await runtime.control_status()).state is StreamControlState.STREAMING
+
+    runtime: WebRtcSessionRuntime
     asyncio.run(scenario())

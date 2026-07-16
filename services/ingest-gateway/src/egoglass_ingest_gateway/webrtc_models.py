@@ -15,6 +15,46 @@ class WebRtcPhase(StrEnum):
     FAILED = "failed"
 
 
+class StreamControlAction(StrEnum):
+    START = "start"
+    STOP = "stop"
+
+
+class StreamControlState(StrEnum):
+    UNAVAILABLE = "unavailable"
+    READY = "ready"
+    STARTING = "starting"
+    STREAMING = "streaming"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    ERROR = "error"
+
+
+class StreamControlCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    message_type: Literal["stream_control_command"] = "stream_control_command"
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    action: StreamControlAction
+
+
+class StreamControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["start", "stop"]
+
+
+class StreamControlStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    message_type: Literal["stream_control_status"] = "stream_control_status"
+    command_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    state: StreamControlState
+    detail: str | None = Field(default=None, max_length=256)
+
+
 class WebRtcOffer(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

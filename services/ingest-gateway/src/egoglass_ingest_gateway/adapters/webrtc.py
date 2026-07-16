@@ -20,12 +20,24 @@ class WebRtcVideoSource(Protocol):
     def subscribe(self, *, buffered: bool) -> object: ...
 
 
+class WebRtcControlChannel(Protocol):
+    @property
+    def is_open(self) -> bool: ...
+
+    def send(self, message: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class WebRtcPeerCallbacks:
     on_connection_state: Callable[[str], Awaitable[None]]
     on_video_source: Callable[[WebRtcVideoSource], Awaitable[None]]
     on_video_frame: Callable[[DecodedVideoFrame], Awaitable[None]]
     on_metadata: Callable[[str | bytes], Awaitable[None]]
+    on_control_channel_ready: Callable[[WebRtcControlChannel], Awaitable[None]]
+    on_control_channel_closed: Callable[[WebRtcControlChannel], Awaitable[None]]
+    on_control_status: Callable[
+        [WebRtcControlChannel, str | bytes], Awaitable[None]
+    ]
 
 
 class WebRtcPeer(Protocol):

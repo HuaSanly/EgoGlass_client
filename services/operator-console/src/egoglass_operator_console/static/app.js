@@ -12,7 +12,11 @@ const elements = {
   frameSize: document.querySelector("#frame-size-property"),
   previewFps: document.querySelector("#preview-fps"),
   lastFrameTime: document.querySelector("#last-frame-time"),
-  linkState: document.querySelector("#link-state"),
+  controlStatusDot: document.querySelector("#control-status-dot"),
+  controlStatus: document.querySelector("#stream-control-status"),
+  controlError: document.querySelector("#control-error"),
+  startStreamButton: document.querySelector("#start-stream-button"),
+  stopStreamButton: document.querySelector("#stop-stream-button"),
   fullscreenButton: document.querySelector("#fullscreen-button"),
   clearEventsButton: document.querySelector("#clear-events-button"),
   eventRows: document.querySelector("#event-rows"),
@@ -29,11 +33,39 @@ const state = {
   lastFpsSampleAt: null,
   lastDetailsAt: 0,
   lastSignalingError: null,
+  controlState: "unavailable",
+  controlDetail: null,
+  controlPollTimer: null,
+  controlPollInFlight: false,
+  controlCommandInFlight: false,
+  controlPollError: null,
+  controlCommandError: null,
   events: [],
 };
 
 const viewerSignalingEndpoint =
   "http://127.0.0.1:8770/api/v1/webrtc/viewer/sessions";
+const streamControlEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/control";
+const streamControlCommandEndpoint = `${streamControlEndpoint}/commands`;
+const streamControlStates = new Set([
+  "unavailable",
+  "ready",
+  "starting",
+  "streaming",
+  "stopping",
+  "stopped",
+  "error",
+]);
+const controllableStreamStates = new Set(["ready", "streaming", "stopped"]);
+const streamControlLabels = {
+  unavailable: "眼镜控制未连接",
+  ready: "控制通路已就绪",
+  starting: "正在启动视频",
+  streaming: "视频正在推流",
+  stopping: "正在停止视频",
+  stopped: "视频已停止",
+  error: "眼镜端控制失败",
+};
 
 if (window.location.search) {
   window.history.replaceState({}, "", window.location.pathname);
@@ -50,6 +82,123 @@ function scheduleViewerRetry(delayMs = 1000) {
   window.clearTimeout(state.reconnectTimer);
   if (document.hidden) return;
   state.reconnectTimer = window.setTimeout(connectLiveVideo, delayMs);
+}
+
+function scheduleControlPoll(delayMs = 1000) {
+  window.clearTimeout(state.controlPollTimer);
+  if (document.hidden) return;
+  state.controlPollTimer = window.setTimeout(pollStreamControlStatus, delayMs);
+}
+
+function readStreamControlStatus(payload) {
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    payload.schema_version !== "1.0" ||
+    payload.message_type !== "stream_control_status" ||
+    !streamControlStates.has(payload.state) ||
+    (payload.detail !== null && payload.detail !== undefined && typeof payload.detail !== "string")
+  ) {
+    throw new Error("接收网关返回了无效的控制状态");
+  }
+  return {
+    state: payload.state,
+    detail: payload.detail || null,
+  };
+}
+
+async function readJsonResponse(response, fallbackMessage) {
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = payload && typeof payload.detail === "string" ? payload.detail : fallbackMessage;
+    throw new Error(detail);
+  }
+  return payload;
+}
+
+function applyStreamControlStatus(payload) {
+  const previousState = state.controlState;
+  const status = readStreamControlStatus(payload);
+  state.controlState = status.state;
+  state.controlDetail = status.detail;
+  state.controlPollError = null;
+  renderStreamControl();
+
+  if (previousState !== status.state && status.state === "streaming") {
+    addEvent("OK", "眼镜端视频已启动", status.detail || "控制状态已确认");
+  } else if (previousState !== status.state && status.state === "stopped") {
+    addEvent("INFO", "眼镜端视频已停止", status.detail || "控制通路保持在线");
+  }
+}
+
+async function pollStreamControlStatus() {
+  if (state.controlPollInFlight || state.controlCommandInFlight || document.hidden) {
+    scheduleControlPoll();
+    return;
+  }
+  state.controlPollInFlight = true;
+  try {
+    const response = await fetch(streamControlEndpoint, { cache: "no-store" });
+    const payload = await readJsonResponse(response, `控制状态 HTTP ${response.status}`);
+    applyStreamControlStatus(payload);
+  } catch (error) {
+    state.controlPollError = error.message;
+    state.controlState = "unavailable";
+    state.controlDetail = null;
+    renderStreamControl();
+  } finally {
+    state.controlPollInFlight = false;
+    scheduleControlPoll();
+  }
+}
+
+async function sendStreamControlCommand(action) {
+  if (
+    state.controlCommandInFlight ||
+    !controllableStreamStates.has(state.controlState) ||
+    (action === "start" && state.controlState === "streaming") ||
+    (action === "stop" && state.controlState === "stopped")
+  ) {
+    return;
+  }
+
+  state.controlCommandInFlight = true;
+  state.controlCommandError = null;
+  renderStreamControl();
+  try {
+    const response = await fetch(streamControlCommandEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const payload = await readJsonResponse(response, `视频控制 HTTP ${response.status}`);
+    applyStreamControlStatus(payload);
+  } catch (error) {
+    state.controlCommandError = error.message;
+    addEvent("WARN", action === "start" ? "启动视频失败" : "停止视频失败", error.message);
+  } finally {
+    state.controlCommandInFlight = false;
+    renderStreamControl();
+    scheduleControlPoll(0);
+  }
+}
+
+function renderStreamControl() {
+  const controlReady = controllableStreamStates.has(state.controlState);
+  const busy = state.controlCommandInFlight || ["starting", "stopping"].includes(state.controlState);
+  elements.startStreamButton.disabled =
+    !controlReady || busy || state.controlState === "streaming";
+  elements.stopStreamButton.disabled = !controlReady || busy || state.controlState === "stopped";
+  elements.controlStatus.textContent = state.controlCommandInFlight
+    ? "命令发送中"
+    : streamControlLabels[state.controlState];
+  elements.controlStatus.title = state.controlDetail || "";
+  elements.controlStatusDot.dataset.state = state.controlState;
+
+  const visibleError = state.controlCommandError || state.controlPollError;
+  elements.controlError.textContent = visibleError || "";
+  elements.controlError.title = visibleError || "";
+  elements.controlError.hidden = visibleError === null;
 }
 
 function waitForIceGathering(peer) {
@@ -239,7 +388,6 @@ function renderVideoState() {
   elements.previewStatus.textContent = ready ? "实时画面已连接" : "等待首帧";
   elements.liveVideo.classList.toggle("is-ready", ready);
   elements.viewerEmpty.hidden = ready;
-  elements.linkState.classList.toggle("is-live", ready);
 
   if (!ready) {
     elements.resolutionBadge.textContent = "等待画面";
@@ -293,6 +441,8 @@ function renderEvents() {
 }
 
 elements.fullscreenButton.addEventListener("click", toggleFullscreen);
+elements.startStreamButton.addEventListener("click", () => sendStreamControlCommand("start"));
+elements.stopStreamButton.addEventListener("click", () => sendStreamControlCommand("stop"));
 elements.clearEventsButton.addEventListener("click", () => {
   state.events = [];
   renderEvents();
@@ -301,13 +451,19 @@ document.addEventListener("fullscreenchange", () => {
   elements.fullscreenButton.textContent = document.fullscreenElement ? "退出全屏" : "全屏";
 });
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && state.peer === null) scheduleViewerRetry(0);
+  if (!document.hidden) {
+    if (state.peer === null) scheduleViewerRetry(0);
+    scheduleControlPoll(0);
+  }
 });
 window.addEventListener("beforeunload", () => {
   window.clearTimeout(state.reconnectTimer);
+  window.clearTimeout(state.controlPollTimer);
   if (state.peer !== null) closeViewerPeer(state.peer);
 });
 
 addEvent("INFO", "客户端已启动", "等待 Glass3 首帧");
 renderVideoState();
+renderStreamControl();
 connectLiveVideo();
+pollStreamControlStatus();

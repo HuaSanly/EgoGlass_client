@@ -92,13 +92,38 @@
                 <div><dt>接收网关</dt><dd>127.0.0.1:8770</dd></div>
               </dl>
 
-              <div class="link-state" id="link-state">
-                <span class="link-state-mark" aria-hidden="true"></span>
-                <div>
-                  <strong>LAN DIRECT</strong>
-                  <span>Glass3 到 Windows 客户端</span>
+              <section class="stream-control" aria-labelledby="stream-control-title">
+                <div class="stream-control-summary">
+                  <span class="control-status-dot" id="control-status-dot" aria-hidden="true"></span>
+                  <div>
+                    <strong id="stream-control-title">视频流控制</strong>
+                    <span id="stream-control-status" aria-live="polite">正在检查控制通路</span>
+                  </div>
                 </div>
-              </div>
+                <div class="stream-control-actions" role="group" aria-label="视频流控制">
+                  <button
+                    class="button stream-control-button stream-control-start"
+                    id="start-stream-button"
+                    type="button"
+                    title="开始眼镜端视频流"
+                    disabled
+                  >
+                    <span aria-hidden="true">▶</span>
+                    开始视频
+                  </button>
+                  <button
+                    class="button stream-control-button stream-control-stop"
+                    id="stop-stream-button"
+                    type="button"
+                    title="停止眼镜端视频流"
+                    disabled
+                  >
+                    <span aria-hidden="true">■</span>
+                    停止视频
+                  </button>
+                </div>
+                <p class="control-error" id="control-error" role="status" hidden></p>
+              </section>
             </section>
 
             <section class="event-tool" aria-labelledby="event-title">

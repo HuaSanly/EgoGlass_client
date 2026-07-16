@@ -70,6 +70,28 @@ def test_video_stage_preserves_source_ratio_and_reserves_lower_workspace() -> No
     assert "grid-template-rows: auto auto auto" in styles
 
 
+def test_stream_controls_replace_lan_status_and_follow_gateway_state() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert 'class="link-state"' not in html
+    assert "LAN DIRECT" not in html
+    assert 'id="start-stream-button"' in html
+    assert 'id="stop-stream-button"' in html
+    assert 'id="stream-control-status"' in html
+    assert "streamControlEndpoint" in script
+    assert "pollStreamControlStatus" in script
+    assert 'method: "POST"' in script
+    assert 'body: JSON.stringify({ action })' in script
+    assert 'new Set(["ready", "streaming", "stopped"])' in script
+    assert 'state.controlState === "streaming"' in script
+    assert 'state.controlState === "stopped"' in script
+    assert 'state.controlCommandInFlight || ["starting", "stopping"]' in script
+    assert ".stream-control-actions" in styles
+    assert ".button:disabled" in styles
+
+
 def test_shipped_operator_runtime_has_no_simulated_data_path() -> None:
     service_package = STATIC_DIR.parent
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")

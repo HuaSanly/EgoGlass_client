@@ -445,50 +445,121 @@ a {
   text-align: right;
 }
 
-.link-state {
-  display: flex;
-  align-items: center;
-  gap: 11px;
+.stream-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
   margin: 0 15px 15px;
   padding: 12px;
-  border: 1px solid #4b4131;
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: #282218;
+  background: #141916;
 }
 
-.link-state.is-live {
-  border-color: #315f49;
-  background: #182c22;
+.stream-control-summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
 }
 
-.link-state-mark {
+.control-status-dot {
   width: 8px;
-  height: 28px;
+  height: 8px;
   flex: 0 0 auto;
-  border-radius: 2px;
-  background: var(--amber);
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 3px rgb(116 128 120 / 12%);
 }
 
-.link-state.is-live .link-state-mark {
+.control-status-dot[data-state="ready"],
+.control-status-dot[data-state="streaming"],
+.control-status-dot[data-state="stopped"] {
   background: var(--green);
+  box-shadow: 0 0 0 3px rgb(79 206 138 / 12%);
 }
 
-.link-state > div {
+.control-status-dot[data-state="starting"],
+.control-status-dot[data-state="stopping"] {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgb(224 170 82 / 12%);
+}
+
+.control-status-dot[data-state="error"] {
+  background: var(--red);
+  box-shadow: 0 0 0 3px rgb(225 106 114 / 12%);
+}
+
+.stream-control-summary > div {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
-.link-state strong {
-  font-family: Consolas, monospace;
-  font-size: 10px;
+.stream-control-summary strong {
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 
-.link-state span:last-child {
+.stream-control-summary span {
   overflow: hidden;
   color: var(--text-muted);
   font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-control-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stream-control-button {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.stream-control-button span {
+  width: 12px;
+  color: currentcolor;
+  font-size: 10px;
+  text-align: center;
+}
+
+.stream-control-start:not(:disabled) {
+  border-color: #347151;
+  background: #173326;
+  color: #a6edc3;
+}
+
+.stream-control-stop:not(:disabled) {
+  border-color: #754148;
+  background: #321d21;
+  color: #efb2b7;
+}
+
+.button:disabled {
+  border-color: var(--border-soft);
+  background: #181c1a;
+  color: #59635d;
+  cursor: not-allowed;
+}
+
+.control-error {
+  margin: -2px 0 0;
+  overflow: hidden;
+  color: var(--red);
+  font-size: 9px;
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

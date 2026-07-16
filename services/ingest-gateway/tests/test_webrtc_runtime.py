@@ -8,15 +8,22 @@ import pytest
 
 from egoglass_ingest_gateway.adapters.webrtc import (
     DecodedVideoFrame,
+    WebRtcControlChannel,
     WebRtcPeerCallbacks,
 )
 from egoglass_ingest_gateway.webrtc_models import (
+    StreamControlAction,
+    StreamControlCommand,
+    StreamControlState,
     WebRtcOffer,
     WebRtcPhase,
     WebRtcViewerOffer,
 )
 from egoglass_ingest_gateway.webrtc_runtime import (
     PairingTokenError,
+    StreamControlCommandError,
+    StreamControlCommandTimeoutError,
+    StreamControlUnavailableError,
     WebRtcSessionRuntime,
     WebRtcViewerUnavailableError,
 )
@@ -62,6 +69,22 @@ class FakeViewerPeer:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class FakeControlChannel(WebRtcControlChannel):
+    def __init__(self, *, fail_send: bool = False) -> None:
+        self.open = True
+        self.fail_send = fail_send
+        self.sent: list[str] = []
+
+    @property
+    def is_open(self) -> bool:
+        return self.open
+
+    def send(self, message: str) -> None:
+        if self.fail_send:
+            raise ConnectionError("test send failure")
+        self.sent.append(message)
 
 
 def offer(device_session_id: str = "device-session-0001") -> WebRtcOffer:
@@ -184,5 +207,160 @@ def test_authenticated_offer_replaces_active_peer_and_ignores_stale_callbacks() 
         assert status.device_session_id == "device-session-0002"
         assert status.connection_state is None
         assert status.malformed_metadata == 0
+
+    asyncio.run(scenario())
+
+
+def test_control_command_is_strictly_serialized_and_correlated_with_status() -> None:
+    peers: list[FakePeer] = []
+
+    def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
+        peer = FakePeer(callbacks)
+        peers.append(peer)
+        return peer
+
+    async def scenario() -> None:
+        runtime = WebRtcSessionRuntime(TOKEN, factory)
+        command = StreamControlCommand(
+            command_id="0123456789abcdef0123456789abcdef",
+            action=StreamControlAction.START,
+        )
+        assert (await runtime.control_status()).state is StreamControlState.UNAVAILABLE
+        with pytest.raises(StreamControlUnavailableError):
+            await runtime.send_control_command(command)
+
+        await runtime.accept_offer(offer(), TOKEN)
+        channel = FakeControlChannel()
+        await peers[0].callbacks.on_control_channel_ready(channel)
+        assert (await runtime.control_status()).state is StreamControlState.READY
+
+        pending = asyncio.create_task(runtime.send_control_command(command))
+        await asyncio.sleep(0)
+        assert json.loads(channel.sent[0]) == {
+            "schema_version": "1.0",
+            "message_type": "stream_control_command",
+            "command_id": command.command_id,
+            "action": "start",
+        }
+        assert (await runtime.control_status()).state is StreamControlState.STARTING
+
+        await peers[0].callbacks.on_control_status(channel, "not-json")
+        await peers[0].callbacks.on_control_status(
+            channel,
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "message_type": "stream_control_status",
+                    "command_id": command.command_id,
+                    "state": "streaming",
+                    "detail": None,
+                    "unexpected": True,
+                }
+            ),
+        )
+        assert not pending.done()
+
+        acknowledgement_json = json.dumps(
+            {
+                "schema_version": "1.0",
+                "message_type": "stream_control_status",
+                "command_id": command.command_id,
+                "state": "streaming",
+                "detail": None,
+            }
+        )
+        await peers[0].callbacks.on_control_status(channel, acknowledgement_json)
+        acknowledgement = await pending
+        assert acknowledgement.command_id == command.command_id
+        assert acknowledgement.state is StreamControlState.STREAMING
+        assert (await runtime.control_status()) == acknowledgement
+
+    asyncio.run(scenario())
+
+
+def test_replacement_session_rejects_stale_control_channel_callbacks() -> None:
+    peers: list[FakePeer] = []
+
+    def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
+        peer = FakePeer(callbacks)
+        peers.append(peer)
+        return peer
+
+    async def scenario() -> None:
+        runtime = WebRtcSessionRuntime(TOKEN, factory)
+        await runtime.accept_offer(offer(), TOKEN)
+        old_channel = FakeControlChannel()
+        await peers[0].callbacks.on_control_channel_ready(old_channel)
+        command = StreamControlCommand(
+            command_id="11111111111111111111111111111111",
+            action=StreamControlAction.STOP,
+        )
+        pending = asyncio.create_task(runtime.send_control_command(command))
+        await asyncio.sleep(0)
+
+        await runtime.accept_offer(offer("device-session-0002"), TOKEN)
+        with pytest.raises(StreamControlUnavailableError, match="replaced"):
+            await pending
+        new_channel = FakeControlChannel()
+        await peers[1].callbacks.on_control_channel_ready(new_channel)
+        await peers[0].callbacks.on_control_status(
+            old_channel,
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "message_type": "stream_control_status",
+                    "command_id": command.command_id,
+                    "state": "stopped",
+                    "detail": None,
+                }
+            ),
+        )
+        await peers[0].callbacks.on_control_channel_closed(old_channel)
+
+        current = await runtime.control_status()
+        assert current.state is StreamControlState.READY
+        assert current.command_id is None
+
+    asyncio.run(scenario())
+
+
+def test_control_timeout_and_send_failure_leave_safe_error_status() -> None:
+    peers: list[FakePeer] = []
+
+    def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
+        peer = FakePeer(callbacks)
+        peers.append(peer)
+        return peer
+
+    async def scenario() -> None:
+        runtime = WebRtcSessionRuntime(
+            TOKEN,
+            factory,
+            control_command_timeout_seconds=0.01,
+        )
+        await runtime.accept_offer(offer(), TOKEN)
+        channel = FakeControlChannel()
+        await peers[0].callbacks.on_control_channel_ready(channel)
+        timeout_command = StreamControlCommand(
+            command_id="22222222222222222222222222222222",
+            action=StreamControlAction.START,
+        )
+        with pytest.raises(StreamControlCommandTimeoutError):
+            await runtime.send_control_command(timeout_command)
+        timeout_status = await runtime.control_status()
+        assert timeout_status.state is StreamControlState.ERROR
+        assert timeout_status.command_id == timeout_command.command_id
+
+        failed_channel = FakeControlChannel(fail_send=True)
+        await peers[0].callbacks.on_control_channel_ready(failed_channel)
+        failed_command = StreamControlCommand(
+            command_id="33333333333333333333333333333333",
+            action=StreamControlAction.STOP,
+        )
+        with pytest.raises(StreamControlCommandError):
+            await runtime.send_control_command(failed_command)
+        failed_status = await runtime.control_status()
+        assert failed_status.state is StreamControlState.ERROR
+        assert failed_status.command_id == failed_command.command_id
 
     asyncio.run(scenario())

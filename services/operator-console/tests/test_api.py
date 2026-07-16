@@ -64,6 +64,16 @@ def test_health_and_real_video_console_are_served() -> None:
     assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text
     assert "new RTCPeerConnection" in script.text
     assert "requestVideoFrameCallback" in script.text
+    assert 'id="link-state"' not in page.text
+    assert "LAN DIRECT" not in page.text
+    assert parser.tags_by_id["start-stream-button"] == "button"
+    assert parser.tags_by_id["stop-stream-button"] == "button"
+    assert 'id="stream-control-status"' in right_column
+    assert "127.0.0.1:8770/api/v1/webrtc/control" in script.text
+    assert 'body: JSON.stringify({ action })' in script.text
+    assert "controllableStreamStates" in script.text
+    assert 'state.controlState === "streaming"' in script.text
+    assert 'state.controlState === "stopped"' in script.text
     assert 'event.className = "event-message"' in script.text
     assert "event.append(eventTitle, eventDetail)" in script.text
     assert "aspect-ratio: 16 / 9" in styles.text
