@@ -17,7 +17,6 @@ from egoglass_ingest_gateway.webrtc_models import (
 )
 from egoglass_ingest_gateway.webrtc_runtime import (
     PairingTokenError,
-    WebRtcSessionBusyError,
     WebRtcSessionRuntime,
     WebRtcViewerUnavailableError,
 )
@@ -141,16 +140,22 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
     asyncio.run(scenario())
 
 
-def test_auth_busy_malformed_and_reconnect_paths_are_explicit() -> None:
+def test_authenticated_offer_replaces_active_peer_and_ignores_stale_callbacks() -> None:
     peers: list[FakePeer] = []
+    viewers: list[FakeViewerPeer] = []
 
     def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
         peer = FakePeer(callbacks)
         peers.append(peer)
         return peer
 
+    def viewer_factory(track: object) -> FakeViewerPeer:
+        viewer = FakeViewerPeer(track)
+        viewers.append(viewer)
+        return viewer
+
     async def scenario() -> None:
-        runtime = WebRtcSessionRuntime(TOKEN, factory)
+        runtime = WebRtcSessionRuntime(TOKEN, factory, viewer_factory)
         with pytest.raises(WebRtcViewerUnavailableError):
             await runtime.accept_viewer_offer(
                 WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
@@ -158,18 +163,26 @@ def test_auth_busy_malformed_and_reconnect_paths_are_explicit() -> None:
         with pytest.raises(PairingTokenError):
             await runtime.accept_offer(offer(), "wrong-pairing-token")
 
-        await runtime.accept_offer(offer(), TOKEN)
-        with pytest.raises(WebRtcSessionBusyError):
-            await runtime.accept_offer(offer("device-session-0002"), TOKEN)
-
+        first_answer = await runtime.accept_offer(offer(), TOKEN)
+        source = FakeVideoSource()
+        await peers[0].callbacks.on_connection_state("connected")
+        await peers[0].callbacks.on_video_source(source)
+        await runtime.accept_viewer_offer(
+            WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
+        )
         await peers[0].callbacks.on_metadata("not-json")
-        await peers[0].callbacks.on_connection_state("disconnected")
-        recovered = await runtime.accept_offer(offer(), TOKEN)
+        replacement = await runtime.accept_offer(offer("device-session-0002"), TOKEN)
+        await peers[0].callbacks.on_connection_state("failed")
+        await peers[0].callbacks.on_metadata("not-json")
         status = await runtime.status()
 
         assert peers[0].closed
-        assert recovered.type == "answer"
+        assert viewers[0].closed
+        assert replacement.type == "answer"
+        assert replacement.session_id != first_answer.session_id
         assert status.phase is WebRtcPhase.NEGOTIATING
+        assert status.device_session_id == "device-session-0002"
+        assert status.connection_state is None
         assert status.malformed_metadata == 0
 
     asyncio.run(scenario())

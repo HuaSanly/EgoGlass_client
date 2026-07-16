@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .adapters.rtsp import RtspProbeError
+from .discovery import DISCOVERY_PORT, LanDiscoveryService
 from .models import IngestStatus, ProbeResult, RtspSourceConfig
 from .runtime import IngestRuntime, ProbeBusyError
 from .webrtc_models import (
@@ -24,7 +25,6 @@ from .webrtc_models import (
 )
 from .webrtc_runtime import (
     PairingTokenError,
-    WebRtcSessionBusyError,
     WebRtcSessionError,
     WebRtcSessionRuntime,
     WebRtcViewerSessionError,
@@ -35,6 +35,7 @@ from .webrtc_runtime import (
 def create_app(
     runtime: IngestRuntime | None = None,
     webrtc_runtime: WebRtcSessionRuntime | None = None,
+    discovery_service: LanDiscoveryService | None = None,
     *,
     viewer_allowed_hosts: frozenset[str] = frozenset({"127.0.0.1", "::1"}),
 ) -> FastAPI:
@@ -43,8 +44,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
-        await active_webrtc_runtime.close()
+        if discovery_service is not None:
+            await discovery_service.start()
+        try:
+            yield
+        finally:
+            if discovery_service is not None:
+                await discovery_service.close()
+            await active_webrtc_runtime.close()
 
     app = FastAPI(
         title="EgoGlass Ingest Gateway",
@@ -55,6 +62,7 @@ def create_app(
     )
     app.state.ingest_runtime = ingest_runtime
     app.state.webrtc_runtime = active_webrtc_runtime
+    app.state.discovery_service = discovery_service
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^http://127\.0\.0\.1(?::\d+)?$",
@@ -119,8 +127,6 @@ def create_app(
             return await active_webrtc_runtime.accept_offer(offer, token)
         except PairingTokenError as error:
             raise HTTPException(status_code=401, detail=str(error)) from error
-        except WebRtcSessionBusyError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
         except WebRtcSessionError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -137,10 +143,10 @@ def _bearer_token(authorization: str | None) -> str:
     return token
 
 
+_default_pairing_token = os.environ.get("EGOGLASS_PAIRING_TOKEN") or secrets.token_urlsafe(24)
 app = create_app(
-    webrtc_runtime=WebRtcSessionRuntime(
-        os.environ.get("EGOGLASS_PAIRING_TOKEN") or secrets.token_urlsafe(24)
-    )
+    webrtc_runtime=WebRtcSessionRuntime(_default_pairing_token),
+    discovery_service=LanDiscoveryService(_default_pairing_token, 8770),
 )
 
 
@@ -148,18 +154,32 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Receive EgoGlass WebRTC or probe RTSP streams")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8770)
+    parser.add_argument("--discovery-port", type=int, default=DISCOVERY_PORT)
     parser.add_argument(
         "--pairing-token",
         default=os.environ.get("EGOGLASS_PAIRING_TOKEN"),
         help="Runtime WebRTC pairing secret; generated when omitted",
     )
+    parser.add_argument("--disable-discovery", action="store_true")
+    parser.add_argument("--hide-pairing-token", action="store_true")
     args = parser.parse_args()
     pairing_token = args.pairing_token or secrets.token_urlsafe(24)
     if len(pairing_token) < 16:
         parser.error("--pairing-token must contain at least 16 characters")
-    print(f"EgoGlass WebRTC pairing token: {pairing_token}", flush=True)
+    if not args.hide_pairing_token:
+        print(f"EgoGlass WebRTC pairing token: {pairing_token}", flush=True)
+    discovery_service = None
+    if not args.disable_discovery:
+        discovery_service = LanDiscoveryService(
+            pairing_token,
+            args.port,
+            discovery_port=args.discovery_port,
+        )
     uvicorn.run(
-        create_app(webrtc_runtime=WebRtcSessionRuntime(pairing_token)),
+        create_app(
+            webrtc_runtime=WebRtcSessionRuntime(pairing_token),
+            discovery_service=discovery_service,
+        ),
         host=args.host,
         port=args.port,
         access_log=False,

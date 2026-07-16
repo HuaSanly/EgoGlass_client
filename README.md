@@ -19,6 +19,20 @@ from the operator console.
 
 ## Windows desktop
 
+Start the complete client from the repository root:
+
+```powershell
+.\scripts\start-client.ps1
+```
+
+The command starts the LAN ingest gateway, enables Glass3 auto-discovery, and
+opens the native Windows operator console. Leave the PowerShell command running
+while using EgoGlass. Closing the Windows application stops both client
+processes. After the client reports ready, open EgoGlass directly from the
+Glass3 application list; no ADB launch parameters are required.
+
+For individual operator-console development only:
+
 ```powershell
 cd services/operator-console
 uv sync --group dev

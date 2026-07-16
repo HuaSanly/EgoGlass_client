@@ -45,7 +45,7 @@ def test_viewer_peer_negotiates_h264_with_a_browser_offer() -> None:
     asyncio.run(scenario())
 
 
-def test_reordered_metadata_disconnect_and_resume_stay_bounded() -> None:
+def test_reordered_metadata_and_authenticated_replacement_stay_bounded() -> None:
     assert lan_rtc_configuration().iceServers == []
     peers: list[Peer] = []
     viewer_tracks: list[object] = []
@@ -125,18 +125,25 @@ def test_reordered_metadata_disconnect_and_resume_stay_bounded() -> None:
         await peers[0].callbacks.on_metadata(payload(3, 270_000, 900))
         await peers[0].callbacks.on_metadata(payload(4, 360_000, 950))
         await peers[0].callbacks.on_metadata("malformed")
-        await peers[0].callbacks.on_connection_state("disconnected")
+        streaming = await runtime.status()
+        assert streaming.phase is WebRtcPhase.STREAMING
+        assert streaming.metadata_matched == 1
+        assert streaming.video_codec == "H264"
+        assert streaming.unmatched_entries_dropped == 1
+        assert streaming.sdk_clock_discontinuities == 1
+        assert streaming.malformed_metadata == 1
 
-        disconnected = await runtime.status()
-        assert disconnected.phase is WebRtcPhase.DISCONNECTED
-        assert disconnected.metadata_matched == 1
-        assert disconnected.video_codec == "H264"
-        assert disconnected.unmatched_entries_dropped == 1
-        assert disconnected.sdk_clock_discontinuities == 1
-        assert disconnected.malformed_metadata == 1
-
-        await runtime.accept_offer(offer, token)
+        replacement_offer = WebRtcOffer(
+            device_session_id="device-session-eval02",
+            sdp="v=0\r\noffer-session-description",
+        )
+        replacement = await runtime.accept_offer(replacement_offer, token)
+        await peers[0].callbacks.on_connection_state("failed")
         assert peers[0].closed
-        assert (await runtime.status()).phase is WebRtcPhase.NEGOTIATING
+        replacement_status = await runtime.status()
+        assert replacement.type == "answer"
+        assert replacement_status.phase is WebRtcPhase.NEGOTIATING
+        assert replacement_status.device_session_id == "device-session-eval02"
+        assert replacement_status.connection_state is None
 
     asyncio.run(scenario())

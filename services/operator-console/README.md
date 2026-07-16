@@ -11,6 +11,12 @@ keeps the negotiated frame dimensions and cadence unchanged.
 
 ## Run as a Windows app
 
+For the complete workspace client, use `..\..\scripts\start-client.ps1` from
+the client repository root. It owns both the ingest gateway and this desktop
+window.
+
+For operator-console-only development:
+
 ```powershell
 uv sync --group dev
 uv run egoglass-desktop

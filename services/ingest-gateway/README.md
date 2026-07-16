@@ -6,14 +6,24 @@ service and does not depend on the operator console.
 
 ## Direct WebRTC path
 
-Start the LAN listener with a runtime-only pairing token:
+For normal use, start the complete Windows client from the client repository:
+
+~~~powershell
+.\scripts\start-client.ps1
+~~~
+
+After it reports `EgoGlass client is ready`, open EgoGlass directly from the
+Glass3 application list. The glasses discovers the client on UDP port 8771 and
+starts WebRTC without stored configuration or ADB parameters. A newly
+authenticated glasses offer replaces any stale peer left by an earlier app
+process, so restarting the glasses app does not require restarting Windows.
+
+For isolated signaling diagnostics only, start the gateway directly and pass
+the generated runtime values through Intent extras:
 
 ~~~powershell
 uv run egoglass-ingest-gateway --host 0.0.0.0 --port 8770
 ~~~
-
-The command prints a generated pairing token. Pass the client LAN URL and that
-token to the glasses launcher without writing either value into Git:
 
 ~~~powershell
 adb shell am start -n com.egoglass.glasses/.MainActivity `
@@ -29,6 +39,12 @@ The gateway uses aiortc's `MediaRelay` to expose the active decoded track to
 one loopback WebRTC viewer. The viewer subscription is unbuffered so stale
 frames do not accumulate. It does not create JPEG snapshots or reduce the
 incoming frame size or cadence.
+
+By default the gateway also listens for EgoGlass discovery v1 requests on UDP
+port 8771. It responds only to private or loopback IPv4 sources and returns the
+source-routed LAN signaling URL plus the current process-only pairing token.
+Discovery is intended only for the same trusted LAN as the cleartext v1 HTTP
+signaling path.
 
 ## Confirmed Rokid path
 

@@ -34,10 +34,6 @@ class PairingTokenError(RuntimeError):
     """Raised when signaling authentication fails."""
 
 
-class WebRtcSessionBusyError(RuntimeError):
-    """Raised when a second peer attempts to replace a live stream."""
-
-
 class WebRtcSessionError(RuntimeError):
     """A safe signaling failure that never contains SDP or credentials."""
 
@@ -126,23 +122,16 @@ class WebRtcSessionRuntime:
             raise PairingTokenError("invalid pairing token")
 
         async with self._session_lock:
-            current = await self.status()
-            if self._peer is not None and current.phase in {
-                WebRtcPhase.NEGOTIATING,
-                WebRtcPhase.CONNECTED,
-                WebRtcPhase.STREAMING,
-            }:
-                raise WebRtcSessionBusyError("a WebRTC session is already active")
-
-            if self._peer is not None:
-                await self._peer.close()
-            if self._viewer_peer is not None:
-                await self._viewer_peer.close()
-                self._viewer_peer = None
-            self._video_source = None
-
             self._generation += 1
             generation = self._generation
+            peer, self._peer = self._peer, None
+            viewer_peer, self._viewer_peer = self._viewer_peer, None
+            self._video_source = None
+            if viewer_peer is not None:
+                await viewer_peer.close()
+            if peer is not None:
+                await peer.close()
+
             callbacks = WebRtcPeerCallbacks(
                 on_connection_state=lambda state: self._on_connection_state(generation, state),
                 on_video_source=lambda source: self._on_video_source(generation, source),

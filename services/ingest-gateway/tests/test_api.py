@@ -110,9 +110,12 @@ def test_validation_error_does_not_echo_password() -> None:
 
 
 def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:
+    peers: list[object] = []
+
     class Peer:
         def __init__(self, _callbacks: object) -> None:
-            pass
+            self.closed = False
+            peers.append(self)
 
         @property
         def negotiated_video_codec(self) -> str:
@@ -123,7 +126,7 @@ def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:
             return "v=0\r\nanswer-session-description"
 
         async def close(self) -> None:
-            return None
+            self.closed = True
 
     webrtc_runtime = WebRtcSessionRuntime(PAIRING_TOKEN, Peer)
     payload = {
@@ -140,14 +143,24 @@ def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:
             json=payload,
             headers={"Authorization": f"Bearer {PAIRING_TOKEN}"},
         )
+        replacement_payload = {**payload, "device_session_id": "device-session-0002"}
+        replacement = client.post(
+            "/api/v1/webrtc/sessions",
+            json=replacement_payload,
+            headers={"Authorization": f"Bearer {PAIRING_TOKEN}"},
+        )
         status = client.get("/api/v1/webrtc/status")
 
     assert unauthorized.status_code == 401
     assert PAIRING_TOKEN not in unauthorized.text
     assert accepted.status_code == 200
+    assert replacement.status_code == 200
+    assert replacement.json()["session_id"] != accepted.json()["session_id"]
+    assert peers[0].closed
     assert status.json()["video_codec"] == "H264"
     assert accepted.json()["type"] == "answer"
     assert status.json()["phase"] == "negotiating"
+    assert status.json()["device_session_id"] == "device-session-0002"
 
 
 def test_viewer_offer_is_loopback_only_and_allows_desktop_origin() -> None:
@@ -194,15 +207,27 @@ def test_viewer_offer_reports_unavailable_until_glass3_track_arrives() -> None:
     assert response.json()["detail"] == "Glass3 video is not ready"
 
 
-def test_cli_disables_high_frequency_preview_access_logs(monkeypatch) -> None:
+def test_cli_disables_high_frequency_preview_access_logs(monkeypatch, capsys) -> None:
     captured: dict[str, object] = {}
 
     def run(_application: object, **kwargs: object) -> None:
+        captured["app"] = _application
         captured.update(kwargs)
 
-    monkeypatch.setattr(sys, "argv", ["egoglass-ingest-gateway", "--pairing-token", PAIRING_TOKEN])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "egoglass-ingest-gateway",
+            "--pairing-token",
+            PAIRING_TOKEN,
+            "--hide-pairing-token",
+        ],
+    )
     monkeypatch.setattr(app_module.uvicorn, "run", run)
 
     app_module.main()
 
     assert captured["access_log"] is False
+    assert PAIRING_TOKEN not in capsys.readouterr().out
+    assert captured["app"].state.discovery_service is not None
