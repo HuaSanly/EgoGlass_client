@@ -1,7 +1,167 @@
 import * as THREE from "./vendor/three.module-0.185.1.min.js";
 
 const STANDARD_GRAVITY_M_S2 = 9.80665;
-const REFERENCE_SAMPLE_COUNT = 8;
+const INITIALIZATION_SAMPLE_COUNT = 6;
+const REFERENCE_SAMPLE_COUNT = 12;
+const MIN_STABLE_ACCELERATION_M_S2 = STANDARD_GRAVITY_M_S2 * 0.8;
+const MAX_STABLE_ACCELERATION_M_S2 = STANDARD_GRAVITY_M_S2 * 1.2;
+const MAX_STABLE_ANGULAR_RATE_RAD_S = 0.12;
+const MAX_REFERENCE_STEP_RAD = THREE.MathUtils.degToRad(0.5);
+
+export function isStableReferenceSample(accelerometerValues, gyroscopeValues) {
+  const accelerationMagnitude = Math.hypot(...accelerometerValues);
+  const angularRateMagnitude = Math.hypot(...gyroscopeValues);
+  return (
+    accelerationMagnitude >= MIN_STABLE_ACCELERATION_M_S2 &&
+    accelerationMagnitude <= MAX_STABLE_ACCELERATION_M_S2 &&
+    angularRateMagnitude <= MAX_STABLE_ANGULAR_RATE_RAD_S
+  );
+}
+
+export class ImuFusionTracker {
+  constructor(ahrsConstructor) {
+    this.ahrsConstructor = ahrsConstructor;
+    this.rawQuaternion = new THREE.Quaternion();
+    this.initializationAcceleration = new THREE.Vector3();
+    this.reset();
+  }
+
+  reset() {
+    this.filter = new this.ahrsConstructor({
+      sampleInterval: 10,
+      algorithm: "Madgwick",
+      beta: 0.05,
+      doInitialisation: false,
+    });
+    this.filterInitialised = false;
+    this.initializationSamples = 0;
+    this.initializationAcceleration.set(0, 0, 0);
+    this.referenceInverse = null;
+    this.referenceCandidate = null;
+    this.referenceSamples = 0;
+    this.lastGyroscopeSequence = null;
+    this.lastGyroscopeTimestampNs = null;
+    this.rawQuaternion.identity();
+  }
+
+  resetReference() {
+    if (!this.filterInitialised || this.rawQuaternion.lengthSq() <= 0.5) {
+      return false;
+    }
+    this.referenceInverse = this.rawQuaternion.clone().invert();
+    this.referenceCandidate = this.rawQuaternion.clone();
+    this.referenceSamples = REFERENCE_SAMPLE_COUNT;
+    return true;
+  }
+
+  update(accelerometer, gyroscope) {
+    if (gyroscope.sequence_number === this.lastGyroscopeSequence) {
+      return { updated: false, ready: this.referenceInverse !== null, relative: null };
+    }
+
+    const timestampNs = gyroscope.sensor_event_monotonic_ns;
+    let deltaSeconds = 0.01;
+    if (this.lastGyroscopeTimestampNs !== null) {
+      deltaSeconds = Math.min(
+        0.12,
+        Math.max(0.005, (timestampNs - this.lastGyroscopeTimestampNs) / 1_000_000_000),
+      );
+    }
+    this.lastGyroscopeTimestampNs = timestampNs;
+    this.lastGyroscopeSequence = gyroscope.sequence_number;
+
+    const acceleration = new THREE.Vector3(...accelerometer.values);
+    const stationary = isStableReferenceSample(accelerometer.values, gyroscope.values);
+    if (!this.filterInitialised) {
+      if (!stationary) {
+        this.initializationSamples = 0;
+        this.initializationAcceleration.set(0, 0, 0);
+        return { updated: true, ready: false, relative: null };
+      }
+      this.initializationAcceleration.add(acceleration);
+      this.initializationSamples += 1;
+      if (this.initializationSamples < INITIALIZATION_SAMPLE_COUNT) {
+        return { updated: true, ready: false, relative: null };
+      }
+
+      const average = this.initializationAcceleration
+        .clone()
+        .multiplyScalar(1 / this.initializationSamples);
+      // AHRS exposes init() for gravity-based attitude. A fixed horizontal
+      // magnetic vector supplies a deterministic yaw because Glass3 has no magnetometer.
+      this.filter.init(average.x, average.y, average.z, 1, 0, 0);
+      const initialQuaternion = this.readFilterQuaternion();
+      if (initialQuaternion === null) {
+        this.reset();
+        return { updated: true, ready: false, relative: null };
+      }
+      this.rawQuaternion.copy(initialQuaternion);
+      this.filterInitialised = true;
+      this.initializationSamples = 0;
+      this.initializationAcceleration.set(0, 0, 0);
+      return { updated: true, ready: false, relative: null };
+    }
+
+    const [gx, gy, gz] = gyroscope.values;
+    const [ax, ay, az] = accelerometer.values.map(
+      (value) => value / STANDARD_GRAVITY_M_S2,
+    );
+    this.filter.update(
+      gx,
+      gy,
+      gz,
+      ax,
+      ay,
+      az,
+      undefined,
+      undefined,
+      undefined,
+      deltaSeconds,
+    );
+    const quaternion = this.readFilterQuaternion();
+    if (quaternion === null) {
+      this.reset();
+      return { updated: true, ready: false, relative: null };
+    }
+    this.rawQuaternion.copy(quaternion);
+
+    if (this.referenceInverse === null) {
+      const orientationStable =
+        this.referenceCandidate === null ||
+        this.referenceCandidate.angleTo(this.rawQuaternion) <= MAX_REFERENCE_STEP_RAD;
+      if (stationary && orientationStable) {
+        this.referenceSamples += 1;
+      } else {
+        this.referenceSamples = 0;
+      }
+      this.referenceCandidate = this.rawQuaternion.clone();
+      if (this.referenceSamples < REFERENCE_SAMPLE_COUNT) {
+        return { updated: true, ready: false, relative: null };
+      }
+      this.referenceInverse = this.rawQuaternion.clone().invert();
+    }
+
+    return {
+      updated: true,
+      ready: true,
+      relative: this.referenceInverse.clone().multiply(this.rawQuaternion).normalize(),
+    };
+  }
+
+  readFilterQuaternion() {
+    const quaternion = this.filter.getQuaternion();
+    const components = [quaternion.x, quaternion.y, quaternion.z, quaternion.w];
+    if (!components.every(Number.isFinite) || Math.hypot(...components) < 1e-6) {
+      return null;
+    }
+    return new THREE.Quaternion(
+      quaternion.x,
+      quaternion.y,
+      quaternion.z,
+      quaternion.w,
+    ).normalize();
+  }
+}
 
 function createFrameBars(material, centerX) {
   const group = new THREE.Group();
@@ -166,11 +326,7 @@ export class ImuSceneController {
     this.glasses.add(this.accelerationArrow);
 
     this.targetQuaternion = new THREE.Quaternion();
-    this.rawQuaternion = new THREE.Quaternion();
-    this.referenceInverse = null;
-    this.referenceSamples = 0;
-    this.lastGyroscopeSequence = null;
-    this.lastGyroscopeTimestampNs = null;
+    this.fusion = null;
     this.sessionId = null;
     this.active = false;
     this.createFilter();
@@ -183,16 +339,7 @@ export class ImuSceneController {
   }
 
   createFilter() {
-    this.filter = new this.ahrsConstructor({
-      sampleInterval: 10,
-      algorithm: "Madgwick",
-      beta: 0.18,
-      doInitialisation: false,
-    });
-    this.referenceInverse = null;
-    this.referenceSamples = 0;
-    this.lastGyroscopeSequence = null;
-    this.lastGyroscopeTimestampNs = null;
+    this.fusion = new ImuFusionTracker(this.ahrsConstructor);
     this.targetQuaternion.identity();
   }
 
@@ -208,49 +355,18 @@ export class ImuSceneController {
   }
 
   resetReference() {
-    if (this.rawQuaternion.lengthSq() > 0.5) {
-      this.referenceInverse = this.rawQuaternion.clone().invert();
-      this.referenceSamples = REFERENCE_SAMPLE_COUNT;
+    if (this.fusion.resetReference()) {
       this.targetQuaternion.identity();
       this.onOrientation({ ready: true, roll: 0, pitch: 0, yaw: 0 });
       return;
     }
     this.createFilter();
+    this.onOrientation({ ready: false, roll: 0, pitch: 0, yaw: 0 });
   }
 
   update(accelerometer, gyroscope) {
-    if (gyroscope.sequence_number === this.lastGyroscopeSequence) return false;
-    const timestampNs = gyroscope.sensor_event_monotonic_ns;
-    let deltaSeconds = 0.01;
-    if (this.lastGyroscopeTimestampNs !== null) {
-      deltaSeconds = Math.min(
-        0.12,
-        Math.max(0.005, (timestampNs - this.lastGyroscopeTimestampNs) / 1_000_000_000),
-      );
-    }
-    this.lastGyroscopeTimestampNs = timestampNs;
-    this.lastGyroscopeSequence = gyroscope.sequence_number;
-
-    const [gx, gy, gz] = gyroscope.values;
-    const [ax, ay, az] = accelerometer.values.map((value) => value / STANDARD_GRAVITY_M_S2);
-    this.filter.update(
-      gx,
-      gy,
-      gz,
-      ax,
-      ay,
-      az,
-      undefined,
-      undefined,
-      undefined,
-      deltaSeconds,
-    );
-    const quaternion = this.filter.getQuaternion();
-    if (![quaternion.x, quaternion.y, quaternion.z, quaternion.w].every(Number.isFinite)) {
-      this.createFilter();
-      return false;
-    }
-    this.rawQuaternion.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w).normalize();
+    const result = this.fusion.update(accelerometer, gyroscope);
+    if (!result.updated) return false;
 
     const acceleration = new THREE.Vector3(...accelerometer.values);
     const accelerationMagnitude = acceleration.length();
@@ -263,18 +379,13 @@ export class ImuSceneController {
       );
     }
 
-    if (this.referenceInverse === null) {
-      this.referenceSamples += 1;
-      if (this.referenceSamples >= REFERENCE_SAMPLE_COUNT) {
-        this.referenceInverse = this.rawQuaternion.clone().invert();
-      } else {
-        this.onOrientation({ ready: false, roll: 0, pitch: 0, yaw: 0 });
-        return true;
-      }
+    if (!result.ready) {
+      this.targetQuaternion.identity();
+      this.onOrientation({ ready: false, roll: 0, pitch: 0, yaw: 0 });
+      return true;
     }
 
-    const relative = this.referenceInverse.clone().multiply(this.rawQuaternion).normalize();
-    const displayOrientation = mapRelativeOrientationForDisplay(relative);
+    const displayOrientation = mapRelativeOrientationForDisplay(result.relative);
     this.targetQuaternion.copy(displayOrientation.quaternion);
     this.onOrientation({
       ready: true,

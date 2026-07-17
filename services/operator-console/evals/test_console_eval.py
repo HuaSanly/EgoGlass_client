@@ -171,7 +171,14 @@ def test_imu_scene_uses_real_samples_and_vendored_sensor_fusion() -> None:
     assert "sensor_event_monotonic_ns" in script
     assert "new THREE.WebGLRenderer" in imu_scene
     assert 'algorithm: "Madgwick"' in imu_scene
+    assert "beta: 0.05" in imu_scene
     assert "this.filter.update" in imu_scene
+    assert "export class ImuFusionTracker" in imu_scene
+    assert "INITIALIZATION_SAMPLE_COUNT = 6" in imu_scene
+    assert "REFERENCE_SAMPLE_COUNT = 12" in imu_scene
+    assert "isStableReferenceSample" in imu_scene
+    assert "this.filter.init(average.x, average.y, average.z, 1, 0, 0)" in imu_scene
+    assert "referenceCandidate.angleTo(this.rawQuaternion) <= MAX_REFERENCE_STEP_RAD" in imu_scene
     assert "referenceInverse" in imu_scene
     assert three.stat().st_size > 300_000
     assert three_core.stat().st_size > 100_000

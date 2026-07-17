@@ -30,6 +30,13 @@ axis when converting the fused Glass3 pose to Three.js. This makes downward
 head motion render downward while leaving raw IMU samples and fusion inputs
 unchanged.
 
+At the start of each IMU session, the console waits for consecutive stationary
+samples, initializes the vendored AHRS filter from averaged gravity, and then
+requires a stable quaternion window before publishing the automatic relative
+origin. Motion or continued filter convergence resets that window. This keeps
+the filter's startup correction out of the rendered pose while preserving the
+manual reset control.
+
 The home page uses one two-state control for starting and stopping the Glass3
 stream. Its adjacent recording control starts a gateway-owned three-second
 countdown, can cancel during that countdown, and stops an active recording. The
