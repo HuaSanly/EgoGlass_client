@@ -93,6 +93,12 @@ def test_stream_toggle_and_recording_control_follow_gateway_state() -> None:
     assert 'Math.min(3, Math.max(1, Math.ceil(remainingMs / 1000)))' in script
     assert 'state.controlCommandInFlight || ["starting", "stopping"]' in script
     assert ".stream-control-actions" in styles
+    assert 'class="stream-control-icon"' in html
+    assert 'class="stream-control-label"' in html
+    assert ".stream-control-icon {" in styles
+    assert ".stream-control-label {" in styles
+    assert "white-space: nowrap" in styles
+    assert ".stream-control-button span {" not in styles
     assert ".button:disabled" in styles
 
 

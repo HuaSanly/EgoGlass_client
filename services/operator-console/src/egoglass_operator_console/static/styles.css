@@ -576,26 +576,34 @@ a {
 .stream-control-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .stream-control-button {
   display: inline-flex;
   min-width: 0;
-  min-height: 36px;
+  min-height: 40px;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  padding: 0 8px;
+  gap: 8px;
+  padding: 0 12px;
   font-size: 11px;
   font-weight: 600;
 }
 
-.stream-control-button span {
-  width: 12px;
+.stream-control-icon {
+  width: 14px;
+  flex: 0 0 14px;
   color: currentcolor;
   font-size: 10px;
   text-align: center;
+}
+
+.stream-control-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stream-control-start:not(:disabled) {

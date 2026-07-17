@@ -47,6 +47,7 @@ def test_storage_route_is_a_real_second_page() -> None:
 def test_home_uses_two_state_stream_and_recording_controls() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
 
     assert 'id="stream-toggle-button"' in html
     assert 'id="recording-toggle-button"' in html
@@ -63,6 +64,13 @@ def test_home_uses_two_state_stream_and_recording_controls() -> None:
         "elements.streamToggleButton.disabled = !controlReady || busy || recordingActive"
         in script
     )
+    assert html.count('class="stream-control-icon"') == 2
+    assert html.count('class="stream-control-label"') == 2
+    assert ".stream-control-icon {" in styles
+    assert "flex: 0 0 14px" in styles
+    assert ".stream-control-label {" in styles
+    assert "white-space: nowrap" in styles
+    assert ".stream-control-button span {" not in styles
 
 
 def test_recording_contract_is_strict_and_contains_no_simulation() -> None:
