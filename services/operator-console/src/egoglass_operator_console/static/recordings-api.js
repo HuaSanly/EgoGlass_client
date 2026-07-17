@@ -61,8 +61,8 @@ function requireSafeInteger(value, name, minimum = 0) {
 function readOutput(output) {
   if (
     !isRecord(output) ||
-    output.width !== 1920 ||
-    output.height !== 1080 ||
+    output.width !== 1280 ||
+    output.height !== 720 ||
     output.fps !== 30 ||
     output.container !== "mp4" ||
     output.video_codec !== "h264"

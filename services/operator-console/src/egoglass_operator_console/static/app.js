@@ -105,9 +105,9 @@ const streamControlLabels = {
 };
 const recordingStateLabels = {
   unavailable: "等待 Glass3 视频",
-  ready: "可录制 1920 × 1080 · 30 FPS",
+  ready: "可录制 1280 × 720 · 30 FPS",
   countdown: "录制将在倒计时后开始",
-  recording: "正在保存 1920 × 1080 · 30 FPS",
+  recording: "正在保存 1280 × 720 · 30 FPS",
   finalizing: "正在封装 MP4 文件",
   error: "录制服务异常",
 };
