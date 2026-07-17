@@ -2,6 +2,7 @@ import {
   readJsonResponse,
   readRecordingLibrary,
   readRecordingStatus,
+  recordingDeleteEndpoint,
   recordingLibraryEndpoint,
   recordingStatusEndpoint,
 } from "./recordings-api.js";
@@ -18,6 +19,12 @@ const elements = {
   error: document.querySelector("#library-error"),
   errorDetail: document.querySelector("#library-error-detail"),
   sessionList: document.querySelector("#session-list"),
+  deleteDialog: document.querySelector("#delete-recording-dialog"),
+  deleteTarget: document.querySelector("#delete-dialog-target"),
+  deleteError: document.querySelector("#delete-dialog-error"),
+  confirmDeleteButton: document.querySelector("#confirm-delete-button"),
+  cancelDeleteButton: document.querySelector("#cancel-delete-button"),
+  closeDeleteDialogButton: document.querySelector("#close-delete-dialog-button"),
 };
 
 const recordingLabels = {
@@ -33,6 +40,8 @@ let statusTimer = null;
 let libraryTimer = null;
 let statusInFlight = false;
 let libraryInFlight = false;
+let deleteInFlight = false;
+let pendingDelete = null;
 
 if (window.location.search) {
   window.history.replaceState({}, "", window.location.pathname);
@@ -70,7 +79,23 @@ function createTextElement(tag, className, text) {
   return element;
 }
 
-function renderClip(clip, index) {
+function openDeleteDialog(session, clip, sessionIndex, clipIndex) {
+  if (deleteInFlight) return;
+  pendingDelete = {
+    session_id: session.session_id,
+    clip_id: clip.clip_id,
+  };
+  elements.deleteTarget.textContent = [
+    `会话 ${String(sessionIndex + 1).padStart(2, "0")}`,
+    `片段 ${String(clipIndex + 1).padStart(2, "0")}`,
+    formatDateTime(clip.recorded_at_unix_ms),
+  ].join(" · ");
+  elements.deleteError.textContent = "";
+  elements.deleteError.hidden = true;
+  elements.deleteDialog.showModal();
+}
+
+function renderClip(session, clip, sessionIndex, clipIndex) {
   const item = document.createElement("article");
   item.className = "clip-row";
 
@@ -80,15 +105,35 @@ function renderClip(clip, index) {
   video.preload = "metadata";
   video.playsInline = true;
   video.src = clip.media_url;
-  video.setAttribute("aria-label", `录制片段 ${index + 1}`);
+  video.setAttribute("aria-label", `录制片段 ${clipIndex + 1}`);
 
   const details = document.createElement("div");
   details.className = "clip-details";
   const heading = document.createElement("div");
   heading.className = "clip-heading";
+  const actions = document.createElement("div");
+  actions.className = "clip-actions";
+  const duration = createTextElement(
+    "span",
+    "clip-duration",
+    formatDuration(clip.duration_ms),
+  );
+  const deleteButton = createTextElement("button", "clip-delete-button", "删除");
+  deleteButton.type = "button";
+  deleteButton.title = "删除本地视频片段";
+  deleteButton.setAttribute("aria-label", `删除片段 ${clipIndex + 1}`);
+  deleteButton.dataset.clipId = clip.clip_id;
+  deleteButton.addEventListener("click", () => {
+    openDeleteDialog(session, clip, sessionIndex, clipIndex);
+  });
+  actions.append(duration, deleteButton);
   heading.append(
-    createTextElement("strong", "", `片段 ${String(index + 1).padStart(2, "0")}`),
-    createTextElement("span", "", formatDuration(clip.duration_ms)),
+    createTextElement(
+      "strong",
+      "",
+      `片段 ${String(clipIndex + 1).padStart(2, "0")}`,
+    ),
+    actions,
   );
   const timestamp = createTextElement(
     "time",
@@ -135,7 +180,9 @@ function renderSession(session, index) {
   if (session.clips.length === 0) {
     clips.append(createTextElement("p", "session-empty", "该会话没有可播放的视频片段"));
   } else {
-    session.clips.forEach((clip, clipIndex) => clips.append(renderClip(clip, clipIndex)));
+    session.clips.forEach((clip, clipIndex) => {
+      clips.append(renderClip(session, clip, index, clipIndex));
+    });
   }
   section.append(header, clips);
   return section;
@@ -218,7 +265,46 @@ async function pollLibrary({ showLoading = false } = {}) {
   }
 }
 
+async function confirmDeleteClip() {
+  if (deleteInFlight || pendingDelete === null) return;
+  const target = pendingDelete;
+  deleteInFlight = true;
+  elements.confirmDeleteButton.disabled = true;
+  elements.cancelDeleteButton.disabled = true;
+  elements.closeDeleteDialogButton.disabled = true;
+  elements.confirmDeleteButton.textContent = "正在删除";
+  elements.deleteError.hidden = true;
+  try {
+    const response = await fetch(
+      recordingDeleteEndpoint(target.session_id, target.clip_id),
+      { method: "DELETE", cache: "no-store" },
+    );
+    const payload = await readJsonResponse(response, `删除视频 HTTP ${response.status}`);
+    const library = readRecordingLibrary(payload);
+    pendingDelete = null;
+    elements.deleteDialog.close("deleted");
+    renderLibrary(library);
+    scheduleLibraryPoll();
+  } catch (error) {
+    elements.deleteError.textContent = error.message;
+    elements.deleteError.hidden = false;
+  } finally {
+    deleteInFlight = false;
+    elements.confirmDeleteButton.disabled = false;
+    elements.cancelDeleteButton.disabled = false;
+    elements.closeDeleteDialogButton.disabled = false;
+    elements.confirmDeleteButton.textContent = "删除片段";
+  }
+}
+
 elements.refreshButton.addEventListener("click", () => pollLibrary({ showLoading: true }));
+elements.confirmDeleteButton.addEventListener("click", confirmDeleteClip);
+elements.deleteDialog.addEventListener("cancel", (event) => {
+  if (deleteInFlight) event.preventDefault();
+});
+elements.deleteDialog.addEventListener("close", () => {
+  if (!deleteInFlight) pendingDelete = null;
+});
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     scheduleStatusPoll(0);

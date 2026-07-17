@@ -90,6 +90,9 @@ def test_recording_contract_is_strict_and_contains_no_simulation() -> None:
         "Array.isArray(payload.sessions)",
         "session.clips.map(readClip)",
         "readMediaUrl(clip.media_url)",
+        "recordingDeleteEndpoint(sessionId, clipId)",
+        "recordingIdPattern.test(session.session_id)",
+        "recordingIdPattern.test(clip.clip_id)",
         "mediaUrl.origin !== gatewayOrigin",
     ):
         assert required in api
@@ -111,6 +114,26 @@ def test_storage_library_builds_safe_playable_media_without_document_scroll() ->
     assert "overflow: hidden" in styles
     assert ".session-list" in styles
     assert "overflow-y: auto" in styles
+
+
+def test_storage_delete_requires_confirmation_and_gateway_success() -> None:
+    html = (STATIC_DIR / "storage.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "storage.js").read_text(encoding="utf-8")
+    api = (STATIC_DIR / "recordings-api.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="delete-recording-dialog"' in html
+    assert 'id="confirm-delete-button"' in html
+    assert 'id="cancel-delete-button"' in html
+    assert "elements.deleteDialog.showModal()" in script
+    assert 'deleteButton.addEventListener("click"' in script
+    assert 'method: "DELETE"' in script
+    assert "readRecordingLibrary(payload)" in script
+    assert "elements.deleteDialog.close(\"deleted\")" in script
+    assert "recordingDeleteEndpoint(target.session_id, target.clip_id)" in script
+    assert "/api/v1/recordings/clips/${sessionId}/${clipId}" in api
+    assert ".clip-delete-button" in styles
+    assert ".delete-dialog::backdrop" in styles
 
 
 def test_missing_video_is_distinct_from_gateway_disconnect() -> None:

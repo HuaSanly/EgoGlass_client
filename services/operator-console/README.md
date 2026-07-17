@@ -42,6 +42,9 @@ clips by the originating Glass3 WebRTC session. Media URLs are accepted only
 after the complete v1 JSON payload and loopback origin are validated. Loading,
 empty, error, and current recording states have separate visible treatments.
 The document remains fixed to the native window; only the session list scrolls.
+Each clip can be deleted after an explicit confirmation. The console removes a
+card only after the gateway confirms that both its MP4 and manifest entry were
+deleted.
 
 ## Run as a Windows app
 
@@ -89,6 +92,7 @@ The UI consumes these loopback-only ingest-gateway contracts:
 - `GET /api/v1/recordings/status`
 - `POST /api/v1/recordings/commands`
 - `GET /api/v1/recordings/library`
+- `DELETE /api/v1/recordings/clips/{session_id}/{clip_id}`
 - `GET /api/v1/recordings/media/{session_id}/{clip_id}`
 
 ## Verification

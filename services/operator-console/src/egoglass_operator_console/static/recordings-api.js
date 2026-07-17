@@ -5,6 +5,15 @@ export const recordingCommandEndpoint =
 export const recordingLibraryEndpoint =
   "http://127.0.0.1:8770/api/v1/recordings/library";
 
+const recordingIdPattern = /^[0-9a-f]{32}$/;
+
+export function recordingDeleteEndpoint(sessionId, clipId) {
+  if (!recordingIdPattern.test(sessionId) || !recordingIdPattern.test(clipId)) {
+    throw new Error("录制片段标识无效");
+  }
+  return `http://127.0.0.1:8770/api/v1/recordings/clips/${sessionId}/${clipId}`;
+}
+
 export const recordingStates = new Set([
   "unavailable",
   "ready",
@@ -112,7 +121,7 @@ function readMediaUrl(value) {
 }
 
 function readClip(clip) {
-  if (!isRecord(clip) || typeof clip.clip_id !== "string" || clip.clip_id.length === 0) {
+  if (!isRecord(clip) || !recordingIdPattern.test(clip.clip_id)) {
     throw new Error("录制服务返回了无效的片段");
   }
   return {
@@ -133,8 +142,7 @@ function readClip(clip) {
 function readSession(session) {
   if (
     !isRecord(session) ||
-    typeof session.session_id !== "string" ||
-    session.session_id.length === 0 ||
+    !recordingIdPattern.test(session.session_id) ||
     !Array.isArray(session.clips)
   ) {
     throw new Error("录制服务返回了无效的会话");

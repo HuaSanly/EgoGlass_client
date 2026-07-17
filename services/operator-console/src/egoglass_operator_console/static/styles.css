@@ -928,11 +928,36 @@ a {
   white-space: nowrap;
 }
 
-.clip-heading span {
+.clip-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.clip-duration {
   color: #9ad6b6;
   font-family: Consolas, monospace;
   font-size: 10px;
   white-space: nowrap;
+}
+
+.clip-delete-button {
+  min-height: 24px;
+  border: 1px solid #5a3439;
+  border-radius: 3px;
+  padding: 0 7px;
+  background: #24191b;
+  color: #d9959a;
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.clip-delete-button:hover,
+.clip-delete-button:focus-visible {
+  border-color: #92505a;
+  background: #321d21;
+  color: #ffd6d9;
 }
 
 .clip-timestamp {
@@ -983,6 +1008,82 @@ a {
   color: var(--text-muted);
   font-size: 10px;
   text-align: center;
+}
+
+.delete-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-width: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.delete-dialog::backdrop {
+  background: rgb(5 7 6 / 72%);
+  backdrop-filter: blur(2px);
+}
+
+.delete-dialog-panel {
+  border: 1px solid #5a3439;
+  border-radius: 6px;
+  padding: 18px;
+  background: #171b19;
+  box-shadow: 0 18px 52px rgb(0 0 0 / 48%);
+}
+
+.delete-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.delete-dialog-header h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.delete-dialog-close {
+  flex: 0 0 30px;
+}
+
+.delete-dialog-warning {
+  margin: 18px 0 10px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.delete-dialog-target {
+  min-height: 38px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 11px 12px;
+  background: #111512;
+  color: var(--text-muted);
+  font-family: Consolas, monospace;
+  font-size: 10px;
+}
+
+.delete-dialog-error {
+  margin: 10px 0 0;
+  color: #efb2b7;
+  font-size: 10px;
+}
+
+.delete-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.delete-confirm-button:not(:disabled) {
+  border-color: #8b4750;
+  background: #321d21;
+  color: #ffd6d9;
 }
 
 .imu-header-actions {

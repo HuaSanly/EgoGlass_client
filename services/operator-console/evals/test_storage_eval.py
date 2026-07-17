@@ -38,6 +38,23 @@ def test_storage_page_groups_real_playable_clips_by_session() -> None:
     assert "mediaUrl.origin !== gatewayOrigin" in api_script
 
 
+def test_clip_deletion_is_confirmed_and_manifest_backed() -> None:
+    html = (STATIC_DIR / "storage.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "storage.js").read_text(encoding="utf-8")
+    api_script = (STATIC_DIR / "recordings-api.js").read_text(encoding="utf-8")
+
+    assert 'id="delete-recording-dialog"' in html
+    assert "删除后无法恢复" in html
+    assert "openDeleteDialog(session, clip, sessionIndex, clipIndex)" in script
+    assert "elements.deleteDialog.showModal()" in script
+    assert "confirmDeleteClip" in script
+    assert 'method: "DELETE"' in script
+    assert "renderLibrary(library)" in script
+    assert "recordingIdPattern.test(sessionId)" in api_script
+    assert "recordingIdPattern.test(clipId)" in api_script
+    assert "api/v1/recordings/clips" in api_script
+
+
 def test_connected_gateway_without_video_is_presented_as_waiting() -> None:
     home_script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     storage_script = (STATIC_DIR / "storage.js").read_text(encoding="utf-8")

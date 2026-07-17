@@ -73,6 +73,34 @@
         </section>
       </main>
     </div>
+
+    <dialog class="delete-dialog" id="delete-recording-dialog" aria-labelledby="delete-dialog-title">
+      <form class="delete-dialog-panel" method="dialog">
+        <header class="delete-dialog-header">
+          <div>
+            <span class="eyebrow">DELETE RECORDING</span>
+            <h2 id="delete-dialog-title">删除视频片段</h2>
+          </div>
+          <button
+            class="button button-icon delete-dialog-close"
+            id="close-delete-dialog-button"
+            type="submit"
+            value="cancel"
+            title="关闭"
+            aria-label="关闭删除确认"
+          >×</button>
+        </header>
+        <p class="delete-dialog-warning">删除后无法恢复，本地 MP4 文件也会同时移除。</p>
+        <div class="delete-dialog-target" id="delete-dialog-target"></div>
+        <p class="delete-dialog-error" id="delete-dialog-error" role="alert" hidden></p>
+        <div class="delete-dialog-actions">
+          <button class="button" id="cancel-delete-button" type="submit" value="cancel">取消</button>
+          <button class="button delete-confirm-button" id="confirm-delete-button" type="button">
+            删除片段
+          </button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/assets/storage.js"></script>
   </body>
 </html>
