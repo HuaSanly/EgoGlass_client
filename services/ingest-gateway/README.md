@@ -75,6 +75,11 @@ published path, atomically removes it from `session.json`, and then deletes the
 file. A failed operation restores both the MP4 and manifest. Deleting the last
 clip also removes the empty session directory.
 
+Session display names are optional, limited to 64 visible characters, and
+stored in `session.json`. Renaming changes only this display metadata; the
+stable session ID, directory, media URLs, and video files are unchanged. Old
+manifests without `display_name` remain valid.
+
 Validate a real-device result by opening and decoding it with the same PyAV
 runtime used by the service:
 
@@ -178,6 +183,7 @@ rate, first-frame PTS/time base, and probe latency.
 - GET /api/v1/recordings/status (loopback-only recording state)
 - POST /api/v1/recordings/commands (loopback-only `{ "action": "start|stop" }`)
 - GET /api/v1/recordings/library (loopback-only completed session groups)
+- PATCH /api/v1/recordings/sessions/{session_id} (loopback-only display-name update)
 - DELETE /api/v1/recordings/clips/{session_id}/{clip_id} (loopback-only deletion)
 - GET /api/v1/recordings/media/{session_id}/{clip_id} (loopback-only MP4)
 - Interactive schema: http://127.0.0.1:8770/api/docs

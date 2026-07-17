@@ -47,6 +47,10 @@ class RecordingClipNotFoundError(RuntimeError):
     """Raised when a completed recording clip does not exist."""
 
 
+class RecordingSessionNotFoundError(RuntimeError):
+    """Raised when a completed recording session does not exist."""
+
+
 class RecordingWriter(Protocol):
     @property
     def frames_received(self) -> int: ...
@@ -263,6 +267,28 @@ class RecordingRuntime:
                     session_directory.rmdir()
             return await self.library()
 
+    async def rename_session(
+        self,
+        session_id: str,
+        display_name: str,
+    ) -> RecordingLibrary:
+        async with self._command_lock:
+            if not _ID_PATTERN.fullmatch(session_id):
+                raise RecordingSessionNotFoundError("recording session not found")
+            manifest_path = self._session_directory(session_id) / "session.json"
+            session = self._read_session_manifest(manifest_path)
+            if session is None or session.session_id != session_id:
+                raise RecordingSessionNotFoundError("recording session not found")
+            try:
+                self._write_session_manifest(
+                    session.model_copy(update={"display_name": display_name})
+                )
+            except Exception as error:
+                raise RecordingFailureError(
+                    "recording session could not be renamed"
+                ) from error
+            return await self.library()
+
     async def close(self) -> None:
         async with self._command_lock:
             if self._countdown_task is not None:
@@ -472,11 +498,16 @@ class RecordingRuntime:
         session_directory = self._session_directory(session.session_id)
         session_directory.mkdir(parents=True, exist_ok=True)
         temporary_path = session_directory / "session.json.tmp"
-        temporary_path.write_text(
-            json.dumps(session.model_dump(mode="json"), indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary_path, session_directory / "session.json")
+        try:
+            temporary_path.write_text(
+                json.dumps(session.model_dump(mode="json"), indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary_path, session_directory / "session.json")
+        except Exception:
+            with suppress(OSError):
+                temporary_path.unlink(missing_ok=True)
+            raise
 
     def _read_session_manifest(self, path: Path) -> RecordingSession | None:
         try:

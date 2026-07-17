@@ -7,7 +7,10 @@ import egoglass_ingest_gateway.app as app_module
 from egoglass_ingest_gateway.adapters.rtsp import RtspProbeError
 from egoglass_ingest_gateway.app import create_app
 from egoglass_ingest_gateway.models import ProbeResult, RtspSourceConfig, RtspTransport
-from egoglass_ingest_gateway.recording import RecordingClipNotFoundError
+from egoglass_ingest_gateway.recording import (
+    RecordingClipNotFoundError,
+    RecordingSessionNotFoundError,
+)
 from egoglass_ingest_gateway.recording_models import (
     RecordingClip,
     RecordingLibrary,
@@ -104,6 +107,7 @@ class RecordingApiRuntime:
         self.clip_id = "c" * 32
         self.state = RecordingState.READY
         self.deleted = False
+        self.display_name: str | None = None
 
     async def status(self) -> RecordingStatus:
         return RecordingStatus(state=self.state, session_id=self.session_id)
@@ -128,6 +132,7 @@ class RecordingApiRuntime:
                 RecordingSession(
                     session_id=self.session_id,
                     started_at_unix_ms=4000,
+                    display_name=self.display_name,
                     clips=[
                         RecordingClip(
                             clip_id=self.clip_id,
@@ -161,6 +166,16 @@ class RecordingApiRuntime:
             raise RecordingClipNotFoundError("recording clip not found")
         self.deleted = True
         return RecordingLibrary(sessions=[])
+
+    async def rename_session(
+        self,
+        session_id: str,
+        display_name: str,
+    ) -> RecordingLibrary:
+        if self.deleted or session_id != self.session_id:
+            raise RecordingSessionNotFoundError("recording session not found")
+        self.display_name = display_name
+        return await self.library()
 
     async def close(self) -> None:
         return None
@@ -501,7 +516,30 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
             f"/api/v1/recordings/clips/{recording_runtime.session_id}/"
             f"{recording_runtime.clip_id}"
         )
-        preflight = client.options(
+        rename_path = (
+            f"/api/v1/recordings/sessions/{recording_runtime.session_id}"
+        )
+        rename_preflight = client.options(
+            rename_path,
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "PATCH",
+            },
+        )
+        renamed = client.patch(
+            rename_path,
+            json={"display_name": "厨房采集"},
+            headers={"Origin": origin},
+        )
+        invalid_rename = client.patch(
+            rename_path,
+            json={"display_name": "   "},
+        )
+        missing_rename = client.patch(
+            f"/api/v1/recordings/sessions/{'d' * 32}",
+            json={"display_name": "不存在"},
+        )
+        delete_preflight = client.options(
             delete_path,
             headers={
                 "Origin": origin,
@@ -524,14 +562,22 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
     assert start.json()["state"] == "countdown"
     assert start.json()["recording_starts_at_unix_ms"] == 4000
     assert library.json()["sessions"][0]["started_at_unix_ms"] == 4000
+    assert library.json()["sessions"][0]["display_name"] is None
     assert library.json()["sessions"][0]["clips"][0]["recorded_at_unix_ms"] == 4000
     assert library.json()["sessions"][0]["clips"][0]["file_size_bytes"] == 8
     assert media_response.status_code == 200
     assert media_response.headers["content-type"] == "video/mp4"
     assert media_response.content == b"mp4-data"
     assert missing.status_code == 404
-    assert preflight.status_code == 200
-    assert "DELETE" in preflight.headers["access-control-allow-methods"]
+    assert rename_preflight.status_code == 200
+    assert "PATCH" in rename_preflight.headers["access-control-allow-methods"]
+    assert renamed.status_code == 200
+    assert renamed.headers["access-control-allow-origin"] == origin
+    assert renamed.json()["sessions"][0]["display_name"] == "厨房采集"
+    assert invalid_rename.status_code == 422
+    assert missing_rename.status_code == 404
+    assert delete_preflight.status_code == 200
+    assert "DELETE" in delete_preflight.headers["access-control-allow-methods"]
     assert deleted.status_code == 200
     assert deleted.headers["access-control-allow-origin"] == origin
     assert deleted.json() == {"schema_version": "1.0", "sessions": []}
@@ -541,6 +587,13 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
         create_app(recording_runtime=recording_runtime)  # type: ignore[arg-type]
     ) as client:
         assert client.get("/api/v1/recordings/status").status_code == 403
+        assert (
+            client.patch(
+                f"/api/v1/recordings/sessions/{recording_runtime.session_id}",
+                json={"display_name": "未授权"},
+            ).status_code
+            == 403
+        )
         assert (
             client.delete(
                 f"/api/v1/recordings/clips/{recording_runtime.session_id}/"

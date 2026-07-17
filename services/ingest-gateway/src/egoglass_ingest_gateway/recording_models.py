@@ -3,7 +3,14 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _normalize_display_name(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("display_name must contain visible characters")
+    return normalized
 
 
 class RecordingState(StrEnum):
@@ -29,6 +36,21 @@ class RecordingCommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     action: Literal["start", "stop"]
+
+
+class RecordingSessionRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    display_name: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[^\x00-\x1f\x7f]+$",
+    )
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        return _normalize_display_name(value)
 
 
 class RecordingStatus(BaseModel):
@@ -65,7 +87,18 @@ class RecordingSession(BaseModel):
 
     session_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     started_at_unix_ms: int = Field(ge=0)
+    display_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[^\x00-\x1f\x7f]+$",
+    )
     clips: list[RecordingClip]
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str | None) -> str | None:
+        return None if value is None else _normalize_display_name(value)
 
 
 class RecordingLibrary(BaseModel):

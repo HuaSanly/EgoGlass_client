@@ -22,11 +22,13 @@ from .recording import (
     RecordingConflictError,
     RecordingFailureError,
     RecordingRuntime,
+    RecordingSessionNotFoundError,
     RecordingUnavailableError,
 )
 from .recording_models import (
     RecordingCommandRequest,
     RecordingLibrary,
+    RecordingSessionRenameRequest,
     RecordingState,
     RecordingStatus,
 )
@@ -97,7 +99,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^http://127\.0\.0\.1(?::\d+)?$",
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["content-type"],
     )
 
@@ -228,6 +230,26 @@ def create_app(
     async def recording_library(request: Request) -> RecordingLibrary:
         _require_loopback(request, viewer_allowed_hosts, "recording library")
         return await active_recording_runtime.library()
+
+    @app.patch(
+        "/api/v1/recordings/sessions/{session_id}",
+        response_model=RecordingLibrary,
+    )
+    async def rename_recording_session(
+        request: Request,
+        session_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
+        command: RecordingSessionRenameRequest,
+    ) -> RecordingLibrary:
+        _require_loopback(request, viewer_allowed_hosts, "recording rename")
+        try:
+            return await active_recording_runtime.rename_session(
+                session_id,
+                command.display_name,
+            )
+        except RecordingSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except RecordingFailureError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
 
     @app.delete(
         "/api/v1/recordings/clips/{session_id}/{clip_id}",

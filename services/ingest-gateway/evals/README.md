@@ -10,8 +10,9 @@ operator-visible status.
 1920x1080 frames, waits for source-end finalization, and then reopens and
 decodes the published MP4. It fails if the library exposes a partial file or if
 the result is not H.264, 1920x1080, nominal 30 FPS, and fully decodable.
-The same eval deletes the completed clip and requires both the media file and
-empty session directory to disappear.
+The same eval renames the session without moving its media, then deletes the
+completed clip and requires both the media file and empty session directory to
+disappear.
 
 Run from this service directory:
 

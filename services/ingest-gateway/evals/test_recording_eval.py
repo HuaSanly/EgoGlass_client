@@ -79,6 +79,9 @@ def test_real_pyav_path_publishes_only_playable_full_hd_h264_mp4(
         assert inspection.nominal_fps == 30.0
         assert inspection.decoded_frames == 3
         assert not list(tmp_path.rglob("*.part.mp4"))
+        renamed_library = await runtime.rename_session(SESSION_ID, "Eval capture")
+        assert renamed_library.sessions[0].display_name == "Eval capture"
+        assert path.is_file()
         deleted_library = await runtime.delete_clip(SESSION_ID, clip.clip_id)
         assert deleted_library.sessions == []
         assert not path.exists()

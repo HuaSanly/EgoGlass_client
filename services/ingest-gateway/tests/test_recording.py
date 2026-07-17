@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
@@ -15,10 +16,14 @@ from egoglass_ingest_gateway.recording import (
     RecordingConflictError,
     RecordingFailureError,
     RecordingRuntime,
+    RecordingSessionNotFoundError,
     RecordingUnavailableError,
 )
 from egoglass_ingest_gateway.recording_inspection import inspect_recording
-from egoglass_ingest_gateway.recording_models import RecordingCommandRequest
+from egoglass_ingest_gateway.recording_models import (
+    RecordingCommandRequest,
+    RecordingSessionRenameRequest,
+)
 
 SESSION_ID = "a" * 32
 
@@ -117,6 +122,7 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
         library = await runtime.library()
         assert len(library.sessions) == 1
         assert library.sessions[0].session_id == SESSION_ID
+        assert library.sessions[0].display_name is None
         assert len(library.sessions[0].clips) == 1
         clip = library.sessions[0].clips[0]
         assert clip.duration_ms == 2500
@@ -125,6 +131,25 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
             tmp_path / SESSION_ID / f"{clip.clip_id}.mp4"
         )
         assert await runtime.media_path("../outside", clip.clip_id) is None
+
+        manifest_path = tmp_path / SESSION_ID / "session.json"
+        legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        legacy_manifest.pop("display_name")
+        manifest_path.write_text(
+            json.dumps(legacy_manifest),
+            encoding="utf-8",
+        )
+        assert (await runtime.library()).sessions[0].display_name is None
+
+        renamed = await runtime.rename_session(SESSION_ID, "厨房采集")
+        assert renamed.sessions[0].display_name == "厨房采集"
+        assert (await runtime.library()).sessions[0].display_name == "厨房采集"
+        assert await runtime.media_path(SESSION_ID, clip.clip_id) == (
+            tmp_path / SESSION_ID / f"{clip.clip_id}.mp4"
+        )
+        with pytest.raises(RecordingSessionNotFoundError):
+            await runtime.rename_session("b" * 32, "不存在")
+
         (tmp_path / SESSION_ID / f"{clip.clip_id}.mp4").write_bytes(b"truncated")
         assert await runtime.media_path(SESSION_ID, clip.clip_id) is None
 
@@ -324,6 +349,14 @@ def test_delete_clip_updates_manifest_and_removes_empty_session(
 def test_recording_request_rejects_unknown_fields() -> None:
     with pytest.raises(ValueError):
         RecordingCommandRequest.model_validate({"action": "start", "delay": 0})
+    assert (
+        RecordingSessionRenameRequest(display_name="  厨房采集  ").display_name
+        == "厨房采集"
+    )
+    with pytest.raises(ValueError):
+        RecordingSessionRenameRequest(display_name="   ")
+    with pytest.raises(ValueError):
+        RecordingSessionRenameRequest(display_name="厨房\n采集")
 
 
 def test_inspector_decodes_full_hd_h264_mp4(tmp_path: Path) -> None:
