@@ -268,6 +268,61 @@ def test_recording_rejects_non_hd_source(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_library_keeps_legacy_full_hd_session_manageable(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        session_id = "f" * 32
+        clip_id = "d" * 32
+        session_directory = tmp_path / session_id
+        session_directory.mkdir()
+        media_path = session_directory / f"{clip_id}.mp4"
+        media_path.write_bytes(b"legacy-full-hd")
+        (session_directory / "session.json").write_text(
+            json.dumps(
+                {
+                    "session_id": session_id,
+                    "started_at_unix_ms": 1_000,
+                    "display_name": "第一次",
+                    "clips": [
+                        {
+                            "clip_id": clip_id,
+                            "recorded_at_unix_ms": 1_000,
+                            "ended_at_unix_ms": 2_000,
+                            "duration_ms": 1_000,
+                            "width": 1920,
+                            "height": 1080,
+                            "fps": 30,
+                            "file_size_bytes": media_path.stat().st_size,
+                            "media_url": (
+                                f"/api/v1/recordings/media/{session_id}/{clip_id}"
+                            ),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime = RecordingRuntime(
+            tmp_path,
+            lambda: asyncio.sleep(0, result=None),
+        )
+
+        library = await runtime.library()
+        assert len(library.sessions) == 1
+        assert library.sessions[0].display_name == "第一次"
+        assert (library.sessions[0].clips[0].width, library.sessions[0].clips[0].height) == (
+            1920,
+            1080,
+        )
+        assert await runtime.media_path(session_id, clip_id) == media_path
+
+        renamed = await runtime.rename_session(session_id, "历史会话")
+        assert renamed.sessions[0].display_name == "历史会话"
+        assert (await runtime.delete_clip(session_id, clip_id)).sessions == []
+        assert not session_directory.exists()
+
+    asyncio.run(scenario())
+
+
 def test_delete_clip_updates_manifest_and_removes_empty_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

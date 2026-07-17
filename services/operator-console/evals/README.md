@@ -13,6 +13,8 @@ Current pass criteria:
 - the storage page presents time-named session folders, renders videos only
   after a folder is opened, persists custom names through the gateway, and
   exposes loading, empty, and error states;
+- historical sessions retain and display each clip's recorded dimensions after
+  the active capture profile changes;
 - clip deletion requires confirmation and waits for a successful loopback
   gateway response before removing the card;
 - the Three.js canvas uses the real loopback IMU endpoint and the vendored

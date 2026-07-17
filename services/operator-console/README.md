@@ -35,7 +35,9 @@ stream. Its adjacent recording control starts a gateway-owned three-second
 countdown, can cancel during that countdown, and stops an active recording. The
 countdown shown over the live video is calculated from the gateway's
 `recording_starts_at_unix_ms`; the console does not start its own recorder or
-invent recording state. Clips are fixed at 1280x720, 30 FPS, H.264 in MP4.
+invent recording state. New clips are fixed at 1280x720, 30 FPS, H.264 in MP4;
+the storage library still displays historical clips at their recorded
+dimensions.
 
 The `/storage` page polls the loopback recording library and groups playable
 clips by the originating Glass3 WebRTC session. Media URLs are accepted only

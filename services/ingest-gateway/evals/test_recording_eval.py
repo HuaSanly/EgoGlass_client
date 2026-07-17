@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from fractions import Fraction
 from pathlib import Path
 
@@ -87,5 +88,54 @@ def test_real_pyav_path_publishes_only_playable_hd_h264_mp4(
         assert not path.exists()
         assert not list(tmp_path.rglob("*"))
         await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_legacy_full_hd_manifest_remains_visible_after_hd_profile_change(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        session_id = "a" * 32
+        clip_id = "b" * 32
+        session_directory = tmp_path / session_id
+        session_directory.mkdir()
+        media_path = session_directory / f"{clip_id}.mp4"
+        media_path.write_bytes(b"legacy-recording")
+        (session_directory / "session.json").write_text(
+            json.dumps(
+                {
+                    "session_id": session_id,
+                    "started_at_unix_ms": 1,
+                    "display_name": "Legacy 1080p",
+                    "clips": [
+                        {
+                            "clip_id": clip_id,
+                            "recorded_at_unix_ms": 1,
+                            "ended_at_unix_ms": 2,
+                            "duration_ms": 1,
+                            "width": 1920,
+                            "height": 1080,
+                            "fps": 30,
+                            "file_size_bytes": media_path.stat().st_size,
+                            "media_url": (
+                                f"/api/v1/recordings/media/{session_id}/{clip_id}"
+                            ),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime = RecordingRuntime(
+            tmp_path,
+            lambda: asyncio.sleep(0, result=None),
+        )
+
+        library = await runtime.library()
+        assert library.sessions[0].display_name == "Legacy 1080p"
+        clip = library.sessions[0].clips[0]
+        assert (clip.width, clip.height) == (1920, 1080)
+        assert await runtime.media_path(session_id, clip_id) == media_path
 
     asyncio.run(scenario())

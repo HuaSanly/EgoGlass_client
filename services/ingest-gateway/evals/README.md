@@ -13,6 +13,9 @@ the result is not H.264, 1280x720, nominal 30 FPS, and fully decodable.
 The same eval renames the session without moving its media, then deletes the
 completed clip and requires both the media file and empty session directory to
 disappear.
+The compatibility eval loads a pre-profile-change 1920x1080 manifest and
+requires the session and media path to remain available while new recording
+output stays fixed at 1280x720.
 
 Run from this service directory:
 
