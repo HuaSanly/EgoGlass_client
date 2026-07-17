@@ -22,6 +22,7 @@
 
       <main class="main-content">
         <section class="workspace" aria-label="Glass3 实时视频">
+          <div class="left-column">
           <section class="viewer-tool" aria-labelledby="viewer-title">
             <div class="tool-header">
               <div>
@@ -81,6 +82,34 @@
               </div>
             </div>
           </section>
+
+          <section class="event-tool" aria-labelledby="event-title">
+            <div class="tool-header compact-header">
+              <div>
+                <span class="eyebrow">CLIENT EVENTS</span>
+                <h2 id="event-title">事件记录</h2>
+              </div>
+              <div class="event-header-actions">
+                <span class="event-count" id="event-count">0 条</span>
+                <button class="button button-small" id="clear-events-button" type="button">
+                  清空
+                </button>
+              </div>
+            </div>
+            <div class="event-table-wrap">
+              <table class="event-table" aria-label="客户端运行事件">
+                <colgroup>
+                  <col class="event-time-column">
+                  <col class="event-level-column">
+                  <col class="event-message-column">
+                </colgroup>
+                <thead><tr><th>时间</th><th>级别</th><th>事件</th></tr></thead>
+                <tbody id="event-rows"></tbody>
+              </table>
+              <div class="event-empty" id="event-empty" hidden>暂无事件</div>
+            </div>
+          </section>
+          </div>
 
           <aside class="right-column" aria-label="运行状态和 IMU 姿态">
             <section class="signal-tool" aria-labelledby="signal-title">

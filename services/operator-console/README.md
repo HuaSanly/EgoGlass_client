@@ -39,6 +39,12 @@ invent recording state. New clips are fixed at 1280x720, 30 FPS, H.264 in MP4;
 the storage library still displays historical clips at their recorded
 dimensions.
 
+The workspace below the live video contains a bounded client event history.
+It records real video, control, recording, and IMU state transitions and
+deduplicates repeated polling failures. Clearing the table affects only the
+in-memory event history; it does not send a device command or change recording
+state. The event table scrolls internally so the native window remains fixed.
+
 The `/storage` page polls the loopback recording library and groups playable
 clips by the originating Glass3 WebRTC session. Media URLs are accepted only
 after the complete v1 JSON payload and loopback origin are validated. Loading,
@@ -112,7 +118,8 @@ uv run ruff check src tests evals
 
 Gate tests cover desktop authentication, static application delivery, removed
 API behavior, real preview connection state, stream and recording state
-binding, session-grouped playable media, strict recording payload validation,
-and the local Three.js/AHRS IMU visualization contract.
+binding, bounded runtime event history, session-grouped playable media, strict
+recording payload validation, and the local Three.js/AHRS IMU visualization
+contract.
 The eval suite prevents placeholder data paths or independently invented
 control state from returning to the shipped runtime.

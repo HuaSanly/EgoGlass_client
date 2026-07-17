@@ -190,11 +190,20 @@ a {
 
 .viewer-tool,
 .signal-tool,
-.imu-tool {
+.imu-tool,
+.event-tool {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
   overflow: hidden;
+}
+
+.left-column {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(102px, 1fr);
+  gap: 14px;
 }
 
 .viewer-tool {
@@ -465,6 +474,152 @@ a {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.event-tool {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.event-tool > .tool-header.compact-header {
+  min-height: 42px;
+  padding: 6px 10px;
+}
+
+.event-tool > .tool-header > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.event-tool > .tool-header h2 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.event-header-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.event-count {
+  color: var(--text-muted);
+  font-family: Consolas, monospace;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.event-table-wrap {
+  position: relative;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.event-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.event-table th,
+.event-table td {
+  height: 33px;
+  padding: 7px 10px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.event-table th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  height: 24px;
+  padding-top: 0;
+  padding-bottom: 0;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-family: Consolas, monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.event-time-column {
+  width: 78px;
+}
+
+.event-level-column {
+  width: 58px;
+}
+
+.event-table td:first-child {
+  color: var(--text-muted);
+  font-family: Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.event-message {
+  white-space: nowrap !important;
+}
+
+.event-message strong,
+.event-message span {
+  display: inline;
+}
+
+.event-message strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.event-message span {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.event-level {
+  font-family: Consolas, monospace;
+  font-weight: 700;
+}
+
+.event-level.info {
+  color: var(--cyan);
+}
+
+.event-level.ok {
+  color: var(--green);
+}
+
+.event-level.warn {
+  color: var(--amber);
+}
+
+.event-level.error {
+  color: var(--red);
+}
+
+.event-empty {
+  position: absolute;
+  inset: 24px 0 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 10px;
 }
 
 .property-list {

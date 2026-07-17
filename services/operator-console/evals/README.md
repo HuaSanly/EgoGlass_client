@@ -19,7 +19,8 @@ Current pass criteria:
   gateway response before removing the card;
 - the Three.js canvas uses the real loopback IMU endpoint and the vendored
   Madgwick filter, with no placeholder data generator or WebSocket;
-- the event table and its mutable history are absent from the shipped UI;
+- the event table stays below the live video, records bounded real runtime
+  transitions, and clears without changing device or recording state;
 - desktop authentication and repeated start/stop lifecycle remain recoverable.
 
 Run with:

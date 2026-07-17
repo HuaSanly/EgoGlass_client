@@ -33,6 +33,10 @@ const elements = {
   recordingCountdown: document.querySelector("#recording-countdown"),
   recordingCountdownValue: document.querySelector("#recording-countdown-value"),
   fullscreenButton: document.querySelector("#fullscreen-button"),
+  clearEventsButton: document.querySelector("#clear-events-button"),
+  eventRows: document.querySelector("#event-rows"),
+  eventEmpty: document.querySelector("#event-empty"),
+  eventCount: document.querySelector("#event-count"),
   imuCanvas: document.querySelector("#imu-scene-canvas"),
   imuStatusPill: document.querySelector("#imu-status-pill"),
   imuEmpty: document.querySelector("#imu-empty"),
@@ -77,6 +81,7 @@ const state = {
   imuConnected: false,
   imuOrientationReady: false,
   imuSceneError: null,
+  events: [],
 };
 
 const viewerSignalingEndpoint =
@@ -111,6 +116,7 @@ const recordingStateLabels = {
   finalizing: "正在封装 MP4 文件",
   error: "录制服务异常",
 };
+const maxEventHistory = 50;
 let imuScene = null;
 
 if (window.location.search) {
@@ -161,10 +167,22 @@ function readStreamControlStatus(payload) {
 
 function applyStreamControlStatus(payload) {
   const status = readStreamControlStatus(payload);
+  const previousState = state.controlState;
   state.controlState = status.state;
   state.controlDetail = status.detail;
   state.controlPollError = null;
   renderStreamControl();
+
+  if (previousState === status.state) return;
+  if (status.state === "ready") {
+    addEvent("OK", "眼镜控制通路已连接", status.detail || "可发送视频流控制命令");
+  } else if (status.state === "streaming") {
+    addEvent("OK", "眼镜端视频已启动", status.detail || "推流状态已确认");
+  } else if (status.state === "stopped") {
+    addEvent("INFO", "眼镜端视频已停止", status.detail || "控制通路保持在线");
+  } else if (status.state === "error") {
+    addEvent("ERROR", "眼镜端控制失败", status.detail || "设备返回控制错误");
+  }
 }
 
 async function pollStreamControlStatus() {
@@ -178,6 +196,9 @@ async function pollStreamControlStatus() {
     const payload = await readJsonResponse(response, `控制状态 HTTP ${response.status}`);
     applyStreamControlStatus(payload);
   } catch (error) {
+    if (state.controlPollError !== error.message) {
+      addEvent("WARN", "眼镜控制通路不可用", error.message);
+    }
     state.controlPollError = error.message;
     state.controlState = "unavailable";
     state.controlDetail = null;
@@ -211,6 +232,11 @@ async function sendStreamControlCommand(action) {
     applyStreamControlStatus(payload);
   } catch (error) {
     state.controlCommandError = error.message;
+    addEvent(
+      "ERROR",
+      action === "start" ? "启动视频失败" : "停止视频失败",
+      error.message,
+    );
     console.warn("Glass3 stream command failed", error);
   } finally {
     state.controlCommandInFlight = false;
@@ -251,10 +277,30 @@ function renderStreamControl() {
 }
 
 function applyRecordingStatus(payload) {
-  state.recordingStatus = readRecordingStatus(payload);
+  const status = readRecordingStatus(payload);
+  const previousState = state.recordingStatus?.state || null;
+  state.recordingStatus = status;
   state.recordingPollError = null;
   renderRecordingControl();
   renderStreamControl();
+
+  if (previousState === status.state) return;
+  if (status.state === "countdown") {
+    addEvent("INFO", "录制倒计时已开始", status.detail || "3 秒后开始保存视频");
+  } else if (status.state === "recording") {
+    addEvent("OK", "视频录制已开始", status.detail || "正在写入当前会话");
+  } else if (status.state === "finalizing") {
+    addEvent("INFO", "正在保存视频", status.detail || "正在封装 MP4 文件");
+  } else if (status.state === "ready" && previousState === "countdown") {
+    addEvent("INFO", "录制已取消", status.detail || "未生成视频文件");
+  } else if (
+    status.state === "ready" &&
+    ["recording", "finalizing"].includes(previousState)
+  ) {
+    addEvent("OK", "视频已保存", status.detail || "视频已加入本地会话");
+  } else if (status.state === "error") {
+    addEvent("ERROR", "录制服务异常", status.detail || "无法继续录制");
+  }
 }
 
 function updateRecordingCountdown() {
@@ -311,6 +357,9 @@ async function pollRecordingStatus() {
     const payload = await readJsonResponse(response, `录制状态 HTTP ${response.status}`);
     applyRecordingStatus(payload);
   } catch (error) {
+    if (state.recordingPollError !== error.message) {
+      addEvent("WARN", "录制服务不可用", error.message);
+    }
     state.recordingStatus = null;
     state.recordingPollError = error.message;
     renderRecordingControl();
@@ -319,6 +368,40 @@ async function pollRecordingStatus() {
     state.recordingPollInFlight = false;
     scheduleRecordingPoll(state.recordingStatus?.state === "countdown" ? 200 : 500);
   }
+}
+
+function addEvent(level, event, detail) {
+  state.events.unshift({
+    time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+    level,
+    event,
+    detail,
+  });
+  state.events = state.events.slice(0, maxEventHistory);
+  renderEvents();
+}
+
+function renderEvents() {
+  elements.eventRows.replaceChildren();
+  state.events.forEach((entry) => {
+    const row = document.createElement("tr");
+    const time = document.createElement("td");
+    const level = document.createElement("td");
+    const message = document.createElement("td");
+    const eventTitle = document.createElement("strong");
+    const eventDetail = document.createElement("span");
+    time.textContent = entry.time;
+    level.textContent = entry.level;
+    level.className = `event-level ${entry.level.toLowerCase()}`;
+    message.className = "event-message";
+    eventTitle.textContent = entry.event;
+    eventDetail.textContent = entry.detail;
+    message.append(eventTitle, eventDetail);
+    row.append(time, level, message);
+    elements.eventRows.append(row);
+  });
+  elements.eventEmpty.hidden = state.events.length > 0;
+  elements.eventCount.textContent = `${state.events.length} 条`;
 }
 
 async function sendRecordingCommand(action) {
@@ -343,6 +426,11 @@ async function sendRecordingCommand(action) {
     applyRecordingStatus(payload);
   } catch (error) {
     state.recordingCommandError = error.message;
+    addEvent(
+      "ERROR",
+      action === "start" ? "开始录制失败" : "停止录制失败",
+      error.message,
+    );
     console.warn("Recording command failed", error);
   } finally {
     state.recordingCommandInFlight = false;
@@ -431,6 +519,7 @@ async function connectLiveVideo() {
   } catch (error) {
     const status = error instanceof ViewerSignalingError ? error.status : null;
     if (status !== 503 && state.lastSignalingError !== error.message) {
+      addEvent("WARN", "本机预览连接失败", error.message);
       console.warn("Local preview connection failed", error);
       state.lastSignalingError = error.message;
     }
@@ -447,15 +536,17 @@ function handleViewerDisconnect(peer, detail) {
   scheduleViewerRetry();
 }
 
-function closeViewerPeer(peer) {
+function closeViewerPeer(peer, detail = "等待重新连接") {
   if (state.peer !== peer) return;
   state.peer = null;
   peer.onconnectionstatechange = null;
   peer.close();
   stopFrameMonitoring();
   elements.liveVideo.srcObject = null;
+  const wasReady = state.liveVideoReady;
   state.liveVideoReady = false;
   renderVideoState();
+  if (wasReady) addEvent("WARN", "Glass3 视频已断开", detail);
 }
 
 function startFrameMonitoring() {
@@ -523,6 +614,7 @@ function markVideoReady() {
   if (state.liveVideoReady) return;
   state.liveVideoReady = true;
   renderVideoState();
+  addEvent("OK", "Glass3 视频已连接", "WebRTC H.264 实时轨道");
 }
 
 function renderVideoState() {
@@ -552,6 +644,7 @@ async function toggleFullscreen() {
       await elements.viewerStage.requestFullscreen();
     }
   } catch (error) {
+    addEvent("WARN", "全屏切换失败", error.message);
     console.warn("Fullscreen toggle failed", error);
   }
 }
@@ -638,6 +731,7 @@ function renderImuOrientation(orientation) {
 }
 
 function setImuUnavailable(detail) {
+  const wasConnected = state.imuConnected;
   state.imuConnected = false;
   state.imuOrientationReady = false;
   elements.imuStatusPill.classList.remove("pill-success");
@@ -650,6 +744,7 @@ function setImuUnavailable(detail) {
   elements.imuGyroscopeRate.textContent = "-- Hz";
   elements.resetImuButton.disabled = true;
   if (imuScene !== null) imuScene.setActive(false);
+  if (wasConnected) addEvent("WARN", "Glass3 IMU 已断开", detail);
 }
 
 function applyImuStatus(payload) {
@@ -661,6 +756,7 @@ function applyImuStatus(payload) {
     return;
   }
 
+  const wasConnected = state.imuConnected;
   state.imuConnected = true;
   const accelerationMagnitude = vectorMagnitude(status.accelerometer.values);
   const angularRateMagnitude = vectorMagnitude(status.gyroscope.values);
@@ -672,6 +768,12 @@ function applyImuStatus(payload) {
     accelerometerRate ?? Number.POSITIVE_INFINITY,
     gyroscopeRate ?? Number.POSITIVE_INFINITY,
   );
+  if (!wasConnected) {
+    const detail = Number.isFinite(displayRate)
+      ? `实时姿态样本 · ${displayRate.toFixed(0)} Hz`
+      : "实时姿态样本已到达";
+    addEvent("OK", "Glass3 IMU 已连接", detail);
+  }
   elements.imuStatusPill.classList.add("pill-success");
   elements.imuStatusPill.textContent = Number.isFinite(displayRate)
     ? `LIVE ${displayRate.toFixed(0)} HZ`
@@ -720,7 +822,14 @@ try {
   imuScene = new ImuSceneController(elements.imuCanvas, renderImuOrientation);
 } catch (error) {
   state.imuSceneError = error.message;
+  addEvent("ERROR", "IMU 三维视图初始化失败", error.message);
   console.warn("IMU scene initialization failed", error);
+}
+
+function resetImuReference() {
+  if (imuScene === null) return;
+  imuScene.resetReference();
+  addEvent("INFO", "IMU 姿态已归零", "当前眼镜方向已设为相对姿态原点");
 }
 
 elements.fullscreenButton.addEventListener("click", toggleFullscreen);
@@ -730,7 +839,11 @@ elements.streamToggleButton.addEventListener("click", () => {
 elements.recordingToggleButton.addEventListener("click", () => {
   sendRecordingCommand(elements.recordingToggleButton.dataset.action);
 });
-elements.resetImuButton.addEventListener("click", () => imuScene?.resetReference());
+elements.resetImuButton.addEventListener("click", resetImuReference);
+elements.clearEventsButton.addEventListener("click", () => {
+  state.events = [];
+  renderEvents();
+});
 document.addEventListener("fullscreenchange", () => {
   elements.fullscreenButton.textContent = document.fullscreenElement ? "退出全屏" : "全屏";
 });
@@ -752,6 +865,7 @@ window.addEventListener("beforeunload", () => {
   imuScene?.dispose();
 });
 
+addEvent("INFO", "客户端已启动", "等待 Glass3 视频、控制通路和 IMU 数据");
 renderVideoState();
 renderStreamControl();
 renderRecordingControl();

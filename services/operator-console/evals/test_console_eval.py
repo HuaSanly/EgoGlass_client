@@ -41,24 +41,54 @@ def test_video_status_replaces_the_removed_global_topbar() -> None:
     assert ".topbar" not in styles
 
 
-def test_main_window_uses_fixed_viewport_with_imu_in_the_right_column() -> None:
+def test_main_window_places_events_below_video_and_imu_in_right_column() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     right_column = html.split('<aside class="right-column"', maxsplit=1)[1].split(
         "</aside>", maxsplit=1
     )[0]
+    left_column = html.split('<div class="left-column"', maxsplit=1)[1].split(
+        '<aside class="right-column"', maxsplit=1
+    )[0]
 
+    assert left_column.index('class="viewer-tool"') < left_column.index(
+        'class="event-tool"'
+    )
     assert right_column.index('class="signal-tool"') < right_column.index('class="imu-tool"')
     assert 'class="event-tool"' not in right_column
-    assert "事件记录" not in right_column
     assert "height: 100vh" in styles
     assert "overflow: hidden" in styles
+    assert "grid-template-rows: auto minmax(102px, 1fr)" in styles
+    assert ".event-table-wrap" in styles
+    assert "overflow-y: auto" in styles
     assert 'id="imu-scene-canvas"' in right_column
     assert 'id="reset-imu-button"' in right_column
     assert "pollImuStatus" in script
     assert ".imu-stage" in styles
     assert "grid-template-rows: auto minmax(0, 1fr) auto" in styles
+
+
+def test_event_history_tracks_real_runtime_transitions_and_can_be_cleared() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="event-rows"' in html
+    assert 'id="event-count"' in html
+    assert 'id="clear-events-button"' in html
+    assert "const maxEventHistory = 50" in script
+    assert "state.events = state.events.slice(0, maxEventHistory)" in script
+    assert 'addEvent("OK", "Glass3 视频已连接"' in script
+    assert 'addEvent("WARN", "Glass3 视频已断开"' in script
+    assert 'addEvent("OK", "眼镜端视频已启动"' in script
+    assert 'addEvent("INFO", "录制倒计时已开始"' in script
+    assert 'addEvent("OK", "视频录制已开始"' in script
+    assert 'addEvent("OK", "视频已保存"' in script
+    assert 'addEvent("OK", "Glass3 IMU 已连接"' in script
+    assert 'addEvent("WARN", "Glass3 IMU 已断开"' in script
+    assert "elements.eventRows.replaceChildren()" in script
+    assert "state.events = []" in script
+    assert "innerHTML" not in script
 
 
 def test_video_stage_preserves_source_ratio_and_reserves_lower_workspace() -> None:
