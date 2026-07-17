@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>视频存储 · EgoGlass</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <nav class="nav-rail" aria-label="主导航">
+        <a class="nav-item" href="/" title="主页">
+          <span class="nav-glyph" aria-hidden="true">HOME</span>
+          <span>主页</span>
+        </a>
+        <a class="nav-item is-active" href="/storage" aria-current="page" title="存储">
+          <span class="nav-glyph" aria-hidden="true">STORE</span>
+          <span>存储</span>
+        </a>
+      </nav>
+
+      <main class="main-content storage-main">
+        <section class="storage-workspace" aria-labelledby="storage-title">
+          <header class="storage-page-header">
+            <div>
+              <span class="eyebrow">LOCAL RECORDING LIBRARY</span>
+              <h1 id="storage-title">视频存储</h1>
+            </div>
+            <div class="storage-page-actions">
+              <div class="recording-live-status" aria-live="polite">
+                <span class="control-status-dot" id="storage-recording-dot" aria-hidden="true"></span>
+                <div>
+                  <strong id="storage-recording-label">正在检查录制服务</strong>
+                  <span id="storage-recording-detail">1920 × 1080 · 30 FPS · H.264 MP4</span>
+                </div>
+              </div>
+              <button class="button button-small" id="refresh-library-button" type="button">
+                <span aria-hidden="true">↻</span>
+                刷新
+              </button>
+            </div>
+          </header>
+
+          <section class="library-tool" aria-labelledby="library-title">
+            <div class="library-toolbar">
+              <div>
+                <h2 id="library-title">本地会话</h2>
+                <span id="library-summary">正在读取媒体库</span>
+              </div>
+              <span class="pill" id="library-status-pill">LOADING</span>
+            </div>
+
+            <div class="library-content" id="library-content" aria-live="polite">
+              <div class="library-message" id="library-loading">
+                <span class="waiting-mark" aria-hidden="true"></span>
+                <strong>正在读取本地视频</strong>
+                <span>请稍候</span>
+              </div>
+              <div class="library-message" id="library-empty" hidden>
+                <span class="library-empty-glyph" aria-hidden="true">▣</span>
+                <strong>还没有录制视频</strong>
+                <span>在主页点击“开始录制”后，视频会按会话显示在这里</span>
+              </div>
+              <div class="library-message library-error" id="library-error" role="alert" hidden>
+                <span class="library-empty-glyph" aria-hidden="true">!</span>
+                <strong>无法读取视频存储</strong>
+                <span id="library-error-detail">接收网关未连接</span>
+              </div>
+              <div class="session-list" id="session-list" hidden></div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/assets/storage.js"></script>
+  </body>
+</html>

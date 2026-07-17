@@ -2,8 +2,8 @@
 
 The operator console is a self-contained FastAPI service for Windows. It serves
 an authenticated local UI that displays the live Glass3 WebRTC preview from the
-ingest gateway. It does not create placeholder media, trajectories, recording,
-or session state.
+ingest gateway. It does not create placeholder media, trajectories, or session
+state.
 
 WebView2 receives a real WebRTC video track from the gateway and measures the
 displayed cadence from rendered frames. There is no JPEG polling path. The UI
@@ -29,6 +29,19 @@ positive Z axis, the display adapter reverses rotation around the horizontal X
 axis when converting the fused Glass3 pose to Three.js. This makes downward
 head motion render downward while leaving raw IMU samples and fusion inputs
 unchanged.
+
+The home page uses one two-state control for starting and stopping the Glass3
+stream. Its adjacent recording control starts a gateway-owned three-second
+countdown, can cancel during that countdown, and stops an active recording. The
+countdown shown over the live video is calculated from the gateway's
+`recording_starts_at_unix_ms`; the console does not start its own recorder or
+invent recording state. Clips are fixed at 1920x1080, 30 FPS, H.264 in MP4.
+
+The `/storage` page polls the loopback recording library and groups playable
+clips by the originating Glass3 WebRTC session. Media URLs are accepted only
+after the complete v1 JSON payload and loopback origin are validated. Loading,
+empty, error, and current recording states have separate visible treatments.
+The document remains fixed to the native window; only the session list scrolls.
 
 ## Run as a Windows app
 
@@ -71,6 +84,13 @@ PyInstaller, verifies the installed WebView2 Runtime, and runs the packaged
 
 - `GET /api/v1/health`
 
+The UI consumes these loopback-only ingest-gateway contracts:
+
+- `GET /api/v1/recordings/status`
+- `POST /api/v1/recordings/commands`
+- `GET /api/v1/recordings/library`
+- `GET /api/v1/recordings/media/{session_id}/{clip_id}`
+
 ## Verification
 
 ```powershell
@@ -80,7 +100,8 @@ uv run ruff check src tests evals
 ```
 
 Gate tests cover desktop authentication, static application delivery, removed
-API behavior, real preview connection state, stream-control state binding, and
-the local Three.js/AHRS IMU visualization contract.
+API behavior, real preview connection state, stream and recording state
+binding, session-grouped playable media, strict recording payload validation,
+and the local Three.js/AHRS IMU visualization contract.
 The eval suite prevents placeholder data paths or independently invented
 control state from returning to the shipped runtime.

@@ -25,3 +25,13 @@ def test_workspace_launcher_rejects_port_conflicts_and_cleans_process_trees() ->
     assert "Wait-Process -Id $desktopProcess.Id" in script
     assert script.count("Stop-ProcessTree -ProcessId") >= 3
     assert "pairing-token-123456" not in script
+
+
+def test_workspace_launcher_uses_ignored_local_recording_directory() -> None:
+    script = LAUNCHER.read_text(encoding="utf-8")
+    ignore = (CLIENT_ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    assert "$recordingsDirectory = Join-Path $repositoryRoot 'local-data\\recordings'" in script
+    assert "New-Item -ItemType Directory -Force -Path $recordingsDirectory" in script
+    assert "'--recordings-root'," in script
+    assert "local-data/" in ignore

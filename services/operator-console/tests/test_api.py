@@ -29,7 +29,10 @@ def test_health_and_real_video_console_are_served() -> None:
     with make_client() as client:
         health = client.get("/api/v1/health")
         page = client.get("/")
+        storage_page = client.get("/storage")
         script = client.get("/assets/app.js")
+        storage_script = client.get("/assets/storage.js")
+        recordings_api = client.get("/assets/recordings-api.js")
         imu_scene = client.get("/assets/imu-scene.js")
         styles = client.get("/assets/styles.css")
         three = client.get("/assets/vendor/three.module-0.185.1.min.js")
@@ -41,7 +44,10 @@ def test_health_and_real_video_console_are_served() -> None:
         "version": "0.1.0",
     }
     assert page.status_code == 200
+    assert storage_page.status_code == 200
     assert script.status_code == 200
+    assert storage_script.status_code == 200
+    assert recordings_api.status_code == 200
     assert imu_scene.status_code == 200
     assert three.status_code == 200
     assert ahrs.status_code == 200
@@ -70,8 +76,9 @@ def test_health_and_real_video_console_are_served() -> None:
     assert "requestVideoFrameCallback" in script.text
     assert 'id="link-state"' not in page.text
     assert "LAN DIRECT" not in page.text
-    assert parser.tags_by_id["start-stream-button"] == "button"
-    assert parser.tags_by_id["stop-stream-button"] == "button"
+    assert parser.tags_by_id["stream-toggle-button"] == "button"
+    assert parser.tags_by_id["recording-toggle-button"] == "button"
+    assert parser.tags_by_id["recording-countdown"] == "div"
     assert 'id="stream-control-status"' in right_column
     assert "127.0.0.1:8770/api/v1/webrtc/control" in script.text
     assert 'body: JSON.stringify({ action })' in script.text
@@ -87,10 +94,16 @@ def test_health_and_real_video_console_are_served() -> None:
     assert 'algorithm: "Madgwick"' in imu_scene.text
     assert 'browserRequire("ahrs")' in imu_scene.text
     assert "aspect-ratio: 16 / 9" in styles.text
-    assert "object-fit: cover" in styles.text
-    assert "object-fit: contain" not in styles.text
+    live_video_styles = styles.text.split(".live-video-source {", maxsplit=1)[1].split(
+        "}", maxsplit=1
+    )[0]
+    assert "object-fit: cover" in live_video_styles
+    assert "object-fit: contain" not in live_video_styles
     assert "frame.jpg" not in script.text
     assert "EgoGlass Operator Console" in page.text
+    assert "api/v1/recordings/status" in recordings_api.text
+    assert "api/v1/recordings/library" in recordings_api.text
+    assert 'video.controls = true' in storage_script.text
 
 
 def test_runtime_contains_no_simulated_data_controls_or_transport() -> None:
@@ -107,7 +120,6 @@ def test_runtime_contains_no_simulated_data_controls_or_transport() -> None:
         "mock",
         "trajectory",
         "calibration",
-        "recording",
         "模拟",
     ):
         assert forbidden not in shipped_runtime
@@ -134,16 +146,18 @@ def test_removed_simulation_routes_are_not_exposed(method: str, path: str) -> No
     assert response.status_code == 404
 
 
-def test_sidebar_contains_only_the_current_home_page_link() -> None:
+def test_sidebar_contains_home_and_storage_page_links() -> None:
     with make_client() as client:
         page = client.get("/")
 
     navigation = page.text.split('<nav class="nav-rail"', maxsplit=1)[1].split(
         "</nav>", maxsplit=1
     )[0]
-    assert navigation.count("<a ") == 1
+    assert navigation.count("<a ") == 2
     assert '<a class="nav-item is-active" href="/" aria-current="page"' in navigation
     assert "<span>主页</span>" in navigation
+    assert '<a class="nav-item" href="/storage"' in navigation
+    assert "<span>存储</span>" in navigation
     assert "data-view=" not in navigation
 
 
@@ -151,12 +165,15 @@ def test_desktop_token_becomes_session_cookie_for_ui_assets() -> None:
     app = create_app(desktop_token="test-desktop-token")
     with TestClient(app) as client:
         unauthorized = client.get("/")
+        unauthorized_storage = client.get("/storage")
         health = client.get("/api/v1/health")
         wrong_token = client.get("/?desktop_token=wrong")
         authorized_root = client.get("/?desktop_token=test-desktop-token")
+        authorized_storage = client.get("/storage")
         authorized_asset = client.get("/assets/app.js")
 
     assert unauthorized.status_code == 401
+    assert unauthorized_storage.status_code == 401
     assert health.status_code == 200
     assert wrong_token.status_code == 401
     assert authorized_root.status_code == 200
@@ -165,4 +182,5 @@ def test_desktop_token_becomes_session_cookie_for_ui_assets() -> None:
     assert "httponly" in set_cookie
     assert "path=/" in set_cookie
     assert "samesite=strict" in set_cookie
+    assert authorized_storage.status_code == 200
     assert authorized_asset.status_code == 200

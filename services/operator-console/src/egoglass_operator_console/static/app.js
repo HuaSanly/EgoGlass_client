@@ -1,4 +1,10 @@
 import { ImuSceneController } from "./imu-scene.js";
+import {
+  readJsonResponse,
+  readRecordingStatus,
+  recordingCommandEndpoint,
+  recordingStatusEndpoint,
+} from "./recordings-api.js";
 
 const elements = {
   liveVideo: document.querySelector("#live-video-source"),
@@ -17,8 +23,15 @@ const elements = {
   controlStatusDot: document.querySelector("#control-status-dot"),
   controlStatus: document.querySelector("#stream-control-status"),
   controlError: document.querySelector("#control-error"),
-  startStreamButton: document.querySelector("#start-stream-button"),
-  stopStreamButton: document.querySelector("#stop-stream-button"),
+  streamToggleButton: document.querySelector("#stream-toggle-button"),
+  streamToggleIcon: document.querySelector("#stream-toggle-icon"),
+  streamToggleLabel: document.querySelector("#stream-toggle-label"),
+  recordingToggleButton: document.querySelector("#recording-toggle-button"),
+  recordingToggleIcon: document.querySelector("#recording-toggle-icon"),
+  recordingToggleLabel: document.querySelector("#recording-toggle-label"),
+  recordingSummary: document.querySelector("#recording-summary"),
+  recordingCountdown: document.querySelector("#recording-countdown"),
+  recordingCountdownValue: document.querySelector("#recording-countdown-value"),
   fullscreenButton: document.querySelector("#fullscreen-button"),
   imuCanvas: document.querySelector("#imu-scene-canvas"),
   imuStatusPill: document.querySelector("#imu-status-pill"),
@@ -52,6 +65,13 @@ const state = {
   controlCommandInFlight: false,
   controlPollError: null,
   controlCommandError: null,
+  recordingStatus: null,
+  recordingPollTimer: null,
+  recordingPollInFlight: false,
+  recordingCommandInFlight: false,
+  recordingPollError: null,
+  recordingCommandError: null,
+  recordingCountdownTimer: null,
   imuPollTimer: null,
   imuPollInFlight: false,
   imuConnected: false,
@@ -83,6 +103,14 @@ const streamControlLabels = {
   stopped: "视频已停止",
   error: "眼镜端控制失败",
 };
+const recordingStateLabels = {
+  unavailable: "等待 Glass3 视频",
+  ready: "可录制 1920 × 1080 · 30 FPS",
+  countdown: "录制将在倒计时后开始",
+  recording: "正在保存 1920 × 1080 · 30 FPS",
+  finalizing: "正在封装 MP4 文件",
+  error: "录制服务异常",
+};
 let imuScene = null;
 
 if (window.location.search) {
@@ -108,6 +136,12 @@ function scheduleControlPoll(delayMs = 1000) {
   state.controlPollTimer = window.setTimeout(pollStreamControlStatus, delayMs);
 }
 
+function scheduleRecordingPoll(delayMs = 500) {
+  window.clearTimeout(state.recordingPollTimer);
+  if (document.hidden) return;
+  state.recordingPollTimer = window.setTimeout(pollRecordingStatus, delayMs);
+}
+
 function readStreamControlStatus(payload) {
   if (
     payload === null ||
@@ -123,15 +157,6 @@ function readStreamControlStatus(payload) {
     state: payload.state,
     detail: payload.detail || null,
   };
-}
-
-async function readJsonResponse(response, fallbackMessage) {
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = payload && typeof payload.detail === "string" ? payload.detail : fallbackMessage;
-    throw new Error(detail);
-  }
-  return payload;
 }
 
 function applyStreamControlStatus(payload) {
@@ -197,19 +222,134 @@ async function sendStreamControlCommand(action) {
 function renderStreamControl() {
   const controlReady = controllableStreamStates.has(state.controlState);
   const busy = state.controlCommandInFlight || ["starting", "stopping"].includes(state.controlState);
-  elements.startStreamButton.disabled =
-    !controlReady || busy || state.controlState === "streaming";
-  elements.stopStreamButton.disabled = !controlReady || busy || state.controlState === "stopped";
+  const recordingActive = ["countdown", "recording", "finalizing"].includes(
+    state.recordingStatus?.state,
+  );
+  const shouldStop = state.controlState === "streaming";
+  elements.streamToggleButton.disabled = !controlReady || busy || recordingActive;
+  elements.streamToggleButton.dataset.action = shouldStop ? "stop" : "start";
+  elements.streamToggleButton.title = recordingActive
+    ? "停止录制后才能控制视频流"
+    : shouldStop
+    ? "停止眼镜端视频流"
+    : "开始眼镜端视频流";
+  elements.streamToggleButton.classList.toggle("stream-control-stop", shouldStop);
+  elements.streamToggleButton.classList.toggle("stream-control-start", !shouldStop);
+  elements.streamToggleIcon.textContent = shouldStop ? "■" : "▶";
+  elements.streamToggleLabel.textContent = shouldStop ? "停止视频" : "开始视频";
   elements.controlStatus.textContent = state.controlCommandInFlight
     ? "命令发送中"
     : streamControlLabels[state.controlState];
   elements.controlStatus.title = state.controlDetail || "";
   elements.controlStatusDot.dataset.state = state.controlState;
 
-  const visibleError = state.controlCommandError || state.controlPollError;
+  const visibleError = state.controlCommandError || state.recordingCommandError ||
+    state.controlPollError || state.recordingPollError;
   elements.controlError.textContent = visibleError || "";
   elements.controlError.title = visibleError || "";
   elements.controlError.hidden = visibleError === null;
+}
+
+function applyRecordingStatus(payload) {
+  state.recordingStatus = readRecordingStatus(payload);
+  state.recordingPollError = null;
+  renderRecordingControl();
+  renderStreamControl();
+}
+
+function updateRecordingCountdown() {
+  window.clearTimeout(state.recordingCountdownTimer);
+  const status = state.recordingStatus;
+  if (status?.state !== "countdown") {
+    elements.recordingCountdown.hidden = true;
+    return;
+  }
+  const remainingMs = status.recording_starts_at_unix_ms - Date.now();
+  elements.recordingCountdownValue.textContent = String(
+    Math.min(3, Math.max(1, Math.ceil(remainingMs / 1000))),
+  );
+  elements.recordingCountdown.hidden = false;
+  state.recordingCountdownTimer = window.setTimeout(updateRecordingCountdown, 50);
+}
+
+function renderRecordingControl() {
+  const status = state.recordingStatus;
+  const recordingState = status?.state || "unavailable";
+  const canStart = recordingState === "ready";
+  const canStop = ["countdown", "recording"].includes(recordingState);
+  const busy = state.recordingCommandInFlight || recordingState === "finalizing";
+  elements.recordingToggleButton.disabled = busy || (!canStart && !canStop);
+  elements.recordingToggleButton.dataset.action = canStop ? "stop" : "start";
+  elements.recordingToggleButton.classList.toggle("is-recording", recordingState === "recording");
+  elements.recordingToggleButton.classList.toggle("is-countdown", recordingState === "countdown");
+
+  if (state.recordingCommandInFlight) {
+    elements.recordingToggleLabel.textContent = "命令发送中";
+  } else if (recordingState === "countdown") {
+    elements.recordingToggleLabel.textContent = "取消录制";
+  } else if (recordingState === "recording") {
+    elements.recordingToggleLabel.textContent = "停止录制";
+  } else if (recordingState === "finalizing") {
+    elements.recordingToggleLabel.textContent = "正在保存";
+  } else {
+    elements.recordingToggleLabel.textContent = "开始录制";
+  }
+  elements.recordingToggleIcon.textContent = canStop ? "■" : "●";
+  elements.recordingToggleButton.title = canStop ? "停止当前录制" : "3 秒后开始录制";
+  elements.recordingSummary.textContent = status?.detail || recordingStateLabels[recordingState];
+  updateRecordingCountdown();
+}
+
+async function pollRecordingStatus() {
+  if (state.recordingPollInFlight || state.recordingCommandInFlight || document.hidden) {
+    scheduleRecordingPoll();
+    return;
+  }
+  state.recordingPollInFlight = true;
+  try {
+    const response = await fetch(recordingStatusEndpoint, { cache: "no-store" });
+    const payload = await readJsonResponse(response, `录制状态 HTTP ${response.status}`);
+    applyRecordingStatus(payload);
+  } catch (error) {
+    state.recordingStatus = null;
+    state.recordingPollError = error.message;
+    renderRecordingControl();
+    renderStreamControl();
+  } finally {
+    state.recordingPollInFlight = false;
+    scheduleRecordingPoll(state.recordingStatus?.state === "countdown" ? 200 : 500);
+  }
+}
+
+async function sendRecordingCommand(action) {
+  const recordingState = state.recordingStatus?.state;
+  if (
+    state.recordingCommandInFlight ||
+    (action === "start" && recordingState !== "ready") ||
+    (action === "stop" && !["countdown", "recording"].includes(recordingState))
+  ) {
+    return;
+  }
+  state.recordingCommandInFlight = true;
+  state.recordingCommandError = null;
+  renderRecordingControl();
+  try {
+    const response = await fetch(recordingCommandEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const payload = await readJsonResponse(response, `录制控制 HTTP ${response.status}`);
+    applyRecordingStatus(payload);
+  } catch (error) {
+    state.recordingCommandError = error.message;
+    console.warn("Recording command failed", error);
+  } finally {
+    state.recordingCommandInFlight = false;
+    renderRecordingControl();
+    renderStreamControl();
+    scheduleRecordingPoll(0);
+  }
 }
 
 function waitForIceGathering(peer) {
@@ -584,8 +724,12 @@ try {
 }
 
 elements.fullscreenButton.addEventListener("click", toggleFullscreen);
-elements.startStreamButton.addEventListener("click", () => sendStreamControlCommand("start"));
-elements.stopStreamButton.addEventListener("click", () => sendStreamControlCommand("stop"));
+elements.streamToggleButton.addEventListener("click", () => {
+  sendStreamControlCommand(elements.streamToggleButton.dataset.action);
+});
+elements.recordingToggleButton.addEventListener("click", () => {
+  sendRecordingCommand(elements.recordingToggleButton.dataset.action);
+});
 elements.resetImuButton.addEventListener("click", () => imuScene?.resetReference());
 document.addEventListener("fullscreenchange", () => {
   elements.fullscreenButton.textContent = document.fullscreenElement ? "退出全屏" : "全屏";
@@ -594,12 +738,15 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     if (state.peer === null) scheduleViewerRetry(0);
     scheduleControlPoll(0);
+    scheduleRecordingPoll(0);
     scheduleImuPoll(0);
   }
 });
 window.addEventListener("beforeunload", () => {
   window.clearTimeout(state.reconnectTimer);
   window.clearTimeout(state.controlPollTimer);
+  window.clearTimeout(state.recordingPollTimer);
+  window.clearTimeout(state.recordingCountdownTimer);
   window.clearTimeout(state.imuPollTimer);
   if (state.peer !== null) closeViewerPeer(state.peer);
   imuScene?.dispose();
@@ -607,7 +754,9 @@ window.addEventListener("beforeunload", () => {
 
 renderVideoState();
 renderStreamControl();
+renderRecordingControl();
 setImuUnavailable("接收网关尚未收到姿态数据");
 connectLiveVideo();
 pollStreamControlStatus();
+pollRecordingStatus();
 pollImuStatus();

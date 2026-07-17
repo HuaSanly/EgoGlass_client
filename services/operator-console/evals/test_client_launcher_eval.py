@@ -21,3 +21,13 @@ def test_one_command_launcher_owns_both_process_lifecycles() -> None:
     assert "Wait-IngestHealth" in script
     assert "Wait-Process" in script
     assert "Stop-ProcessTree" in script
+
+
+def test_one_command_launcher_keeps_recordings_out_of_git() -> None:
+    client_root = Path(__file__).resolve().parents[3]
+    script = (client_root / "scripts" / "start-client.ps1").read_text(encoding="utf-8")
+    ignore = (client_root / ".gitignore").read_text(encoding="utf-8")
+
+    assert "local-data\\recordings" in script
+    assert "--recordings-root" in script
+    assert "local-data/" in ignore

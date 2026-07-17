@@ -53,6 +53,10 @@ def create_app(
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
+    @app.get("/storage", include_in_schema=False)
+    async def storage() -> FileResponse:
+        return FileResponse(STATIC_DIR / "storage.html")
+
     @app.get("/api/v1/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "operator-console", "version": "0.1.0"}
