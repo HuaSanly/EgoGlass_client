@@ -43,6 +43,10 @@ class RecordingFailureError(RuntimeError):
     """Raised when a recording could not be finalized safely."""
 
 
+class RecordingClipNotFoundError(RuntimeError):
+    """Raised when a completed recording clip does not exist."""
+
+
 class RecordingWriter(Protocol):
     @property
     def frames_received(self) -> int: ...
@@ -207,6 +211,57 @@ class RecordingRuntime:
         if not path.is_file() or path.stat().st_size != clip.file_size_bytes:
             return None
         return path
+
+    async def delete_clip(self, session_id: str, clip_id: str) -> RecordingLibrary:
+        async with self._command_lock:
+            if not _ID_PATTERN.fullmatch(session_id) or not _ID_PATTERN.fullmatch(
+                clip_id
+            ):
+                raise RecordingClipNotFoundError("recording clip not found")
+            session_directory = self._session_directory(session_id)
+            manifest_path = session_directory / "session.json"
+            session = self._read_session_manifest(manifest_path)
+            if session is None or session.session_id != session_id:
+                raise RecordingClipNotFoundError("recording clip not found")
+            clip = next(
+                (item for item in session.clips if item.clip_id == clip_id),
+                None,
+            )
+            completed_path = self._completed_path(session_id, clip_id)
+            if clip is None or not completed_path.is_file():
+                raise RecordingClipNotFoundError("recording clip not found")
+
+            remaining_clips = [
+                item for item in session.clips if item.clip_id != clip_id
+            ]
+            updated_session = session.model_copy(
+                update={"clips": remaining_clips}
+            )
+            deleting_path = session_directory / f"{clip_id}.deleting"
+            manifest_updated = False
+            try:
+                os.replace(completed_path, deleting_path)
+                self._write_session_manifest(updated_session)
+                manifest_updated = True
+                deleting_path.unlink()
+            except Exception as error:
+                try:
+                    if manifest_updated:
+                        self._write_session_manifest(session)
+                    if deleting_path.is_file():
+                        os.replace(deleting_path, completed_path)
+                except Exception:
+                    LOGGER.exception("recording delete rollback failed")
+                raise RecordingFailureError(
+                    "recording clip could not be deleted"
+                ) from error
+
+            if not remaining_clips:
+                with suppress(OSError):
+                    manifest_path.unlink(missing_ok=True)
+                with suppress(OSError):
+                    session_directory.rmdir()
+            return await self.library()
 
     async def close(self) -> None:
         async with self._command_lock:
@@ -411,12 +466,17 @@ class RecordingRuntime:
                 started_at_unix_ms=clip.recorded_at_unix_ms,
                 clips=[clip],
             )
+        self._write_session_manifest(session)
+
+    def _write_session_manifest(self, session: RecordingSession) -> None:
+        session_directory = self._session_directory(session.session_id)
+        session_directory.mkdir(parents=True, exist_ok=True)
         temporary_path = session_directory / "session.json.tmp"
         temporary_path.write_text(
             json.dumps(session.model_dump(mode="json"), indent=2) + "\n",
             encoding="utf-8",
         )
-        os.replace(temporary_path, manifest_path)
+        os.replace(temporary_path, session_directory / "session.json")
 
     def _read_session_manifest(self, path: Path) -> RecordingSession | None:
         try:

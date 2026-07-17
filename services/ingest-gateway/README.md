@@ -70,6 +70,11 @@ encoder or manifest failure moves the runtime to `error`, removes the current
 partial output, and does not advertise a clip. A process crash can leave a
 `.part.mp4` file, but partial files are never included in the library.
 
+Deleting a clip is loopback-only. The gateway first moves the MP4 out of its
+published path, atomically removes it from `session.json`, and then deletes the
+file. A failed operation restores both the MP4 and manifest. Deleting the last
+clip also removes the empty session directory.
+
 Validate a real-device result by opening and decoding it with the same PyAV
 runtime used by the service:
 
@@ -173,6 +178,7 @@ rate, first-frame PTS/time base, and probe latency.
 - GET /api/v1/recordings/status (loopback-only recording state)
 - POST /api/v1/recordings/commands (loopback-only `{ "action": "start|stop" }`)
 - GET /api/v1/recordings/library (loopback-only completed session groups)
+- DELETE /api/v1/recordings/clips/{session_id}/{clip_id} (loopback-only deletion)
 - GET /api/v1/recordings/media/{session_id}/{clip_id} (loopback-only MP4)
 - Interactive schema: http://127.0.0.1:8770/api/docs
 

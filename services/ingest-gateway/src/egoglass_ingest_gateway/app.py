@@ -18,6 +18,7 @@ from .adapters.rtsp import RtspProbeError
 from .discovery import DISCOVERY_PORT, LanDiscoveryService
 from .models import IngestStatus, ProbeResult, RtspSourceConfig
 from .recording import (
+    RecordingClipNotFoundError,
     RecordingConflictError,
     RecordingFailureError,
     RecordingRuntime,
@@ -96,7 +97,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^http://127\.0\.0\.1(?::\d+)?$",
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["content-type"],
     )
 
@@ -227,6 +228,23 @@ def create_app(
     async def recording_library(request: Request) -> RecordingLibrary:
         _require_loopback(request, viewer_allowed_hosts, "recording library")
         return await active_recording_runtime.library()
+
+    @app.delete(
+        "/api/v1/recordings/clips/{session_id}/{clip_id}",
+        response_model=RecordingLibrary,
+    )
+    async def delete_recording_clip(
+        request: Request,
+        session_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
+        clip_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
+    ) -> RecordingLibrary:
+        _require_loopback(request, viewer_allowed_hosts, "recording deletion")
+        try:
+            return await active_recording_runtime.delete_clip(session_id, clip_id)
+        except RecordingClipNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except RecordingFailureError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
 
     @app.get("/api/v1/recordings/media/{session_id}/{clip_id}")
     async def recording_media(

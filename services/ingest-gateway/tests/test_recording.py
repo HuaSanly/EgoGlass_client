@@ -11,7 +11,9 @@ import pytest
 from egoglass_ingest_gateway.adapters.webrtc import WebRtcVideoRecordingSource
 from egoglass_ingest_gateway.recording import (
     COUNTDOWN_SECONDS,
+    RecordingClipNotFoundError,
     RecordingConflictError,
+    RecordingFailureError,
     RecordingRuntime,
     RecordingUnavailableError,
 )
@@ -237,6 +239,84 @@ def test_recording_rejects_non_full_hd_source(tmp_path: Path) -> None:
         with pytest.raises(RecordingUnavailableError, match="must be 1920x1080"):
             await runtime.start()
         assert not list(tmp_path.iterdir())
+
+    asyncio.run(scenario())
+
+
+def test_delete_clip_updates_manifest_and_removes_empty_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        source = FakeVideoSource()
+        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1920, 1080)
+        writers: list[FakeRecorder] = []
+
+        def factory(path: Path, track: object) -> FakeRecorder:
+            writer = FakeRecorder(path, track)
+            writers.append(writer)
+            return writer
+
+        async def no_countdown_delay(seconds: float) -> None:
+            assert seconds == COUNTDOWN_SECONDS
+
+        runtime = RecordingRuntime(
+            tmp_path,
+            lambda: asyncio.sleep(0, result=video),
+            recorder_factory=factory,
+            sleep=no_countdown_delay,
+        )
+        for expected_writer_count in (1, 2):
+            await runtime.start()
+            await advance_until(
+                lambda expected=expected_writer_count: len(writers) == expected
+            )
+            await runtime.stop()
+
+        library = await runtime.library()
+        clips = library.sessions[0].clips
+        assert len(clips) == 2
+        first_path = tmp_path / SESSION_ID / f"{clips[0].clip_id}.mp4"
+        second_path = tmp_path / SESSION_ID / f"{clips[1].clip_id}.mp4"
+
+        deleting_path = tmp_path / SESSION_ID / f"{clips[0].clip_id}.deleting"
+        original_unlink = Path.unlink
+
+        def fail_deleting_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            if path == deleting_path:
+                raise OSError("injected delete failure")
+            original_unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as delete_failure:
+            delete_failure.setattr(Path, "unlink", fail_deleting_unlink)
+            with pytest.raises(RecordingFailureError):
+                await runtime.delete_clip(SESSION_ID, clips[0].clip_id)
+
+        after_rollback = await runtime.library()
+        assert [item.clip_id for item in after_rollback.sessions[0].clips] == [
+            item.clip_id for item in clips
+        ]
+        assert first_path.is_file()
+        assert second_path.is_file()
+        assert not deleting_path.exists()
+
+        after_first_delete = await runtime.delete_clip(SESSION_ID, clips[0].clip_id)
+        assert len(after_first_delete.sessions) == 1
+        assert [item.clip_id for item in after_first_delete.sessions[0].clips] == [
+            clips[1].clip_id
+        ]
+        assert not first_path.exists()
+        assert second_path.is_file()
+
+        after_second_delete = await runtime.delete_clip(SESSION_ID, clips[1].clip_id)
+        assert after_second_delete.sessions == []
+        assert not (tmp_path / SESSION_ID).exists()
+        assert not list(tmp_path.rglob("*.deleting"))
+
+        with pytest.raises(RecordingClipNotFoundError):
+            await runtime.delete_clip(SESSION_ID, clips[1].clip_id)
+        with pytest.raises(RecordingClipNotFoundError):
+            await runtime.delete_clip("../outside", clips[1].clip_id)
 
     asyncio.run(scenario())
 
