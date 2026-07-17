@@ -4,6 +4,7 @@ import {
   readRecordingStatus,
   recordingDeleteEndpoint,
   recordingLibraryEndpoint,
+  recordingSessionEndpoint,
   recordingStatusEndpoint,
 } from "./recordings-api.js";
 
@@ -12,8 +13,10 @@ const elements = {
   recordingLabel: document.querySelector("#storage-recording-label"),
   recordingDetail: document.querySelector("#storage-recording-detail"),
   refreshButton: document.querySelector("#refresh-library-button"),
+  title: document.querySelector("#library-title"),
   summary: document.querySelector("#library-summary"),
   statusPill: document.querySelector("#library-status-pill"),
+  backButton: document.querySelector("#session-back-button"),
   loading: document.querySelector("#library-loading"),
   empty: document.querySelector("#library-empty"),
   error: document.querySelector("#library-error"),
@@ -25,6 +28,13 @@ const elements = {
   confirmDeleteButton: document.querySelector("#confirm-delete-button"),
   cancelDeleteButton: document.querySelector("#cancel-delete-button"),
   closeDeleteDialogButton: document.querySelector("#close-delete-dialog-button"),
+  renameDialog: document.querySelector("#rename-session-dialog"),
+  renameForm: document.querySelector("#rename-session-form"),
+  renameInput: document.querySelector("#session-name-input"),
+  renameError: document.querySelector("#rename-dialog-error"),
+  confirmRenameButton: document.querySelector("#confirm-rename-button"),
+  cancelRenameButton: document.querySelector("#cancel-rename-button"),
+  closeRenameDialogButton: document.querySelector("#close-rename-dialog-button"),
 };
 
 const recordingLabels = {
@@ -41,7 +51,11 @@ let libraryTimer = null;
 let statusInFlight = false;
 let libraryInFlight = false;
 let deleteInFlight = false;
+let renameInFlight = false;
 let pendingDelete = null;
+let pendingRenameSessionId = null;
+let selectedSessionId = null;
+let librarySnapshot = null;
 
 if (window.location.search) {
   window.history.replaceState({}, "", window.location.pathname);
@@ -59,6 +73,19 @@ function formatDateTime(unixMs) {
   }).format(new Date(unixMs));
 }
 
+function formatSessionFolderName(unixMs) {
+  const date = new Date(unixMs);
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`,
+  ].join(" ");
+}
+
+function getSessionDisplayName(session) {
+  return session.display_name || formatSessionFolderName(session.started_at_unix_ms);
+}
+
 function formatDuration(durationMs) {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -72,6 +99,10 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function getSessionDuration(session) {
+  return session.clips.reduce((total, clip) => total + clip.duration_ms, 0);
+}
+
 function createTextElement(tag, className, text) {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -79,14 +110,69 @@ function createTextElement(tag, className, text) {
   return element;
 }
 
-function openDeleteDialog(session, clip, sessionIndex, clipIndex) {
+function createRenameButton(session, { withLabel = false } = {}) {
+  const button = document.createElement("button");
+  button.className = withLabel
+    ? "button button-small session-detail-rename"
+    : "button button-icon session-rename-button";
+  button.type = "button";
+  button.title = "重命名会话夹";
+  button.setAttribute("aria-label", `重命名会话夹 ${getSessionDisplayName(session)}`);
+  button.append(createTextElement("span", "", "✎"));
+  if (withLabel) button.append(document.createTextNode("重命名"));
+  button.addEventListener("click", () => openRenameDialog(session));
+  return button;
+}
+
+function openSession(sessionId) {
+  selectedSessionId = sessionId;
+  if (librarySnapshot !== null) renderLibrary(librarySnapshot);
+}
+
+function closeSession() {
+  selectedSessionId = null;
+  if (librarySnapshot !== null) renderLibrary(librarySnapshot);
+}
+
+function renderSessionFolder(session) {
+  const item = document.createElement("article");
+  item.className = "session-folder";
+
+  const openButton = document.createElement("button");
+  openButton.className = "session-folder-open";
+  openButton.type = "button";
+  openButton.setAttribute("aria-label", `打开会话夹 ${getSessionDisplayName(session)}`);
+
+  const folderMark = createTextElement("span", "session-folder-mark", "DIR");
+  folderMark.setAttribute("aria-hidden", "true");
+  const identity = document.createElement("span");
+  identity.className = "session-folder-identity";
+  identity.append(
+    createTextElement("strong", "", getSessionDisplayName(session)),
+    createTextElement("span", "", formatDateTime(session.started_at_unix_ms)),
+  );
+  const stats = document.createElement("span");
+  stats.className = "session-folder-stats";
+  stats.append(
+    createTextElement("span", "", `${session.clips.length} 段视频`),
+    createTextElement("span", "", formatDuration(getSessionDuration(session))),
+    createTextElement("span", "session-folder-chevron", "›"),
+  );
+  openButton.append(folderMark, identity, stats);
+  openButton.addEventListener("click", () => openSession(session.session_id));
+
+  item.append(openButton, createRenameButton(session));
+  return item;
+}
+
+function openDeleteDialog(session, clip, clipIndex) {
   if (deleteInFlight) return;
   pendingDelete = {
     session_id: session.session_id,
     clip_id: clip.clip_id,
   };
   elements.deleteTarget.textContent = [
-    `会话 ${String(sessionIndex + 1).padStart(2, "0")}`,
+    getSessionDisplayName(session),
     `片段 ${String(clipIndex + 1).padStart(2, "0")}`,
     formatDateTime(clip.recorded_at_unix_ms),
   ].join(" · ");
@@ -95,7 +181,18 @@ function openDeleteDialog(session, clip, sessionIndex, clipIndex) {
   elements.deleteDialog.showModal();
 }
 
-function renderClip(session, clip, sessionIndex, clipIndex) {
+function openRenameDialog(session) {
+  if (renameInFlight) return;
+  pendingRenameSessionId = session.session_id;
+  elements.renameInput.value = getSessionDisplayName(session);
+  elements.renameError.textContent = "";
+  elements.renameError.hidden = true;
+  elements.renameDialog.showModal();
+  elements.renameInput.focus();
+  elements.renameInput.select();
+}
+
+function renderClip(session, clip, clipIndex) {
   const item = document.createElement("article");
   item.className = "clip-row";
 
@@ -122,9 +219,8 @@ function renderClip(session, clip, sessionIndex, clipIndex) {
   deleteButton.type = "button";
   deleteButton.title = "删除本地视频片段";
   deleteButton.setAttribute("aria-label", `删除片段 ${clipIndex + 1}`);
-  deleteButton.dataset.clipId = clip.clip_id;
   deleteButton.addEventListener("click", () => {
-    openDeleteDialog(session, clip, sessionIndex, clipIndex);
+    openDeleteDialog(session, clip, clipIndex);
   });
   actions.append(duration, deleteButton);
   heading.append(
@@ -157,35 +253,44 @@ function renderClip(session, clip, sessionIndex, clipIndex) {
   return item;
 }
 
-function renderSession(session, index) {
-  const section = document.createElement("section");
-  section.className = "session-group";
-  section.setAttribute("aria-labelledby", `session-title-${index}`);
+function renderSessionDetail(session) {
+  elements.sessionList.dataset.view = "detail";
+  elements.title.textContent = getSessionDisplayName(session);
+  elements.summary.textContent = [
+    `${session.clips.length} 段视频`,
+    formatDateTime(session.started_at_unix_ms),
+  ].join(" · ");
+  elements.backButton.hidden = false;
 
   const header = document.createElement("header");
-  header.className = "session-header";
-  const titleGroup = document.createElement("div");
-  const title = createTextElement("h3", "", `会话 ${String(index + 1).padStart(2, "0")}`);
-  title.id = `session-title-${index}`;
-  const time = createTextElement("time", "", formatDateTime(session.started_at_unix_ms));
-  time.dateTime = new Date(session.started_at_unix_ms).toISOString();
-  titleGroup.append(title, time);
-  header.append(
-    titleGroup,
-    createTextElement("span", "session-clip-count", `${session.clips.length} 段视频`),
+  header.className = "session-detail-header";
+  const identity = document.createElement("div");
+  identity.append(
+    createTextElement("span", "eyebrow", "SESSION CONTENT"),
+    createTextElement("strong", "", getSessionDisplayName(session)),
   );
+  header.append(identity, createRenameButton(session, { withLabel: true }));
 
   const clips = document.createElement("div");
   clips.className = "clip-list";
-  if (session.clips.length === 0) {
-    clips.append(createTextElement("p", "session-empty", "该会话没有可播放的视频片段"));
-  } else {
-    session.clips.forEach((clip, clipIndex) => {
-      clips.append(renderClip(session, clip, index, clipIndex));
-    });
-  }
-  section.append(header, clips);
-  return section;
+  session.clips.forEach((clip, clipIndex) => {
+    clips.append(renderClip(session, clip, clipIndex));
+  });
+  elements.sessionList.append(header, clips);
+}
+
+function renderFolderList(library) {
+  const clipCount = library.sessions.reduce(
+    (total, session) => total + session.clips.length,
+    0,
+  );
+  elements.sessionList.dataset.view = "folders";
+  elements.title.textContent = "本地会话夹";
+  elements.summary.textContent = `${library.sessions.length} 个会话夹 · ${clipCount} 段视频`;
+  elements.backButton.hidden = true;
+  library.sessions.forEach((session) => {
+    elements.sessionList.append(renderSessionFolder(session));
+  });
 }
 
 function setLibraryView(view) {
@@ -198,16 +303,26 @@ function setLibraryView(view) {
 }
 
 function renderLibrary(library) {
+  librarySnapshot = library;
   elements.sessionList.replaceChildren();
-  const clipCount = library.sessions.reduce((total, session) => total + session.clips.length, 0);
-  elements.summary.textContent = `${library.sessions.length} 次会话 · ${clipCount} 段视频`;
   if (library.sessions.length === 0) {
+    selectedSessionId = null;
+    elements.title.textContent = "本地会话夹";
+    elements.summary.textContent = "0 个会话夹 · 0 段视频";
+    elements.backButton.hidden = true;
     setLibraryView("empty");
     return;
   }
-  library.sessions.forEach((session, index) => {
-    elements.sessionList.append(renderSession(session, index));
-  });
+
+  const selectedSession = library.sessions.find(
+    (session) => session.session_id === selectedSessionId,
+  );
+  if (selectedSession) {
+    renderSessionDetail(selectedSession);
+  } else {
+    selectedSessionId = null;
+    renderFolderList(library);
+  }
   setLibraryView("content");
 }
 
@@ -297,13 +412,73 @@ async function confirmDeleteClip() {
   }
 }
 
+async function confirmRenameSession(event) {
+  event.preventDefault();
+  if (renameInFlight || pendingRenameSessionId === null) return;
+  const displayName = elements.renameInput.value.trim();
+  if (!displayName || /[\u0000-\u001f\u007f]/u.test(displayName)) {
+    elements.renameError.textContent = "请输入有效的会话夹名称";
+    elements.renameError.hidden = false;
+    return;
+  }
+
+  renameInFlight = true;
+  elements.renameInput.disabled = true;
+  elements.confirmRenameButton.disabled = true;
+  elements.cancelRenameButton.disabled = true;
+  elements.closeRenameDialogButton.disabled = true;
+  elements.confirmRenameButton.textContent = "正在保存";
+  elements.renameError.hidden = true;
+  try {
+    const response = await fetch(
+      recordingSessionEndpoint(pendingRenameSessionId),
+      {
+        method: "PATCH",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ display_name: displayName }),
+      },
+    );
+    const payload = await readJsonResponse(response, `重命名会话 HTTP ${response.status}`);
+    const library = readRecordingLibrary(payload);
+    pendingRenameSessionId = null;
+    elements.renameDialog.close("renamed");
+    renderLibrary(library);
+    scheduleLibraryPoll();
+  } catch (error) {
+    elements.renameError.textContent = error.message;
+    elements.renameError.hidden = false;
+  } finally {
+    renameInFlight = false;
+    elements.renameInput.disabled = false;
+    elements.confirmRenameButton.disabled = false;
+    elements.cancelRenameButton.disabled = false;
+    elements.closeRenameDialogButton.disabled = false;
+    elements.confirmRenameButton.textContent = "保存名称";
+  }
+}
+
+function closeRenameDialog() {
+  if (!renameInFlight) elements.renameDialog.close("cancel");
+}
+
 elements.refreshButton.addEventListener("click", () => pollLibrary({ showLoading: true }));
+elements.backButton.addEventListener("click", closeSession);
 elements.confirmDeleteButton.addEventListener("click", confirmDeleteClip);
+elements.renameForm.addEventListener("submit", confirmRenameSession);
+elements.cancelRenameButton.addEventListener("click", closeRenameDialog);
+elements.closeRenameDialogButton.addEventListener("click", closeRenameDialog);
 elements.deleteDialog.addEventListener("cancel", (event) => {
   if (deleteInFlight) event.preventDefault();
 });
 elements.deleteDialog.addEventListener("close", () => {
   if (!deleteInFlight) pendingDelete = null;
+});
+elements.renameDialog.addEventListener("cancel", (event) => {
+  if (renameInFlight) event.preventDefault();
+});
+elements.renameDialog.addEventListener("close", () => {
+  if (!renameInFlight) pendingRenameSessionId = null;
 });
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {

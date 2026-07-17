@@ -41,6 +41,8 @@ def test_storage_route_is_a_real_second_page() -> None:
     assert 'id="library-loading"' in storage.text
     assert 'id="library-empty"' in storage.text
     assert 'id="library-error"' in storage.text
+    assert 'id="session-back-button"' in storage.text
+    assert 'id="rename-session-dialog"' in storage.text
     assert 'src="/assets/storage.js"' in storage.text
 
 
@@ -91,8 +93,11 @@ def test_recording_contract_is_strict_and_contains_no_simulation() -> None:
         "session.clips.map(readClip)",
         "readMediaUrl(clip.media_url)",
         "recordingDeleteEndpoint(sessionId, clipId)",
+        "recordingSessionEndpoint(sessionId)",
         "recordingIdPattern.test(session.session_id)",
         "recordingIdPattern.test(clip.clip_id)",
+        "session.display_name ?? null",
+        "displayName !== displayName.trim()",
         "mediaUrl.origin !== gatewayOrigin",
     ):
         assert required in api
@@ -109,6 +114,11 @@ def test_storage_library_builds_safe_playable_media_without_document_scroll() ->
     assert 'video.preload = "metadata"' in script
     assert "video.src = clip.media_url" in script
     assert "readRecordingLibrary(payload)" in script
+    assert "renderSessionFolder(session)" in script
+    assert "renderSessionDetail(selectedSession)" in script
+    assert "selectedSessionId = sessionId" in script
+    assert 'elements.sessionList.dataset.view = "folders"' in script
+    assert 'elements.sessionList.dataset.view = "detail"' in script
     assert "innerHTML" not in script
     assert "height: 100vh" in styles
     assert "overflow: hidden" in styles
@@ -134,6 +144,30 @@ def test_storage_delete_requires_confirmation_and_gateway_success() -> None:
     assert "/api/v1/recordings/clips/${sessionId}/${clipId}" in api
     assert ".clip-delete-button" in styles
     assert ".delete-dialog::backdrop" in styles
+
+
+def test_storage_session_folders_use_time_names_and_persist_renames() -> None:
+    html = (STATIC_DIR / "storage.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "storage.js").read_text(encoding="utf-8")
+    api = (STATIC_DIR / "recordings-api.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="rename-session-dialog"' in html
+    assert 'id="rename-session-form"' in html
+    assert 'id="session-name-input"' in html
+    assert 'maxlength="64"' in html
+    assert "formatSessionFolderName(session.started_at_unix_ms)" in script
+    assert 'item.className = "session-folder"' in script
+    assert 'openButton.addEventListener("click"' in script
+    assert "openRenameDialog(session)" in script
+    assert "recordingSessionEndpoint(pendingRenameSessionId)" in script
+    assert 'method: "PATCH"' in script
+    assert 'body: JSON.stringify({ display_name: displayName })' in script
+    assert 'elements.renameDialog.close("renamed")' in script
+    assert "/api/v1/recordings/sessions/${sessionId}" in api
+    assert ".session-folder-open" in styles
+    assert ".session-detail-header" in styles
+    assert ".rename-field input" in styles
 
 
 def test_missing_video_is_distinct_from_gateway_disconnect() -> None:

@@ -14,6 +14,13 @@ export function recordingDeleteEndpoint(sessionId, clipId) {
   return `http://127.0.0.1:8770/api/v1/recordings/clips/${sessionId}/${clipId}`;
 }
 
+export function recordingSessionEndpoint(sessionId) {
+  if (!recordingIdPattern.test(sessionId)) {
+    throw new Error("录制会话标识无效");
+  }
+  return `http://127.0.0.1:8770/api/v1/recordings/sessions/${sessionId}`;
+}
+
 export const recordingStates = new Set([
   "unavailable",
   "ready",
@@ -147,12 +154,26 @@ function readSession(session) {
   ) {
     throw new Error("录制服务返回了无效的会话");
   }
+  const displayName = session.display_name ?? null;
+  if (
+    displayName !== null &&
+    (
+      typeof displayName !== "string" ||
+      displayName.length === 0 ||
+      displayName.length > 64 ||
+      displayName !== displayName.trim() ||
+      /[\u0000-\u001f\u007f]/u.test(displayName)
+    )
+  ) {
+    throw new Error("录制服务返回了无效的会话名称");
+  }
   return {
     session_id: session.session_id,
     started_at_unix_ms: requireSafeInteger(
       session.started_at_unix_ms,
       "started_at_unix_ms",
     ),
+    display_name: displayName,
     clips: session.clips.map(readClip),
   };
 }

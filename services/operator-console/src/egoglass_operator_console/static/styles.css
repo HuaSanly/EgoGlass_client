@@ -755,11 +755,25 @@ a {
   border-bottom: 1px solid var(--border-soft);
 }
 
-.library-toolbar > div {
+.library-location,
+.library-location > div {
   display: flex;
   min-width: 0;
+}
+
+.library-location {
+  align-items: center;
+  gap: 10px;
+}
+
+.library-location > div {
   flex-direction: column;
   gap: 3px;
+}
+
+.session-back-button {
+  flex: 0 0 30px;
+  color: var(--text-secondary);
 }
 
 .library-toolbar h2 {
@@ -824,57 +838,162 @@ a {
 .session-list {
   height: 100%;
   min-height: 0;
-  padding: 0 16px 24px;
+  padding: 12px 16px 24px;
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-color: #3d4942 transparent;
 }
 
-.session-group {
-  padding: 18px 0 20px;
-  border-bottom: 1px solid var(--border-soft);
+.session-list[data-view="folders"] {
+  display: grid;
+  align-content: start;
+  gap: 8px;
 }
 
-.session-group:last-child {
-  border-bottom: 0;
+.session-folder {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: #141916;
+  overflow: hidden;
 }
 
-.session-header {
-  display: flex;
-  min-height: 38px;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 12px;
-}
-
-.session-header > div {
+.session-folder-open {
   display: flex;
   min-width: 0;
+  min-height: 66px;
+  align-items: center;
+  gap: 14px;
+  border: 0;
+  padding: 10px 14px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.session-folder:hover,
+.session-folder:focus-within {
+  border-color: #4c5c53;
+  background: #171d19;
+}
+
+.session-folder-open:focus-visible {
+  outline: 1px solid var(--green);
+  outline-offset: -2px;
+}
+
+.session-folder-mark {
+  position: relative;
+  display: grid;
+  width: 38px;
+  height: 29px;
+  flex: 0 0 38px;
+  place-items: center;
+  border: 1px solid #52655a;
+  border-radius: 3px;
+  background: #1d2822;
+  color: #9ad6b6;
+  font-family: Consolas, monospace;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.session-folder-mark::before {
+  position: absolute;
+  top: -5px;
+  left: 3px;
+  width: 15px;
+  height: 5px;
+  border: 1px solid #52655a;
+  border-bottom: 0;
+  border-radius: 2px 2px 0 0;
+  background: #1d2822;
+  content: "";
+}
+
+.session-folder-identity {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
-.session-header h3 {
-  margin: 0;
-  font-size: 13px;
+.session-folder-identity strong,
+.session-detail-header strong {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
   letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.session-header time,
-.session-clip-count {
+.session-folder-identity > span,
+.session-folder-stats {
   color: var(--text-muted);
   font-family: Consolas, monospace;
   font-size: 9px;
 }
 
-.session-clip-count {
-  min-height: 22px;
-  padding: 5px 7px 0;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--surface-raised);
+.session-folder-stats {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 14px;
   white-space: nowrap;
+}
+
+.session-folder-chevron {
+  color: #9ad6b6;
+  font-family: "Segoe UI Symbol", sans-serif;
+  font-size: 18px;
+}
+
+.session-rename-button {
+  width: 38px;
+  min-width: 38px;
+  min-height: 66px;
+  border-width: 0 0 0 1px;
+  border-color: var(--border-soft);
+  border-radius: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.session-rename-button:hover,
+.session-rename-button:focus-visible {
+  background: #202a24;
+  color: var(--text-secondary);
+}
+
+.session-detail-header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 12px;
+  padding: 2px 2px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.session-detail-header > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-detail-rename {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
 }
 
 .clip-list {
@@ -1000,16 +1119,6 @@ a {
   white-space: nowrap;
 }
 
-.session-empty {
-  grid-column: 1 / -1;
-  margin: 0;
-  padding: 22px;
-  border: 1px dashed var(--border);
-  color: var(--text-muted);
-  font-size: 10px;
-  text-align: center;
-}
-
 .delete-dialog {
   width: min(420px, calc(100vw - 32px));
   max-width: none;
@@ -1080,10 +1189,46 @@ a {
   margin-top: 18px;
 }
 
-.delete-confirm-button:not(:disabled) {
+.delete-confirm-button:not(:disabled),
+.rename-confirm-button:not(:disabled) {
   border-color: #8b4750;
   background: #321d21;
   color: #ffd6d9;
+}
+
+.rename-confirm-button:not(:disabled) {
+  border-color: #456757;
+  background: #1e3027;
+  color: #c9f2db;
+}
+
+.rename-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 18px;
+}
+
+.rename-field span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.rename-field input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 11px;
+  background: #101512;
+  color: var(--text-secondary);
+  font: 11px Consolas, monospace;
+  outline: none;
+}
+
+.rename-field input:focus {
+  border-color: #587365;
+  box-shadow: 0 0 0 1px rgb(88 115 101 / 24%);
 }
 
 .imu-header-actions {
@@ -1381,6 +1526,10 @@ a {
 
   .recording-live-status span:last-child {
     max-width: 220px;
+  }
+
+  .session-folder-stats > span:not(.session-folder-chevron) {
+    display: none;
   }
 
   .clip-row {

@@ -28,7 +28,10 @@ def test_storage_page_groups_real_playable_clips_by_session() -> None:
 
     assert '<a class="nav-item is-active" href="/storage" aria-current="page"' in html
     assert 'id="session-list"' in html
-    assert "library.sessions.forEach" in script
+    assert "renderFolderList(library)" in script
+    assert "renderSessionFolder(session)" in script
+    assert "renderSessionDetail(selectedSession)" in script
+    assert "selectedSessionId = sessionId" in script
     assert "session.clips.forEach" in script
     assert 'document.createElement("video")' in script
     assert "video.controls = true" in script
@@ -45,7 +48,7 @@ def test_clip_deletion_is_confirmed_and_manifest_backed() -> None:
 
     assert 'id="delete-recording-dialog"' in html
     assert "删除后无法恢复" in html
-    assert "openDeleteDialog(session, clip, sessionIndex, clipIndex)" in script
+    assert "openDeleteDialog(session, clip, clipIndex)" in script
     assert "elements.deleteDialog.showModal()" in script
     assert "confirmDeleteClip" in script
     assert 'method: "DELETE"' in script
@@ -53,6 +56,25 @@ def test_clip_deletion_is_confirmed_and_manifest_backed() -> None:
     assert "recordingIdPattern.test(sessionId)" in api_script
     assert "recordingIdPattern.test(clipId)" in api_script
     assert "api/v1/recordings/clips" in api_script
+
+
+def test_session_folders_are_time_named_navigable_and_renameable() -> None:
+    html = (STATIC_DIR / "storage.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "storage.js").read_text(encoding="utf-8")
+    api_script = (STATIC_DIR / "recordings-api.js").read_text(encoding="utf-8")
+
+    assert 'id="session-back-button"' in html
+    assert 'id="rename-session-dialog"' in html
+    assert 'id="session-name-input"' in html
+    assert "formatSessionFolderName(session.started_at_unix_ms)" in script
+    assert "getSessionDisplayName(session)" in script
+    assert 'elements.sessionList.dataset.view = "folders"' in script
+    assert 'elements.sessionList.dataset.view = "detail"' in script
+    assert "recordingSessionEndpoint(pendingRenameSessionId)" in script
+    assert 'method: "PATCH"' in script
+    assert "readRecordingLibrary(payload)" in script
+    assert "session.display_name ?? null" in api_script
+    assert "api/v1/recordings/sessions" in api_script
 
 
 def test_connected_gateway_without_video_is_presented_as_waiting() -> None:

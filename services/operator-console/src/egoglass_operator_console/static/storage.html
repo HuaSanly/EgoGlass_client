@@ -44,9 +44,19 @@
 
           <section class="library-tool" aria-labelledby="library-title">
             <div class="library-toolbar">
-              <div>
-                <h2 id="library-title">本地会话</h2>
-                <span id="library-summary">正在读取媒体库</span>
+              <div class="library-location">
+                <button
+                  class="button button-icon session-back-button"
+                  id="session-back-button"
+                  type="button"
+                  title="返回所有会话"
+                  aria-label="返回所有会话"
+                  hidden
+                >←</button>
+                <div>
+                  <h2 id="library-title">本地会话夹</h2>
+                  <span id="library-summary">正在读取媒体库</span>
+                </div>
               </div>
               <span class="pill" id="library-status-pill">LOADING</span>
             </div>
@@ -60,7 +70,7 @@
               <div class="library-message" id="library-empty" hidden>
                 <span class="library-empty-glyph" aria-hidden="true">▣</span>
                 <strong>还没有录制视频</strong>
-                <span>在主页点击“开始录制”后，视频会按会话显示在这里</span>
+                <span>在主页点击“开始录制”后，会自动生成按时间命名的会话夹</span>
               </div>
               <div class="library-message library-error" id="library-error" role="alert" hidden>
                 <span class="library-empty-glyph" aria-hidden="true">!</span>
@@ -97,6 +107,42 @@
           <button class="button" id="cancel-delete-button" type="submit" value="cancel">取消</button>
           <button class="button delete-confirm-button" id="confirm-delete-button" type="button">
             删除片段
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="delete-dialog" id="rename-session-dialog" aria-labelledby="rename-dialog-title">
+      <form class="delete-dialog-panel" id="rename-session-form">
+        <header class="delete-dialog-header">
+          <div>
+            <span class="eyebrow">RENAME SESSION</span>
+            <h2 id="rename-dialog-title">重命名会话夹</h2>
+          </div>
+          <button
+            class="button button-icon delete-dialog-close"
+            id="close-rename-dialog-button"
+            type="button"
+            title="关闭"
+            aria-label="关闭重命名"
+          >×</button>
+        </header>
+        <label class="rename-field" for="session-name-input">
+          <span>会话夹名称</span>
+          <input
+            id="session-name-input"
+            name="display_name"
+            type="text"
+            maxlength="64"
+            autocomplete="off"
+            required
+          >
+        </label>
+        <p class="delete-dialog-error" id="rename-dialog-error" role="alert" hidden></p>
+        <div class="delete-dialog-actions">
+          <button class="button" id="cancel-rename-button" type="button">取消</button>
+          <button class="button rename-confirm-button" id="confirm-rename-button" type="submit">
+            保存名称
           </button>
         </div>
       </form>

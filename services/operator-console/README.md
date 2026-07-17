@@ -42,6 +42,10 @@ clips by the originating Glass3 WebRTC session. Media URLs are accepted only
 after the complete v1 JSON payload and loopback origin are validated. Loading,
 empty, error, and current recording states have separate visible treatments.
 The document remains fixed to the native window; only the session list scrolls.
+The first storage view contains time-named session folders rather than video
+players. Opening one folder renders only that session's clips. Operators can
+rename a folder; the custom name is persisted by the gateway without changing
+the stable media path.
 Each clip can be deleted after an explicit confirmation. The console removes a
 card only after the gateway confirms that both its MP4 and manifest entry were
 deleted.
@@ -92,6 +96,7 @@ The UI consumes these loopback-only ingest-gateway contracts:
 - `GET /api/v1/recordings/status`
 - `POST /api/v1/recordings/commands`
 - `GET /api/v1/recordings/library`
+- `PATCH /api/v1/recordings/sessions/{session_id}`
 - `DELETE /api/v1/recordings/clips/{session_id}/{clip_id}`
 - `GET /api/v1/recordings/media/{session_id}/{clip_id}`
 
