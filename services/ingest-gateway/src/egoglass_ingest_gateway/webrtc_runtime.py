@@ -16,6 +16,7 @@ from .adapters.webrtc import (
     WebRtcImuChannel,
     WebRtcPeer,
     WebRtcPeerCallbacks,
+    WebRtcVideoRecordingSource,
     WebRtcVideoSource,
     WebRtcViewerPeer,
     create_aiortc_peer,
@@ -43,6 +44,7 @@ from .webrtc_models import (
 )
 
 IMU_MAX_PAYLOAD_BYTES = 16_384
+RECORDING_FRAME_MAX_AGE_NS = 2_000_000_000
 
 
 class PairingTokenError(RuntimeError):
@@ -373,6 +375,26 @@ class WebRtcSessionRuntime:
                 message = f"viewer negotiation failed: {type(error).__name__}"
                 raise WebRtcViewerSessionError(message) from error
             return WebRtcViewerAnswer(sdp=answer_sdp)
+
+    async def recording_source(self) -> WebRtcVideoRecordingSource | None:
+        async with self._state_lock:
+            if (
+                self._video_source is None
+                or self._session_id is None
+                or self._width is None
+                or self._height is None
+                or self._phase is not WebRtcPhase.STREAMING
+                or self._last_frame_at_ns is None
+                or self._perf_clock() - self._last_frame_at_ns
+                > RECORDING_FRAME_MAX_AGE_NS
+            ):
+                return None
+            return WebRtcVideoRecordingSource(
+                session_id=self._session_id,
+                source=self._video_source,
+                width=self._width,
+                height=self._height,
+            )
 
     async def close(self) -> None:
         async with self._session_lock:

@@ -16,6 +16,14 @@ class DecodedVideoFrame:
     time_base: Fraction | None
 
 
+@dataclass(frozen=True)
+class WebRtcVideoRecordingSource:
+    session_id: str
+    source: WebRtcVideoSource
+    width: int
+    height: int
+
+
 class WebRtcVideoSource(Protocol):
     def subscribe(self, *, buffered: bool) -> object: ...
 

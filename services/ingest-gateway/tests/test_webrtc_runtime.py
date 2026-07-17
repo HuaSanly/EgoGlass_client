@@ -23,6 +23,7 @@ from egoglass_ingest_gateway.webrtc_models import (
 )
 from egoglass_ingest_gateway.webrtc_runtime import (
     IMU_MAX_PAYLOAD_BYTES,
+    RECORDING_FRAME_MAX_AGE_NS,
     PairingTokenError,
     StreamControlCommandError,
     StreamControlCommandTimeoutError,
@@ -232,6 +233,55 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
         assert source.subscriptions == [(viewers[0].track, False)]
         assert status.first_frame_latency_ms == 120.0
         assert (status.width, status.height) == (1280, 720)
+
+    asyncio.run(scenario())
+
+
+def test_recording_source_requires_recent_streaming_frames_not_control_state() -> None:
+    peers: list[FakePeer] = []
+    now_ns = 1_000_000_000
+
+    def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
+        peer = FakePeer(callbacks)
+        peers.append(peer)
+        return peer
+
+    async def scenario() -> None:
+        nonlocal now_ns
+        runtime = WebRtcSessionRuntime(TOKEN, factory, perf_clock=lambda: now_ns)
+        answer = await runtime.accept_offer(offer(), TOKEN)
+        source = FakeVideoSource()
+        channel = FakeControlChannel()
+        await peers[0].callbacks.on_connection_state("connected")
+        await peers[0].callbacks.on_video_source(source)
+        assert await runtime.recording_source() is None
+
+        await peers[0].callbacks.on_video_frame(
+            DecodedVideoFrame(1920, 1080, 0, Fraction(1, 90_000))
+        )
+        await peers[0].callbacks.on_control_channel_ready(channel)
+        await peers[0].callbacks.on_control_status(
+            channel,
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "message_type": "stream_control_status",
+                    "command_id": None,
+                    "state": "error",
+                    "detail": "device control acknowledgement timed out",
+                }
+            ),
+        )
+
+        recording_source = await runtime.recording_source()
+        assert recording_source is not None
+        assert recording_source.session_id == answer.session_id
+        assert (recording_source.width, recording_source.height) == (1920, 1080)
+        assert recording_source.source is source
+        assert (await runtime.control_status()).state is StreamControlState.ERROR
+
+        now_ns += RECORDING_FRAME_MAX_AGE_NS + 1
+        assert await runtime.recording_source() is None
 
     asyncio.run(scenario())
 

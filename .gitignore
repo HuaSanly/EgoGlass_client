@@ -12,5 +12,6 @@ htmlcov/
 # Recordings and local runtime state never belong in Git.
 data/
 recordings/
+local-data/
 *.mp4
 *.parquet

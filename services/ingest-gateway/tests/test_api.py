@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 from starlette.testclient import TestClient
 
@@ -6,6 +7,13 @@ import egoglass_ingest_gateway.app as app_module
 from egoglass_ingest_gateway.adapters.rtsp import RtspProbeError
 from egoglass_ingest_gateway.app import create_app
 from egoglass_ingest_gateway.models import ProbeResult, RtspSourceConfig, RtspTransport
+from egoglass_ingest_gateway.recording_models import (
+    RecordingClip,
+    RecordingLibrary,
+    RecordingSession,
+    RecordingState,
+    RecordingStatus,
+)
 from egoglass_ingest_gateway.runtime import IngestRuntime
 from egoglass_ingest_gateway.webrtc_models import (
     ImuChannelState,
@@ -46,6 +54,9 @@ class ControlRuntime:
     async def control_status(self) -> StreamControlStatus:
         return StreamControlStatus(state=StreamControlState.READY)
 
+    async def recording_source(self) -> None:
+        return None
+
     async def send_control_command(
         self,
         command: StreamControlCommand,
@@ -80,6 +91,59 @@ class ImuRuntime:
                 ImuSensorType.GYROSCOPE: ImuSensorStatus(),
             },
         )
+
+    async def close(self) -> None:
+        return None
+
+
+class RecordingApiRuntime:
+    def __init__(self, media_path: Path) -> None:
+        self.media_file = media_path
+        self.session_id = "b" * 32
+        self.clip_id = "c" * 32
+        self.state = RecordingState.READY
+
+    async def status(self) -> RecordingStatus:
+        return RecordingStatus(state=self.state, session_id=self.session_id)
+
+    async def start(self) -> RecordingStatus:
+        return RecordingStatus(
+            state=RecordingState.COUNTDOWN,
+            session_id=self.session_id,
+            clip_id=self.clip_id,
+            countdown_started_at_unix_ms=1000,
+            recording_starts_at_unix_ms=4000,
+        )
+
+    async def stop(self) -> RecordingStatus:
+        return RecordingStatus(state=RecordingState.READY, session_id=self.session_id)
+
+    async def library(self) -> RecordingLibrary:
+        return RecordingLibrary(
+            sessions=[
+                RecordingSession(
+                    session_id=self.session_id,
+                    started_at_unix_ms=4000,
+                    clips=[
+                        RecordingClip(
+                            clip_id=self.clip_id,
+                            recorded_at_unix_ms=4000,
+                            ended_at_unix_ms=5000,
+                            duration_ms=1000,
+                            file_size_bytes=self.media_file.stat().st_size,
+                            media_url=(
+                                f"/api/v1/recordings/media/{self.session_id}/{self.clip_id}"
+                            ),
+                        )
+                    ],
+                )
+            ]
+        )
+
+    async def media_path(self, session_id: str, clip_id: str) -> Path | None:
+        if (session_id, clip_id) == (self.session_id, self.clip_id):
+            return self.media_file
+        return None
 
     async def close(self) -> None:
         return None
@@ -363,6 +427,84 @@ def test_stream_control_api_maps_safe_runtime_failures() -> None:
             )
         assert response.status_code == expected_status
         assert response.json()["detail"] == str(error)
+
+
+def test_stream_stop_is_rejected_until_active_recording_stops(tmp_path: Path) -> None:
+    media = tmp_path / "completed.mp4"
+    media.write_bytes(b"mp4-data")
+    control_runtime = ControlRuntime()
+    recording_runtime = RecordingApiRuntime(media)
+    recording_runtime.state = RecordingState.RECORDING
+    app = create_app(
+        webrtc_runtime=control_runtime,  # type: ignore[arg-type]
+        recording_runtime=recording_runtime,  # type: ignore[arg-type]
+        viewer_allowed_hosts=frozenset({"testclient"}),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/webrtc/control/commands",
+            json={"action": "stop"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "stop the active recording before stopping the video stream"
+    )
+    assert control_runtime.commands == []
+
+
+def test_recording_api_is_loopback_only_and_serves_only_registered_media(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "completed.mp4"
+    media.write_bytes(b"mp4-data")
+    recording_runtime = RecordingApiRuntime(media)
+    app = create_app(
+        recording_runtime=recording_runtime,  # type: ignore[arg-type]
+        viewer_allowed_hosts=frozenset({"testclient"}),
+    )
+    origin = "http://127.0.0.1:8765"
+    with TestClient(app) as client:
+        status = client.get("/api/v1/recordings/status", headers={"Origin": origin})
+        start = client.post(
+            "/api/v1/recordings/commands",
+            json={"action": "start"},
+            headers={"Origin": origin},
+        )
+        library = client.get("/api/v1/recordings/library")
+        media_response = client.get(
+            f"/api/v1/recordings/media/{recording_runtime.session_id}/"
+            f"{recording_runtime.clip_id}"
+        )
+        missing = client.get(
+            f"/api/v1/recordings/media/{recording_runtime.session_id}/{'d' * 32}"
+        )
+
+    assert status.status_code == 200
+    assert status.headers["access-control-allow-origin"] == origin
+    assert status.json()["detail"] == ""
+    assert status.json()["output"] == {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "container": "mp4",
+        "video_codec": "h264",
+    }
+    assert start.json()["state"] == "countdown"
+    assert start.json()["recording_starts_at_unix_ms"] == 4000
+    assert library.json()["sessions"][0]["started_at_unix_ms"] == 4000
+    assert library.json()["sessions"][0]["clips"][0]["recorded_at_unix_ms"] == 4000
+    assert library.json()["sessions"][0]["clips"][0]["file_size_bytes"] == 8
+    assert media_response.status_code == 200
+    assert media_response.headers["content-type"] == "video/mp4"
+    assert media_response.content == b"mp4-data"
+    assert missing.status_code == 404
+
+    with TestClient(
+        create_app(recording_runtime=recording_runtime)  # type: ignore[arg-type]
+    ) as client:
+        assert client.get("/api/v1/recordings/status").status_code == 403
 
 
 def test_cli_disables_high_frequency_preview_access_logs(monkeypatch, capsys) -> None:

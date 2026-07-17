@@ -27,7 +27,10 @@ from egoglass_ingest_gateway.webrtc_models import (
     WebRtcPhase,
     WebRtcViewerOffer,
 )
-from egoglass_ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
+from egoglass_ingest_gateway.webrtc_runtime import (
+    RECORDING_FRAME_MAX_AGE_NS,
+    WebRtcSessionRuntime,
+)
 
 
 def test_gateway_disables_per_frame_access_logs() -> None:
@@ -244,6 +247,77 @@ def test_stream_control_round_trip_reuses_the_connected_peer() -> None:
         assert (await runtime.control_status()).state is StreamControlState.STREAMING
 
     runtime: WebRtcSessionRuntime
+    asyncio.run(scenario())
+
+
+def test_recording_availability_follows_video_flow_when_control_state_is_stale() -> None:
+    peers: list[Peer] = []
+    now_ns = 5_000_000_000
+
+    class Peer:
+        def __init__(self, callbacks: WebRtcPeerCallbacks) -> None:
+            self.callbacks = callbacks
+            peers.append(self)
+
+        @property
+        def negotiated_video_codec(self) -> str:
+            return "H264"
+
+        async def accept_offer(self, _offer: WebRtcOffer) -> str:
+            return "v=0\r\nanswer-session-description"
+
+        async def close(self) -> None:
+            return None
+
+    class VideoSource:
+        def subscribe(self, *, buffered: bool) -> object:
+            assert buffered
+            return object()
+
+    class ControlChannel(WebRtcControlChannel):
+        @property
+        def is_open(self) -> bool:
+            return True
+
+        def send(self, _message: str) -> None:
+            return None
+
+    async def scenario() -> None:
+        nonlocal now_ns
+        token = "eval-pairing-token-123456"
+        runtime = WebRtcSessionRuntime(token, Peer, perf_clock=lambda: now_ns)
+        await runtime.accept_offer(
+            WebRtcOffer(
+                device_session_id="device-session-recording-eval",
+                sdp="v=0\r\noffer-session-description",
+            ),
+            token,
+        )
+        source = VideoSource()
+        channel = ControlChannel()
+        await peers[0].callbacks.on_connection_state("connected")
+        await peers[0].callbacks.on_video_source(source)
+        await peers[0].callbacks.on_video_frame(
+            DecodedVideoFrame(1920, 1080, 0, Fraction(1, 90_000))
+        )
+        await peers[0].callbacks.on_control_channel_ready(channel)
+        await peers[0].callbacks.on_control_status(
+            channel,
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "message_type": "stream_control_status",
+                    "command_id": None,
+                    "state": "error",
+                    "detail": "stale control status",
+                }
+            ),
+        )
+
+        assert await runtime.recording_source() is not None
+        now_ns += RECORDING_FRAME_MAX_AGE_NS + 1
+        assert await runtime.recording_source() is None
+
     asyncio.run(scenario())
 
 

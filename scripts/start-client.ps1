@@ -18,6 +18,7 @@ $dataRoot = if ($env:LOCALAPPDATA) {
     Join-Path $HOME '.egoglass'
 }
 $logDirectory = Join-Path $dataRoot 'logs'
+$recordingsDirectory = Join-Path $repositoryRoot 'local-data\recordings'
 $ingestStdout = Join-Path $logDirectory 'ingest.stdout.log'
 $ingestStderr = Join-Path $logDirectory 'ingest.stderr.log'
 
@@ -89,6 +90,7 @@ if ($IngestPort -notin 1..65535 -or $DiscoveryPort -notin 1..65535) {
 Assert-TcpPortAvailable -Port $IngestPort
 Assert-UdpPortAvailable -Port $DiscoveryPort
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $recordingsDirectory | Out-Null
 
 $pairingToken = New-RuntimePairingToken
 $previousPairingToken = $env:EGOGLASS_PAIRING_TOKEN
@@ -105,6 +107,8 @@ try {
         $IngestPort,
         '--discovery-port',
         $DiscoveryPort,
+        '--recordings-root',
+        $recordingsDirectory,
         '--hide-pairing-token'
     ) -WorkingDirectory (Split-Path -Parent $ingestPython) -WindowStyle Hidden `
         -RedirectStandardOutput $ingestStdout -RedirectStandardError $ingestStderr -PassThru

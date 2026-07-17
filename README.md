@@ -9,11 +9,12 @@ data.
 ## Services
 
 - `services/ingest-gateway/`: terminates the direct Glass3 WebRTC video and
-  frame-metadata channels, relays the live track to one loopback viewer, and
-  also probes GB28181-generated RTSP as a fallback.
+  frame-metadata channels, relays the live track to one loopback viewer,
+  records operator-selected H.264 MP4 clips, and also probes GB28181-generated
+  RTSP as a fallback.
 - `services/operator-console/`: authenticated local UI for the real Glass3
-  WebRTC track, measured displayed FPS, stream control, and relative IMU
-  orientation.
+  WebRTC track, measured displayed FPS, stream and recording controls, relative
+  IMU orientation, and the local recording library.
 
 Future services will be added behind versioned contracts rather than imported
 from the operator console.
@@ -31,6 +32,10 @@ opens the native Windows operator console. Leave the PowerShell command running
 while using EgoGlass. Closing the Windows application stops both client
 processes. After the client reports ready, open EgoGlass directly from the
 Glass3 application list; no ADB launch parameters are required.
+
+Completed recordings are grouped by Glass3 WebRTC session under
+`local-data/recordings/`. The entire `local-data/` tree is ignored by Git and
+must not be committed.
 
 For individual operator-console development only:
 
