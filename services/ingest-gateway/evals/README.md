@@ -1,10 +1,9 @@
 # Ingest Gateway Evals
 
-The periodic eval verifies RTSP recovery, bounded WebRTC metadata matching,
-unbuffered viewer subscription, experimental IMU reception and replacement
-isolation, and a real aiortc H.264 negotiation with a
-browser-style receive-only offer. Credentials must never appear in
-operator-visible status.
+The periodic eval verifies that retired fallback transport modules and routes
+stay absent, plus bounded WebRTC metadata matching, unbuffered viewer
+subscription, experimental IMU reception and replacement isolation, and a real
+aiortc H.264 negotiation with a browser-style receive-only offer.
 
 `test_recording_eval.py` drives the production PyAV recorder with synthetic
 1280x720 frames, waits for source-end finalization, and then reopens and

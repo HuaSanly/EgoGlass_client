@@ -10,8 +10,7 @@ data.
 
 - `services/ingest-gateway/`: terminates the direct Glass3 WebRTC video and
   frame-metadata channels, relays the live track to one loopback viewer,
-  records operator-selected H.264 MP4 clips, and also probes GB28181-generated
-  RTSP as a fallback.
+  and records operator-selected H.264 MP4 clips.
 - `services/operator-console/`: authenticated local UI for the real Glass3
   WebRTC track, measured displayed FPS, stream and recording controls, relative
   IMU orientation, and the local recording library.

@@ -4,9 +4,7 @@ from pathlib import Path
 from starlette.testclient import TestClient
 
 import egoglass_ingest_gateway.app as app_module
-from egoglass_ingest_gateway.adapters.rtsp import RtspProbeError
 from egoglass_ingest_gateway.app import create_app
-from egoglass_ingest_gateway.models import ProbeResult, RtspSourceConfig, RtspTransport
 from egoglass_ingest_gateway.recording import (
     RecordingClipNotFoundError,
     RecordingSessionNotFoundError,
@@ -18,7 +16,6 @@ from egoglass_ingest_gateway.recording_models import (
     RecordingState,
     RecordingStatus,
 )
-from egoglass_ingest_gateway.runtime import IngestRuntime
 from egoglass_ingest_gateway.webrtc_models import (
     ImuChannelState,
     ImuSensorStatus,
@@ -181,87 +178,19 @@ class RecordingApiRuntime:
         return None
 
 
-def result_fixture() -> ProbeResult:
-    return ProbeResult(
-        redacted_url=(
-            "rtsp://media.example.test:554/rtp/"
-            "34020000001550000668_34020000001550000668"
-        ),
-        transport=RtspTransport.TCP,
-        codec="h264",
-        width=1280,
-        height=720,
-        pixel_format="yuv420p",
-        average_fps=20,
-        first_frame_pts=0,
-        first_frame_time_base_num=1,
-        first_frame_time_base_den=90_000,
-        opened_at_unix_ns=1,
-        first_frame_received_at_perf_counter_ns=1,
-        probe_latency_ms=50,
-    )
-
-
-def test_health_status_and_probe_contract() -> None:
-    class Decoder:
-        def probe(self, config: RtspSourceConfig) -> ProbeResult:
-            assert config.transport is RtspTransport.TCP
-            return result_fixture()
-
-    with TestClient(create_app(IngestRuntime(Decoder()))) as client:
+def test_health_and_removed_fallback_routes() -> None:
+    with TestClient(create_app()) as client:
         health = client.get("/api/v1/health")
-        initial = client.get("/api/v1/status")
+        status = client.get("/api/v1/status")
         probe = client.post(
             "/api/v1/rtsp/probe",
-            json={
-                "host": "media.example.test",
-                "device_id": "34020000001550000668",
-            },
+            json={"host": "obsolete.example.test", "device_id": "obsolete"},
         )
-        final = client.get("/api/v1/status")
 
+    assert health.status_code == 200
     assert health.json()["service"] == "ingest-gateway"
-    assert initial.json()["phase"] == "idle"
-    assert probe.status_code == 200
-    assert probe.json()["codec"] == "h264"
-    assert final.json()["phase"] == "ready"
-
-
-def test_probe_failure_returns_safe_gateway_error() -> None:
-    class Decoder:
-        def probe(self, config: RtspSourceConfig) -> ProbeResult:
-            raise RtspProbeError(f"RTSP probe failed for {config.redacted_url}: TimeoutError")
-
-    with TestClient(create_app(IngestRuntime(Decoder()))) as client:
-        response = client.post(
-            "/api/v1/rtsp/probe",
-            json={
-                "host": "media.example.test",
-                "device_id": "34020000001550000668",
-                "username": "operator",
-                "password": "top-secret",
-            },
-        )
-
-    assert response.status_code == 502
-    assert "top-secret" not in response.text
-    assert "operator@" not in response.text
-    assert "TimeoutError" in response.json()["detail"]
-
-
-def test_validation_error_does_not_echo_password() -> None:
-    with TestClient(create_app()) as client:
-        response = client.post(
-            "/api/v1/rtsp/probe",
-            json={
-                "host": "media.example.test",
-                "device_id": "34020000001550000668",
-                "password": "top-secret",
-            },
-        )
-
-    assert response.status_code == 422
-    assert "top-secret" not in response.text
+    assert status.status_code == 404
+    assert probe.status_code == 404
 
 
 def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:

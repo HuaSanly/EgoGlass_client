@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "egoglass-ingest-gateway"
 version = "0.1.0"
-description = "EgoGlass WebRTC and RTSP media ingress for Rokid Glass3"
+description = "EgoGlass WebRTC media ingress for Rokid Glass3"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
