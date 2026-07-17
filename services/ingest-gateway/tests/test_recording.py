@@ -79,7 +79,7 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
 ) -> None:
     async def scenario() -> None:
         source = FakeVideoSource()
-        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1920, 1080)
+        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720)
         countdown = ControlledCountdown()
         writers: list[FakeRecorder] = []
         wall_ms = [1_000_000]
@@ -164,7 +164,7 @@ def test_stopping_during_countdown_creates_no_clip(tmp_path: Path) -> None:
             tmp_path,
             lambda: asyncio.sleep(
                 0,
-                result=WebRtcVideoRecordingSource(SESSION_ID, source, 1920, 1080),
+                result=WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720),
             ),
             recorder_factory=FakeRecorder,
             sleep=countdown.sleep,
@@ -199,7 +199,7 @@ def test_source_end_finalizes_current_recording(tmp_path: Path) -> None:
             tmp_path,
             lambda: asyncio.sleep(
                 0,
-                result=WebRtcVideoRecordingSource(SESSION_ID, source, 1920, 1080),
+                result=WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720),
             ),
             recorder_factory=factory,
             sleep=countdown.sleep,
@@ -222,8 +222,8 @@ def test_session_replacement_during_countdown_publishes_nothing(tmp_path: Path) 
     async def scenario() -> None:
         countdown = ControlledCountdown()
         sources = [
-            WebRtcVideoRecordingSource(SESSION_ID, FakeVideoSource(), 1920, 1080),
-            WebRtcVideoRecordingSource("b" * 32, FakeVideoSource(), 1920, 1080),
+            WebRtcVideoRecordingSource(SESSION_ID, FakeVideoSource(), 1280, 720),
+            WebRtcVideoRecordingSource("b" * 32, FakeVideoSource(), 1280, 720),
         ]
 
         async def source_provider() -> WebRtcVideoRecordingSource:
@@ -248,20 +248,20 @@ def test_session_replacement_during_countdown_publishes_nothing(tmp_path: Path) 
     asyncio.run(scenario())
 
 
-def test_recording_rejects_non_full_hd_source(tmp_path: Path) -> None:
+def test_recording_rejects_non_hd_source(tmp_path: Path) -> None:
     async def scenario() -> None:
         source = WebRtcVideoRecordingSource(
             SESSION_ID,
             FakeVideoSource(),
-            1280,
-            720,
+            1920,
+            1080,
         )
         runtime = RecordingRuntime(
             tmp_path,
             lambda: asyncio.sleep(0, result=source),
             recorder_factory=FakeRecorder,
         )
-        with pytest.raises(RecordingUnavailableError, match="must be 1920x1080"):
+        with pytest.raises(RecordingUnavailableError, match="must be 1280x720"):
             await runtime.start()
         assert not list(tmp_path.iterdir())
 
@@ -274,7 +274,7 @@ def test_delete_clip_updates_manifest_and_removes_empty_session(
 ) -> None:
     async def scenario() -> None:
         source = FakeVideoSource()
-        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1920, 1080)
+        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720)
         writers: list[FakeRecorder] = []
 
         def factory(path: Path, track: object) -> FakeRecorder:
@@ -367,11 +367,11 @@ def test_inspector_decodes_full_hd_h264_mp4(tmp_path: Path) -> None:
             rate=30,
             options={"preset": "ultrafast"},
         )
-        stream.width = 1920
-        stream.height = 1080
+        stream.width = 1280
+        stream.height = 720
         stream.pix_fmt = "yuv420p"
         for pts in range(2):
-            frame = av.VideoFrame(1920, 1080, "yuv420p")
+            frame = av.VideoFrame(1280, 720, "yuv420p")
             frame.pts = pts
             frame.time_base = Fraction(1, 30)
             for packet in stream.encode(frame):
@@ -382,6 +382,6 @@ def test_inspector_decodes_full_hd_h264_mp4(tmp_path: Path) -> None:
     result = inspect_recording(path)
 
     assert result.video_codec == "h264"
-    assert (result.width, result.height) == (1920, 1080)
+    assert (result.width, result.height) == (1280, 720)
     assert result.nominal_fps == 30.0
     assert result.decoded_frames == 2

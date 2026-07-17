@@ -23,7 +23,7 @@ class NonMonotonicVideoTrack:
 
     @staticmethod
     def _frame(pts: int) -> av.VideoFrame:
-        frame = av.VideoFrame(1920, 1080, "yuv420p")
+        frame = av.VideoFrame(1280, 720, "yuv420p")
         frame.pts = pts
         frame.time_base = Fraction(1, 90_000)
         return frame

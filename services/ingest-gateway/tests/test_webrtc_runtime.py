@@ -257,7 +257,7 @@ def test_recording_source_requires_recent_streaming_frames_not_control_state() -
         assert await runtime.recording_source() is None
 
         await peers[0].callbacks.on_video_frame(
-            DecodedVideoFrame(1920, 1080, 0, Fraction(1, 90_000))
+            DecodedVideoFrame(1280, 720, 0, Fraction(1, 90_000))
         )
         await peers[0].callbacks.on_control_channel_ready(channel)
         await peers[0].callbacks.on_control_status(
@@ -276,7 +276,7 @@ def test_recording_source_requires_recent_streaming_frames_not_control_state() -
         recording_source = await runtime.recording_source()
         assert recording_source is not None
         assert recording_source.session_id == answer.session_id
-        assert (recording_source.width, recording_source.height) == (1920, 1080)
+        assert (recording_source.width, recording_source.height) == (1280, 720)
         assert recording_source.source is source
         assert (await runtime.control_status()).state is StreamControlState.ERROR
 

@@ -33,9 +33,9 @@ def inspect_recording(path: Path) -> Mp4Inspection:
             if codec_name != "h264":
                 raise ValueError(f"expected H.264 video, found {codec_name or 'unknown'}")
             dimensions = (stream.codec_context.width, stream.codec_context.height)
-            if dimensions != (1920, 1080):
+            if dimensions != (1280, 720):
                 raise ValueError(
-                    f"expected 1920x1080 video, found {dimensions[0]}x{dimensions[1]}"
+                    f"expected 1280x720 video, found {dimensions[0]}x{dimensions[1]}"
                 )
             rate = stream.average_rate or stream.base_rate
             if rate is None:

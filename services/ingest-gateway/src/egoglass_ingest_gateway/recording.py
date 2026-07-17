@@ -25,8 +25,8 @@ from .recording_models import (
 )
 
 COUNTDOWN_SECONDS = 3.0
-OUTPUT_WIDTH = 1920
-OUTPUT_HEIGHT = 1080
+OUTPUT_WIDTH = 1280
+OUTPUT_HEIGHT = 720
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 LOGGER = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class RecordingRuntime:
         self._recorder: RecordingWriter | None = None
         self._partial_path: Path | None = None
         self._state = RecordingState.UNAVAILABLE
-        self._detail = "Glass3 1920x1080 video is not ready"
+        self._detail = "Glass3 1280x720 video is not ready"
         self._session_id: str | None = None
         self._clip_id: str | None = None
         self._countdown_started_at_unix_ms: int | None = None
@@ -439,7 +439,7 @@ class RecordingRuntime:
             raise RecordingUnavailableError("Glass3 video is not ready")
         if (source.width, source.height) != (OUTPUT_WIDTH, OUTPUT_HEIGHT):
             raise RecordingUnavailableError(
-                "Glass3 video must be 1920x1080 before recording can start"
+                "Glass3 video must be 1280x720 before recording can start"
             )
         if not _ID_PATTERN.fullmatch(source.session_id):
             raise RecordingUnavailableError("Glass3 session identifier is invalid")

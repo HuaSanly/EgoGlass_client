@@ -298,7 +298,7 @@ def test_recording_availability_follows_video_flow_when_control_state_is_stale()
         await peers[0].callbacks.on_connection_state("connected")
         await peers[0].callbacks.on_video_source(source)
         await peers[0].callbacks.on_video_frame(
-            DecodedVideoFrame(1920, 1080, 0, Fraction(1, 90_000))
+            DecodedVideoFrame(1280, 720, 0, Fraction(1, 90_000))
         )
         await peers[0].callbacks.on_control_channel_ready(channel)
         await peers[0].callbacks.on_control_status(

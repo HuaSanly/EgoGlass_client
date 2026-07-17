@@ -14,7 +14,7 @@ from egoglass_ingest_gateway.recording_inspection import inspect_recording
 SESSION_ID = "e" * 32
 
 
-class SyntheticFullHdTrack:
+class SyntheticHdTrack:
     kind = "video"
 
     def __init__(self) -> None:
@@ -24,7 +24,7 @@ class SyntheticFullHdTrack:
     async def recv(self) -> av.VideoFrame:
         if self._index == len(self._pts):
             raise MediaStreamError
-        frame = av.VideoFrame(1920, 1080, "yuv420p")
+        frame = av.VideoFrame(1280, 720, "yuv420p")
         frame.pts = self._pts[self._index]
         frame.time_base = Fraction(1, 90_000)
         self._index += 1
@@ -32,16 +32,16 @@ class SyntheticFullHdTrack:
 
 
 class SyntheticSource:
-    def subscribe(self, *, buffered: bool) -> SyntheticFullHdTrack:
+    def subscribe(self, *, buffered: bool) -> SyntheticHdTrack:
         assert buffered is True
-        return SyntheticFullHdTrack()
+        return SyntheticHdTrack()
 
 
 async def no_countdown_delay(seconds: float) -> None:
     assert seconds == 3.0
 
 
-def test_real_pyav_path_publishes_only_playable_full_hd_h264_mp4(
+def test_real_pyav_path_publishes_only_playable_hd_h264_mp4(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
@@ -52,8 +52,8 @@ def test_real_pyav_path_publishes_only_playable_full_hd_h264_mp4(
                 result=WebRtcVideoRecordingSource(
                     SESSION_ID,
                     SyntheticSource(),
-                    1920,
-                    1080,
+                    1280,
+                    720,
                 ),
             ),
             sleep=no_countdown_delay,
@@ -75,7 +75,7 @@ def test_real_pyav_path_publishes_only_playable_full_hd_h264_mp4(
         assert path is not None
         inspection = inspect_recording(path)
         assert inspection.video_codec == "h264"
-        assert (inspection.width, inspection.height) == (1920, 1080)
+        assert (inspection.width, inspection.height) == (1280, 720)
         assert inspection.nominal_fps == 30.0
         assert inspection.decoded_frames == 3
         assert not list(tmp_path.rglob("*.part.mp4"))

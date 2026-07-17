@@ -49,7 +49,7 @@ stop command during the countdown cancels it without creating a clip. A stop
 while recording flushes the H.264 encoder, closes the MP4 container, atomically
 renames the temporary file, and then atomically updates `session.json`.
 
-Recording accepts only an active 1920x1080 Glass3 source. It uses the incoming
+Recording accepts only an active 1280x720 Glass3 source. It uses the incoming
 decoded frames at their full dimensions, a nominal 30 FPS H.264 stream, and a
 buffered aiortc `MediaRelay` subscription so the operator preview does not
 consume recording frames. IMU data is deliberately not stored in this version.
@@ -88,7 +88,7 @@ uv run python scripts/inspect-recording.py F:\path\to\session\clip.mp4
 ~~~
 
 The command exits nonzero unless the file is a finalized, playable MP4 with
-one H.264 1920x1080 video stream, nominal 30 FPS, and at least one decodable
+one H.264 1280x720 video stream, nominal 30 FPS, and at least one decodable
 frame. It prints the measured stream properties and decoded frame count as
 JSON on success.
 

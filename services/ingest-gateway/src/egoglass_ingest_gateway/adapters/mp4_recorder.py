@@ -17,8 +17,8 @@ class PyAvH264Mp4Recorder:
         path: Path,
         track: object,
         *,
-        width: int = 1920,
-        height: int = 1080,
+        width: int = 1280,
+        height: int = 720,
         fps: int = 30,
     ) -> None:
         self._path = path

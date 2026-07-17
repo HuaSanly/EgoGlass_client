@@ -25,8 +25,8 @@ class RecordingState(StrEnum):
 class RecordingOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    width: Literal[1920] = 1920
-    height: Literal[1080] = 1080
+    width: Literal[1280] = 1280
+    height: Literal[720] = 720
     fps: Literal[30] = 30
     container: Literal["mp4"] = "mp4"
     video_codec: Literal["h264"] = "h264"
@@ -75,8 +75,8 @@ class RecordingClip(BaseModel):
     recorded_at_unix_ms: int = Field(ge=0)
     ended_at_unix_ms: int = Field(ge=0)
     duration_ms: int = Field(ge=0)
-    width: Literal[1920] = 1920
-    height: Literal[1080] = 1080
+    width: Literal[1280] = 1280
+    height: Literal[720] = 720
     fps: Literal[30] = 30
     file_size_bytes: int = Field(gt=0)
     media_url: str = Field(pattern=r"^/api/v1/recordings/media/[0-9a-f]{32}/[0-9a-f]{32}$")

@@ -553,8 +553,8 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
     assert status.headers["access-control-allow-origin"] == origin
     assert status.json()["detail"] == ""
     assert status.json()["output"] == {
-        "width": 1920,
-        "height": 1080,
+        "width": 1280,
+        "height": 720,
         "fps": 30,
         "container": "mp4",
         "video_codec": "h264",
