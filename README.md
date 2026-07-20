@@ -28,9 +28,12 @@ Start the complete client from the repository root:
 
 The command starts the LAN ingest gateway, enables Glass3 auto-discovery, and
 opens the native Windows operator console. Leave the PowerShell command running
-while using EgoGlass. Closing the Windows application stops both client
-processes. After the client reports ready, open EgoGlass directly from the
-Glass3 application list; no ADB launch parameters are required.
+while using EgoGlass. Closing the Windows application or pressing `Ctrl+C` in
+the launcher stops the desktop and ingest process trees and releases ports
+`8770` and `8771`. A Windows Job Object also releases them if the launcher is
+terminated without running its normal cleanup. After the client reports ready,
+open EgoGlass directly from the Glass3 application list; no ADB launch
+parameters are required.
 
 Completed recordings are grouped by Glass3 WebRTC session under
 `local-data/recordings/`. The entire `local-data/` tree is ignored by Git and

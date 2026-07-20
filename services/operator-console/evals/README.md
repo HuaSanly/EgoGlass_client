@@ -23,7 +23,9 @@ Current pass criteria:
   data generator or WebSocket;
 - the event table stays below the live video, records bounded real runtime
   transitions, and clears without changing device or recording state;
-- desktop authentication and repeated start/stop lifecycle remain recoverable.
+- desktop authentication and repeated start/stop lifecycle remain recoverable;
+- terminating the Windows launcher closes every descendant process and its TCP
+  listener through the shared Job Object.
 
 Run with:
 

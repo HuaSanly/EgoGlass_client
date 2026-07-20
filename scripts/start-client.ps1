@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'client-process-lifecycle.ps1')
 $ingestPython = Join-Path $repositoryRoot (
     'services\ingest-gateway\.venv\Scripts\python.exe'
 )
@@ -34,17 +35,6 @@ function Assert-UdpPortAvailable([int] $Port) {
     if ($null -ne $endpoint) {
         throw "UDP port $Port is already in use. Close the existing EgoGlass client first."
     }
-}
-
-function Stop-ProcessTree([int] $ProcessId) {
-    $children = @(
-        Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" `
-            -ErrorAction SilentlyContinue
-    )
-    foreach ($child in $children) {
-        Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
-    }
-    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
 }
 
 function New-RuntimePairingToken {
@@ -96,42 +86,42 @@ $pairingToken = New-RuntimePairingToken
 $previousPairingToken = $env:EGOGLASS_PAIRING_TOKEN
 $ingestProcess = $null
 $desktopProcess = $null
+$processJob = New-EgoGlassProcessJob
 try {
-    $env:EGOGLASS_PAIRING_TOKEN = $pairingToken
-    $ingestProcess = Start-Process -FilePath $ingestPython -ArgumentList @(
-        '-m',
-        'egoglass_ingest_gateway.app',
-        '--host',
-        '0.0.0.0',
-        '--port',
-        $IngestPort,
-        '--discovery-port',
-        $DiscoveryPort,
-        '--recordings-root',
-        $recordingsDirectory,
-        '--hide-pairing-token'
-    ) -WorkingDirectory (Split-Path -Parent $ingestPython) -WindowStyle Hidden `
-        -RedirectStandardOutput $ingestStdout -RedirectStandardError $ingestStderr -PassThru
-} finally {
-    $env:EGOGLASS_PAIRING_TOKEN = $previousPairingToken
-}
+    try {
+        $env:EGOGLASS_PAIRING_TOKEN = $pairingToken
+        $ingestProcess = Start-Process -FilePath $ingestPython -ArgumentList @(
+            '-m',
+            'egoglass_ingest_gateway.app',
+            '--host',
+            '0.0.0.0',
+            '--port',
+            $IngestPort,
+            '--discovery-port',
+            $DiscoveryPort,
+            '--recordings-root',
+            $recordingsDirectory,
+            '--hide-pairing-token'
+        ) -WorkingDirectory (Split-Path -Parent $ingestPython) -WindowStyle Hidden `
+            -RedirectStandardOutput $ingestStdout -RedirectStandardError $ingestStderr -PassThru
+        Add-ProcessTreeToJob -Job $processJob -ProcessId $ingestProcess.Id
+    } finally {
+        $env:EGOGLASS_PAIRING_TOKEN = $previousPairingToken
+    }
 
-try {
     Wait-IngestHealth -Port $IngestPort
     $desktopProcess = Start-Process -FilePath $desktopPython -ArgumentList @(
         '-m',
         'egoglass_operator_console.desktop'
     ) -WorkingDirectory (Split-Path -Parent $desktopPython) -PassThru
+    Add-ProcessTreeToJob -Job $processJob -ProcessId $desktopProcess.Id
 
     Write-Host 'EgoGlass client is ready.'
     Write-Host 'Now open EgoGlass directly from the Glass3 application list.'
-    Write-Host 'Close the Windows EgoGlass window to stop the client.'
+    Write-Host 'Close the EgoGlass window or press Ctrl+C here to stop the client.'
     Wait-Process -Id $desktopProcess.Id
 } finally {
-    if ($null -ne $desktopProcess) {
-        Stop-ProcessTree -ProcessId $desktopProcess.Id
-    }
-    if ($null -ne $ingestProcess) {
-        Stop-ProcessTree -ProcessId $ingestProcess.Id
-    }
+    Stop-ClientProcesses -Processes @($desktopProcess, $ingestProcess) `
+        -ProcessJob $processJob
+    Write-Host 'EgoGlass client stopped. Runtime ports have been released.'
 }
