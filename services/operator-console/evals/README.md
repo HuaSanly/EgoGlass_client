@@ -18,7 +18,9 @@ Current pass criteria:
 - clip deletion requires confirmation and waits for a successful loopback
   gateway response before removing the card;
 - the Three.js canvas uses the real loopback IMU endpoint and the vendored
-  Madgwick filter, with no placeholder data generator or WebSocket;
+  Madgwick filter, establishes its first reference only after stationary
+  gravity initialization and quaternion convergence, and has no placeholder
+  data generator or WebSocket;
 - the event table stays below the live video, records bounded real runtime
   transitions, and clears without changing device or recording state;
 - desktop authentication and repeated start/stop lifecycle remain recoverable.
@@ -30,3 +32,5 @@ python -m uv run pytest -q evals
 ```
 
 Real-device WebRTC and long-session evals remain separate named hardware gates.
+The latest IMU cold-start device result is recorded in
+`results/2026-07-17-imu-startup-reference.md`.
