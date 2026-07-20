@@ -1,4 +1,5 @@
 import {
+  getSessionDisplayName,
   readJsonResponse,
   readRecordingLibrary,
   readRecordingStatus,
@@ -23,6 +24,8 @@ const elements = {
   errorDetail: document.querySelector("#library-error-detail"),
   sessionList: document.querySelector("#session-list"),
   deleteDialog: document.querySelector("#delete-recording-dialog"),
+  deleteDialogTitle: document.querySelector("#delete-dialog-title"),
+  deleteWarning: document.querySelector("#delete-dialog-warning"),
   deleteTarget: document.querySelector("#delete-dialog-target"),
   deleteError: document.querySelector("#delete-dialog-error"),
   confirmDeleteButton: document.querySelector("#confirm-delete-button"),
@@ -44,6 +47,12 @@ const recordingLabels = {
   recording: "正在录制视频",
   finalizing: "正在保存视频",
   error: "录制服务异常",
+};
+const sessionStateLabels = {
+  active: "采集中",
+  finalizing: "正在完成",
+  complete: "已完成",
+  incomplete: "异常中断",
 };
 
 let statusTimer = null;
@@ -73,19 +82,6 @@ function formatDateTime(unixMs) {
   }).format(new Date(unixMs));
 }
 
-function formatSessionFolderName(unixMs) {
-  const date = new Date(unixMs);
-  const pad = (value) => String(value).padStart(2, "0");
-  return [
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-    `${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`,
-  ].join(" ");
-}
-
-function getSessionDisplayName(session) {
-  return session.display_name || formatSessionFolderName(session.started_at_unix_ms);
-}
-
 function formatDuration(durationMs) {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -101,6 +97,38 @@ function formatFileSize(bytes) {
 
 function getSessionDuration(session) {
   return session.clips.reduce((total, clip) => total + clip.duration_ms, 0);
+}
+
+function isLegacyVideoOnlySession(session) {
+  return session.telemetry_database === null;
+}
+
+function formatMetadataCoverage(quality) {
+  if (quality.metadata_match_coverage === null) return "暂无帧元数据";
+  return `${(quality.metadata_match_coverage * 100).toFixed(1)}%`;
+}
+
+function createSessionStateBadge(session) {
+  const badge = createTextElement(
+    "span",
+    `session-state-badge session-state-${session.state}`,
+    sessionStateLabels[session.state],
+  );
+  if (session.state === "incomplete" && session.recoverable) {
+    badge.title = "异常中断，会话数据可恢复检查";
+  }
+  return badge;
+}
+
+function createQualityMetric(label, value, detail = "") {
+  const item = document.createElement("div");
+  item.className = "session-quality-metric";
+  item.append(
+    createTextElement("dt", "", label),
+    createTextElement("dd", "", value),
+    createTextElement("small", "", detail),
+  );
+  return item;
 }
 
 function createTextElement(tag, className, text) {
@@ -121,6 +149,22 @@ function createRenameButton(session, { withLabel = false } = {}) {
   button.append(createTextElement("span", "", "✎"));
   if (withLabel) button.append(document.createTextNode("重命名"));
   button.addEventListener("click", () => openRenameDialog(session));
+  return button;
+}
+
+function createDeleteSessionButton(session, { withLabel = false } = {}) {
+  const button = document.createElement("button");
+  button.className = withLabel
+    ? "button button-small session-detail-delete"
+    : "button button-icon session-delete-button";
+  button.type = "button";
+  const deletionBlocked = ["active", "finalizing"].includes(session.state);
+  button.title = deletionBlocked ? "活动或正在完成的会话不能删除" : "删除整个会话夹";
+  button.setAttribute("aria-label", `删除会话夹 ${getSessionDisplayName(session)}`);
+  button.disabled = deletionBlocked;
+  button.append(createTextElement("span", "", "×"));
+  if (withLabel) button.append(document.createTextNode("删除会话"));
+  button.addEventListener("click", () => openDeleteSessionDialog(session));
   return button;
 }
 
@@ -153,24 +197,36 @@ function renderSessionFolder(session) {
   );
   const stats = document.createElement("span");
   stats.className = "session-folder-stats";
+  const imuSummary = isLegacyVideoOnlySession(session)
+    ? "历史仅视频"
+    : `${session.quality.imu_sample_count.toLocaleString("zh-CN")} IMU`;
   stats.append(
+    createSessionStateBadge(session),
     createTextElement("span", "", `${session.clips.length} 段视频`),
+    createTextElement("span", "", imuSummary),
     createTextElement("span", "", formatDuration(getSessionDuration(session))),
     createTextElement("span", "session-folder-chevron", "›"),
   );
   openButton.append(folderMark, identity, stats);
   openButton.addEventListener("click", () => openSession(session.session_id));
 
-  item.append(openButton, createRenameButton(session));
+  const actions = document.createElement("div");
+  actions.className = "session-folder-actions";
+  actions.append(createRenameButton(session), createDeleteSessionButton(session));
+  item.append(openButton, actions);
   return item;
 }
 
 function openDeleteDialog(session, clip, clipIndex) {
   if (deleteInFlight) return;
   pendingDelete = {
+    kind: "clip",
     session_id: session.session_id,
     clip_id: clip.clip_id,
   };
+  elements.deleteDialogTitle.textContent = "删除视频片段";
+  elements.deleteWarning.textContent = "删除后无法恢复，本地 MP4 文件也会同时移除。";
+  elements.confirmDeleteButton.textContent = "删除片段";
   elements.deleteTarget.textContent = [
     getSessionDisplayName(session),
     `片段 ${String(clipIndex + 1).padStart(2, "0")}`,
@@ -178,6 +234,26 @@ function openDeleteDialog(session, clip, clipIndex) {
   ].join(" · ");
   elements.deleteError.textContent = "";
   elements.deleteError.hidden = true;
+  elements.deleteDialog.showModal();
+}
+
+function openDeleteSessionDialog(session) {
+  if (deleteInFlight || ["active", "finalizing"].includes(session.state)) return;
+  pendingDelete = {
+    kind: "session",
+    session_id: session.session_id,
+  };
+  elements.deleteDialogTitle.textContent = "删除整个会话夹";
+  elements.deleteWarning.textContent =
+    "删除后无法恢复，会话内的视频、IMU、帧元数据和质量记录都会同时移除。";
+  elements.deleteTarget.textContent = [
+    getSessionDisplayName(session),
+    `${session.clips.length} 段视频`,
+    `${session.quality.imu_sample_count.toLocaleString("zh-CN")} IMU 样本`,
+  ].join(" · ");
+  elements.deleteError.textContent = "";
+  elements.deleteError.hidden = true;
+  elements.confirmDeleteButton.textContent = "删除整个会话";
   elements.deleteDialog.showModal();
 }
 
@@ -258,6 +334,9 @@ function renderSessionDetail(session) {
   elements.title.textContent = getSessionDisplayName(session);
   elements.summary.textContent = [
     `${session.clips.length} 段视频`,
+    isLegacyVideoOnlySession(session)
+      ? "历史仅视频"
+      : `${session.quality.imu_sample_count.toLocaleString("zh-CN")} IMU 样本`,
     formatDateTime(session.started_at_unix_ms),
   ].join(" · ");
   elements.backButton.hidden = false;
@@ -265,18 +344,92 @@ function renderSessionDetail(session) {
   const header = document.createElement("header");
   header.className = "session-detail-header";
   const identity = document.createElement("div");
+  const detailIdentity = document.createElement("span");
+  detailIdentity.className = "session-detail-identity";
+  detailIdentity.append(
+    createTextElement("strong", "", getSessionDisplayName(session)),
+    createSessionStateBadge(session),
+  );
   identity.append(
     createTextElement("span", "eyebrow", "SESSION CONTENT"),
-    createTextElement("strong", "", getSessionDisplayName(session)),
+    detailIdentity,
   );
-  header.append(identity, createRenameButton(session, { withLabel: true }));
+  const detailActions = document.createElement("div");
+  detailActions.className = "session-detail-actions";
+  detailActions.append(
+    createRenameButton(session, { withLabel: true }),
+    createDeleteSessionButton(session, { withLabel: true }),
+  );
+  header.append(identity, detailActions);
+
+  const quality = document.createElement("dl");
+  quality.className = "session-quality-summary";
+  if (isLegacyVideoOnlySession(session)) {
+    quality.append(
+      createQualityMetric("IMU 数据", "历史仅视频", "未采集遥测数据库"),
+      createQualityMetric("帧元数据", "未记录", "历史清单无逐帧索引"),
+      createQualityMetric("时间同步", "不可评估", "无原始时钟映射"),
+      createQualityMetric("连接分段", "未记录", "历史清单无连接事件"),
+    );
+  } else {
+    const imuDetail = [
+      `ACC ${session.quality.accelerometer_sample_count.toLocaleString("zh-CN")}`,
+      `GYRO ${session.quality.gyroscope_sample_count.toLocaleString("zh-CN")}`,
+    ].join(" · ");
+    const anomalyCount = session.quality.imu_sequence_gap_count +
+      session.quality.imu_out_of_order_sample_count +
+      session.quality.telemetry_queue_overflow_count;
+    quality.append(
+      createQualityMetric(
+        "IMU 样本",
+        session.quality.imu_sample_count.toLocaleString("zh-CN"),
+        session.state === "active" ? `持续保存中 · ${imuDetail}` : imuDetail,
+      ),
+      createQualityMetric(
+        "IMU 完整性",
+        anomalyCount === 0 ? "未见异常" : `${anomalyCount} 项异常`,
+        `缺口 ${session.quality.imu_sequence_gap_count} · 乱序 ${session.quality.imu_out_of_order_sample_count} · 队列溢出 ${session.quality.telemetry_queue_overflow_count}`,
+      ),
+      createQualityMetric(
+        "帧元数据",
+        formatMetadataCoverage(session.quality),
+        `${session.quality.recorded_video_frame_metadata_match_count} / ${session.quality.recorded_video_frame_count} 个录制帧匹配`,
+      ),
+      createQualityMetric(
+        "时间同步",
+        "原始时间已保存",
+        `${session.quality.timestamp_mapping_segment_count} 个映射分段 · 尚未对齐`,
+      ),
+      createQualityMetric(
+        "连接分段",
+        session.quality.connection_segment_count.toLocaleString("zh-CN"),
+        session.state === "incomplete" && session.recoverable ? "可进行恢复检查" : "WebRTC 连接记录",
+      ),
+    );
+  }
 
   const clips = document.createElement("div");
   clips.className = "clip-list";
-  session.clips.forEach((clip, clipIndex) => {
-    clips.append(renderClip(session, clip, clipIndex));
-  });
-  elements.sessionList.append(header, clips);
+  if (session.clips.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "session-clips-empty";
+    empty.append(
+      createTextElement("strong", "", "当前会话还没有视频片段"),
+      createTextElement(
+        "span",
+        "",
+        session.state === "active" && !isLegacyVideoOnlySession(session)
+          ? "IMU 仍在持续保存，开始录制后视频会出现在这里"
+          : "该会话保留已有遥测和质量数据",
+      ),
+    );
+    clips.append(empty);
+  } else {
+    session.clips.forEach((clip, clipIndex) => {
+      clips.append(renderClip(session, clip, clipIndex));
+    });
+  }
+  elements.sessionList.append(header, quality, clips);
 }
 
 function renderFolderList(library) {
@@ -286,7 +439,12 @@ function renderFolderList(library) {
   );
   elements.sessionList.dataset.view = "folders";
   elements.title.textContent = "本地会话夹";
-  elements.summary.textContent = `${library.sessions.length} 个会话夹 · ${clipCount} 段视频`;
+  const imuCount = library.sessions.reduce(
+    (total, session) => total + session.quality.imu_sample_count,
+    0,
+  );
+  elements.summary.textContent =
+    `${library.sessions.length} 个会话夹 · ${clipCount} 段视频 · ${imuCount.toLocaleString("zh-CN")} IMU 样本`;
   elements.backButton.hidden = true;
   library.sessions.forEach((session) => {
     elements.sessionList.append(renderSessionFolder(session));
@@ -308,7 +466,7 @@ function renderLibrary(library) {
   if (library.sessions.length === 0) {
     selectedSessionId = null;
     elements.title.textContent = "本地会话夹";
-    elements.summary.textContent = "0 个会话夹 · 0 段视频";
+    elements.summary.textContent = "0 个会话夹 · 0 段视频 · 0 IMU 样本";
     elements.backButton.hidden = true;
     setLibraryView("empty");
     return;
@@ -330,7 +488,9 @@ function renderRecordingStatus(status) {
   elements.recordingDot.dataset.state = status.state;
   elements.recordingLabel.textContent = recordingLabels[status.state];
   const output = `${status.output.width} × ${status.output.height} · ${status.output.fps} FPS · ${status.output.video_codec.toUpperCase()} ${status.output.container.toUpperCase()}`;
-  elements.recordingDetail.textContent = status.detail || output;
+  elements.recordingDetail.textContent = status.session_state === "active"
+    ? `采集会话进行中 · ${status.detail || output}`
+    : status.detail || output;
 }
 
 function scheduleStatusPoll(delayMs = 500) {
@@ -380,7 +540,7 @@ async function pollLibrary({ showLoading = false } = {}) {
   }
 }
 
-async function confirmDeleteClip() {
+async function confirmDeleteTarget() {
   if (deleteInFlight || pendingDelete === null) return;
   const target = pendingDelete;
   deleteInFlight = true;
@@ -390,11 +550,15 @@ async function confirmDeleteClip() {
   elements.confirmDeleteButton.textContent = "正在删除";
   elements.deleteError.hidden = true;
   try {
+    const endpoint = target.kind === "session"
+      ? recordingSessionEndpoint(target.session_id)
+      : recordingDeleteEndpoint(target.session_id, target.clip_id);
     const response = await fetch(
-      recordingDeleteEndpoint(target.session_id, target.clip_id),
+      endpoint,
       { method: "DELETE", cache: "no-store" },
     );
-    const payload = await readJsonResponse(response, `删除视频 HTTP ${response.status}`);
+    const operation = target.kind === "session" ? "删除会话" : "删除视频";
+    const payload = await readJsonResponse(response, `${operation} HTTP ${response.status}`);
     const library = readRecordingLibrary(payload);
     pendingDelete = null;
     elements.deleteDialog.close("deleted");
@@ -464,7 +628,7 @@ function closeRenameDialog() {
 
 elements.refreshButton.addEventListener("click", () => pollLibrary({ showLoading: true }));
 elements.backButton.addEventListener("click", closeSession);
-elements.confirmDeleteButton.addEventListener("click", confirmDeleteClip);
+elements.confirmDeleteButton.addEventListener("click", confirmDeleteTarget);
 elements.renameForm.addEventListener("submit", confirmRenameSession);
 elements.cancelRenameButton.addEventListener("click", closeRenameDialog);
 elements.closeRenameDialogButton.addEventListener("click", closeRenameDialog);

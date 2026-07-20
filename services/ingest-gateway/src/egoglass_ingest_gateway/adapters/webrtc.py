@@ -18,10 +18,11 @@ class DecodedVideoFrame:
 
 @dataclass(frozen=True)
 class WebRtcVideoRecordingSource:
-    session_id: str
+    connection_session_id: str
     source: WebRtcVideoSource
     width: int
     height: int
+    camera_start_generation: int
 
 
 class WebRtcVideoSource(Protocol):

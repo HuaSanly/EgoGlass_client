@@ -9,7 +9,9 @@ from pathlib import Path
 import av
 import pytest
 
+from egoglass_ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
 from egoglass_ingest_gateway.adapters.webrtc import WebRtcVideoRecordingSource
+from egoglass_ingest_gateway.capture_session import CaptureSessionDatabase
 from egoglass_ingest_gateway.recording import (
     COUNTDOWN_SECONDS,
     RecordingClipNotFoundError,
@@ -56,6 +58,21 @@ class FakeRecorder:
         self.frames_received = 1
         self.finished = asyncio.Event()
 
+    @property
+    def frame_records(self) -> tuple[RecordedVideoFrame, ...]:
+        return (
+            RecordedVideoFrame(
+                frame_index=0,
+                source_frame_pts=0,
+                source_frame_time_base_num=1,
+                source_frame_time_base_den=90_000,
+                mp4_pts=0,
+                mp4_time_base_num=1,
+                mp4_time_base_den=30,
+                received_at_client_perf_counter_ns=1,
+            ),
+        )
+
     async def start(self) -> None:
         self.started = True
 
@@ -79,7 +96,7 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
 ) -> None:
     async def scenario() -> None:
         source = FakeVideoSource()
-        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720)
+        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720, 1)
         countdown = ControlledCountdown()
         writers: list[FakeRecorder] = []
         wall_ms = [1_000_000]
@@ -97,6 +114,7 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
             sleep=countdown.sleep,
             unix_clock_ms=lambda: wall_ms[0],
             monotonic_clock_ns=lambda: monotonic_ns[0],
+            session_id_factory=lambda: SESSION_ID,
         )
         countdown_status = await runtime.start()
         assert countdown_status.state == "countdown"
@@ -122,36 +140,38 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
         library = await runtime.library()
         assert len(library.sessions) == 1
         assert library.sessions[0].session_id == SESSION_ID
-        assert library.sessions[0].display_name is None
+        assert library.sessions[0].display_name.endswith("16-40")
+        assert library.sessions[0].state == "active"
         assert len(library.sessions[0].clips) == 1
         clip = library.sessions[0].clips[0]
-        assert clip.duration_ms == 2500
+        assert clip.frame_count == 1
         assert clip.file_size_bytes == len(b"finalized-mp4")
         assert await runtime.media_path(SESSION_ID, clip.clip_id) == (
-            tmp_path / SESSION_ID / f"{clip.clip_id}.mp4"
+            tmp_path / SESSION_ID / "media" / f"{clip.clip_id}.mp4"
         )
         assert await runtime.media_path("../outside", clip.clip_id) is None
 
         manifest_path = tmp_path / SESSION_ID / "session.json"
-        legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        legacy_manifest.pop("display_name")
-        manifest_path.write_text(
-            json.dumps(legacy_manifest),
-            encoding="utf-8",
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["contract_id"] == "capture-session-v1"
+        assert manifest["storage"]["telemetry_database_path"] == (
+            "telemetry/telemetry.sqlite"
         )
-        assert (await runtime.library()).sessions[0].display_name is None
 
         renamed = await runtime.rename_session(SESSION_ID, "厨房采集")
         assert renamed.sessions[0].display_name == "厨房采集"
         assert (await runtime.library()).sessions[0].display_name == "厨房采集"
         assert await runtime.media_path(SESSION_ID, clip.clip_id) == (
-            tmp_path / SESSION_ID / f"{clip.clip_id}.mp4"
+            tmp_path / SESSION_ID / "media" / f"{clip.clip_id}.mp4"
         )
         with pytest.raises(RecordingSessionNotFoundError):
             await runtime.rename_session("b" * 32, "不存在")
 
-        (tmp_path / SESSION_ID / f"{clip.clip_id}.mp4").write_bytes(b"truncated")
+        (tmp_path / SESSION_ID / "media" / f"{clip.clip_id}.mp4").write_bytes(
+            b"truncated"
+        )
         assert await runtime.media_path(SESSION_ID, clip.clip_id) is None
+        await runtime.close()
 
     asyncio.run(scenario())
 
@@ -164,10 +184,11 @@ def test_stopping_during_countdown_creates_no_clip(tmp_path: Path) -> None:
             tmp_path,
             lambda: asyncio.sleep(
                 0,
-                result=WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720),
+                result=WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720, 1),
             ),
             recorder_factory=FakeRecorder,
             sleep=countdown.sleep,
+            session_id_factory=lambda: SESSION_ID,
         )
         await runtime.start()
         await countdown.started.wait()
@@ -176,10 +197,16 @@ def test_stopping_during_countdown_creates_no_clip(tmp_path: Path) -> None:
         assert status.state == "ready"
         assert status.clip_id is None
         assert source.subscriptions == []
-        assert (await runtime.library()).sessions == []
-        assert not list(tmp_path.rglob("*"))
+        library = await runtime.library()
+        assert len(library.sessions) == 1
+        assert library.sessions[0].state == "active"
+        assert library.sessions[0].clips == []
+        assert (tmp_path / SESSION_ID / "telemetry" / "telemetry.sqlite").is_file()
         with pytest.raises(RecordingConflictError):
             await runtime.stop()
+        finalized = await runtime.session_command("finalize")
+        assert finalized.session_id is None
+        assert (await runtime.library()).sessions[0].state == "incomplete"
 
     asyncio.run(scenario())
 
@@ -199,21 +226,26 @@ def test_source_end_finalizes_current_recording(tmp_path: Path) -> None:
             tmp_path,
             lambda: asyncio.sleep(
                 0,
-                result=WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720),
+                result=WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720, 1),
             ),
             recorder_factory=factory,
             sleep=countdown.sleep,
+            session_id_factory=lambda: SESSION_ID,
         )
         await runtime.start()
         countdown.release.set()
         await advance_until(lambda: bool(writers and writers[0].started))
         writers[0].finished.set()
-        await advance_until(
-            lambda: (tmp_path / SESSION_ID / "session.json").is_file()
-        )
+        for _attempt in range(50):
+            if (await runtime.status()).state == "ready":
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("source end did not finalize the MP4")
 
         assert (await runtime.status()).state == "ready"
         assert len((await runtime.library()).sessions[0].clips) == 1
+        await runtime.close()
 
     asyncio.run(scenario())
 
@@ -222,8 +254,8 @@ def test_session_replacement_during_countdown_publishes_nothing(tmp_path: Path) 
     async def scenario() -> None:
         countdown = ControlledCountdown()
         sources = [
-            WebRtcVideoRecordingSource(SESSION_ID, FakeVideoSource(), 1280, 720),
-            WebRtcVideoRecordingSource("b" * 32, FakeVideoSource(), 1280, 720),
+            WebRtcVideoRecordingSource(SESSION_ID, FakeVideoSource(), 1280, 720, 1),
+            WebRtcVideoRecordingSource("b" * 32, FakeVideoSource(), 1280, 720, 1),
         ]
 
         async def source_provider() -> WebRtcVideoRecordingSource:
@@ -234,16 +266,20 @@ def test_session_replacement_during_countdown_publishes_nothing(tmp_path: Path) 
             source_provider,
             recorder_factory=FakeRecorder,
             sleep=countdown.sleep,
+            session_id_factory=lambda: SESSION_ID,
         )
         await runtime.start()
         countdown.release.set()
         await advance_until(lambda: not sources)
-        await advance_until(lambda: not list(tmp_path.rglob("*")))
 
         status = await runtime.status()
         assert status.state == "error"
         assert status.detail == "recording failed: RecordingUnavailableError"
-        assert (await runtime.library()).sessions == []
+        library = await runtime.library()
+        assert len(library.sessions) == 1
+        assert library.sessions[0].state == "active"
+        assert library.sessions[0].clips == []
+        await runtime.close()
 
     asyncio.run(scenario())
 
@@ -255,6 +291,7 @@ def test_recording_rejects_non_hd_source(tmp_path: Path) -> None:
             FakeVideoSource(),
             1920,
             1080,
+            1,
         )
         runtime = RecordingRuntime(
             tmp_path,
@@ -329,7 +366,7 @@ def test_delete_clip_updates_manifest_and_removes_empty_session(
 ) -> None:
     async def scenario() -> None:
         source = FakeVideoSource()
-        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720)
+        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720, 1)
         writers: list[FakeRecorder] = []
 
         def factory(path: Path, track: object) -> FakeRecorder:
@@ -345,6 +382,7 @@ def test_delete_clip_updates_manifest_and_removes_empty_session(
             lambda: asyncio.sleep(0, result=video),
             recorder_factory=factory,
             sleep=no_countdown_delay,
+            session_id_factory=lambda: SESSION_ID,
         )
         for expected_writer_count in (1, 2):
             await runtime.start()
@@ -352,23 +390,24 @@ def test_delete_clip_updates_manifest_and_removes_empty_session(
                 lambda expected=expected_writer_count: len(writers) == expected
             )
             await runtime.stop()
+        await runtime.session_command("new")
 
         library = await runtime.library()
         clips = library.sessions[0].clips
         assert len(clips) == 2
-        first_path = tmp_path / SESSION_ID / f"{clips[0].clip_id}.mp4"
-        second_path = tmp_path / SESSION_ID / f"{clips[1].clip_id}.mp4"
+        first_path = tmp_path / SESSION_ID / "media" / f"{clips[0].clip_id}.mp4"
+        second_path = tmp_path / SESSION_ID / "media" / f"{clips[1].clip_id}.mp4"
 
-        deleting_path = tmp_path / SESSION_ID / f"{clips[0].clip_id}.deleting"
-        original_unlink = Path.unlink
-
-        def fail_deleting_unlink(path: Path, *args: object, **kwargs: object) -> None:
-            if path == deleting_path:
-                raise OSError("injected delete failure")
-            original_unlink(path, *args, **kwargs)
+        deleting_path = tmp_path / SESSION_ID / "media" / f"{clips[0].clip_id}.deleting"
+        def fail_database_commit(_database: CaptureSessionDatabase) -> None:
+            raise OSError("injected delete failure")
 
         with monkeypatch.context() as delete_failure:
-            delete_failure.setattr(Path, "unlink", fail_deleting_unlink)
+            delete_failure.setattr(
+                CaptureSessionDatabase,
+                "commit_clip_delete",
+                fail_database_commit,
+            )
             with pytest.raises(RecordingFailureError):
                 await runtime.delete_clip(SESSION_ID, clips[0].clip_id)
 
@@ -385,18 +424,23 @@ def test_delete_clip_updates_manifest_and_removes_empty_session(
         assert [item.clip_id for item in after_first_delete.sessions[0].clips] == [
             clips[1].clip_id
         ]
+        assert after_first_delete.sessions[0].quality.recorded_video_frame_count == 1
         assert not first_path.exists()
         assert second_path.is_file()
 
         after_second_delete = await runtime.delete_clip(SESSION_ID, clips[1].clip_id)
-        assert after_second_delete.sessions == []
-        assert not (tmp_path / SESSION_ID).exists()
+        assert len(after_second_delete.sessions) == 1
+        assert after_second_delete.sessions[0].clips == []
+        assert after_second_delete.sessions[0].quality.recorded_video_frame_count == 0
+        assert (tmp_path / SESSION_ID / "telemetry" / "telemetry.sqlite").is_file()
         assert not list(tmp_path.rglob("*.deleting"))
 
         with pytest.raises(RecordingClipNotFoundError):
             await runtime.delete_clip(SESSION_ID, clips[1].clip_id)
         with pytest.raises(RecordingClipNotFoundError):
             await runtime.delete_clip("../outside", clips[1].clip_id)
+        assert (await runtime.delete_session(SESSION_ID)).sessions == []
+        assert not (tmp_path / SESSION_ID).exists()
 
     asyncio.run(scenario())
 
@@ -412,6 +456,30 @@ def test_recording_request_rejects_unknown_fields() -> None:
         RecordingSessionRenameRequest(display_name="   ")
     with pytest.raises(ValueError):
         RecordingSessionRenameRequest(display_name="厨房\n采集")
+
+
+def test_failed_whole_session_delete_leaves_unpublished_tombstone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        session_directory = tmp_path / SESSION_ID
+        session_directory.mkdir()
+        (session_directory / "session.json").write_text("{}", encoding="utf-8")
+        runtime = RecordingRuntime(tmp_path, lambda: asyncio.sleep(0, result=None))
+
+        def fail_delete(_path: Path) -> None:
+            raise OSError("locked file")
+
+        monkeypatch.setattr("egoglass_ingest_gateway.recording.shutil.rmtree", fail_delete)
+        with pytest.raises(RecordingFailureError, match="tombstone"):
+            await runtime.delete_session(SESSION_ID)
+
+        assert not session_directory.exists()
+        assert len(list(tmp_path.glob(f"{SESSION_ID}.deleting-*"))) == 1
+        assert (await runtime.library()).sessions == []
+
+    asyncio.run(scenario())
 
 
 def test_inspector_decodes_full_hd_h264_mp4(tmp_path: Path) -> None:

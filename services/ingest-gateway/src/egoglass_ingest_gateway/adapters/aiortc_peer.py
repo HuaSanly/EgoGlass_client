@@ -164,6 +164,13 @@ class AiortcPeer:
             return
 
     def _bind_metadata_channel(self, channel: object) -> None:
+        if (
+            getattr(channel, "ordered", None) is not False
+            or getattr(channel, "maxRetransmits", None) is not None
+            or getattr(channel, "maxPacketLifeTime", None) is not None
+        ):
+            return
+
         @channel.on("message")  # type: ignore[attr-defined]
         def on_message(message: str | bytes) -> None:
             self._schedule(self._callbacks.on_metadata(message))

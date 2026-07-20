@@ -1,8 +1,12 @@
 import { ImuSceneController } from "./imu-scene.js";
 import {
+  getSessionDisplayName,
   readJsonResponse,
+  readRecordingLibrary,
   readRecordingStatus,
   recordingCommandEndpoint,
+  recordingLibraryEndpoint,
+  recordingSessionCommandEndpoint,
   recordingStatusEndpoint,
 } from "./recordings-api.js";
 
@@ -32,6 +36,13 @@ const elements = {
   recordingSummary: document.querySelector("#recording-summary"),
   recordingCountdown: document.querySelector("#recording-countdown"),
   recordingCountdownValue: document.querySelector("#recording-countdown-value"),
+  sessionStatusDot: document.querySelector("#session-status-dot"),
+  currentSessionName: document.querySelector("#current-session-name"),
+  currentSessionState: document.querySelector("#current-session-state"),
+  currentSessionImu: document.querySelector("#current-session-imu"),
+  currentSessionMetadata: document.querySelector("#current-session-metadata"),
+  currentSessionSync: document.querySelector("#current-session-sync"),
+  newSessionButton: document.querySelector("#new-session-button"),
   fullscreenButton: document.querySelector("#fullscreen-button"),
   clearEventsButton: document.querySelector("#clear-events-button"),
   eventRows: document.querySelector("#event-rows"),
@@ -76,6 +87,12 @@ const state = {
   recordingPollError: null,
   recordingCommandError: null,
   recordingCountdownTimer: null,
+  collectionLibrary: null,
+  collectionPollTimer: null,
+  collectionPollInFlight: false,
+  collectionCommandInFlight: false,
+  collectionPollError: null,
+  collectionCommandError: null,
   imuPollTimer: null,
   imuPollInFlight: false,
   imuConnected: false,
@@ -146,6 +163,12 @@ function scheduleRecordingPoll(delayMs = 500) {
   window.clearTimeout(state.recordingPollTimer);
   if (document.hidden) return;
   state.recordingPollTimer = window.setTimeout(pollRecordingStatus, delayMs);
+}
+
+function scheduleCollectionPoll(delayMs = 1500) {
+  window.clearTimeout(state.collectionPollTimer);
+  if (document.hidden) return;
+  state.collectionPollTimer = window.setTimeout(pollCollectionLibrary, delayMs);
 }
 
 function readStreamControlStatus(payload) {
@@ -270,7 +293,7 @@ function renderStreamControl() {
   elements.controlStatusDot.dataset.state = state.controlState;
 
   const visibleError = state.controlCommandError || state.recordingCommandError ||
-    state.controlPollError || state.recordingPollError;
+    state.collectionCommandError || state.controlPollError || state.recordingPollError;
   elements.controlError.textContent = visibleError || "";
   elements.controlError.title = visibleError || "";
   elements.controlError.hidden = visibleError === null;
@@ -282,6 +305,7 @@ function applyRecordingStatus(payload) {
   state.recordingStatus = status;
   state.recordingPollError = null;
   renderRecordingControl();
+  renderCollectionOverview();
   renderStreamControl();
 
   if (previousState === status.state) return;
@@ -346,6 +370,130 @@ function renderRecordingControl() {
   updateRecordingCountdown();
 }
 
+function findCurrentSession() {
+  const sessionId = state.recordingStatus?.session_id;
+  if (!sessionId || state.collectionLibrary === null) return null;
+  return state.collectionLibrary.sessions.find((session) => session.session_id === sessionId) || null;
+}
+
+function formatMetadataCoverage(quality) {
+  if (quality.metadata_match_coverage === null) return "等待视频帧";
+  return `${(quality.metadata_match_coverage * 100).toFixed(1)}%`;
+}
+
+function renderCollectionOverview() {
+  const status = state.recordingStatus;
+  const session = findCurrentSession();
+  const sessionState = status?.session_state || null;
+  const recordingBusy = ["countdown", "recording", "finalizing"].includes(status?.state);
+  const commandBusy = state.collectionCommandInFlight;
+  const gatewayStatusKnown = status !== null && status.state !== "error";
+
+  elements.newSessionButton.disabled =
+    !gatewayStatusKnown || sessionState !== "active" || recordingBusy || commandBusy;
+  elements.newSessionButton.title = recordingBusy
+    ? "停止当前录制后才能开始新会话"
+    : sessionState === "active"
+    ? "结束当前会话，下一次录制自动开始新会话"
+    : "当前没有可结束的采集会话";
+  elements.sessionStatusDot.dataset.state = sessionState || "idle";
+
+  if (state.collectionCommandInFlight) {
+    elements.currentSessionName.textContent = "正在切换会话";
+  } else if (state.collectionPollError) {
+    elements.currentSessionName.textContent = "无法读取会话";
+  } else if (session) {
+    elements.currentSessionName.textContent = getSessionDisplayName(session);
+  } else if (status?.session_id) {
+    elements.currentSessionName.textContent = "正在读取会话";
+  } else {
+    elements.currentSessionName.textContent = "首次录制时自动创建";
+  }
+
+  const sessionStateLabels = {
+    active: "采集中",
+    finalizing: "正在完成",
+    complete: "已完成",
+    incomplete: "异常中断",
+  };
+  elements.currentSessionState.textContent = sessionStateLabels[sessionState] || "尚未开始";
+
+  if (session === null) {
+    elements.currentSessionImu.textContent = sessionState === "active" ? "正在读取" : "尚未保存";
+    elements.currentSessionMetadata.textContent = "--";
+    elements.currentSessionSync.textContent = "--";
+    return;
+  }
+
+  const quality = session.quality;
+  const hasTelemetry = session.telemetry_database === "telemetry/telemetry.sqlite";
+  elements.currentSessionImu.textContent = hasTelemetry
+    ? session.state === "active"
+      ? `持续保存 · ${quality.imu_sample_count.toLocaleString("zh-CN")}`
+      : `${quality.imu_sample_count.toLocaleString("zh-CN")} 样本`
+    : "未保存";
+  elements.currentSessionImu.title = hasTelemetry
+    ? `加速度 ${quality.accelerometer_sample_count} · 陀螺仪 ${quality.gyroscope_sample_count} · 序号缺口 ${quality.imu_sequence_gap_count}`
+    : "该会话没有 IMU 遥测数据库";
+  elements.currentSessionMetadata.textContent = formatMetadataCoverage(quality);
+  elements.currentSessionMetadata.title =
+    `${quality.recorded_video_frame_metadata_match_count} / ${quality.recorded_video_frame_count} 个录制帧已匹配`;
+  elements.currentSessionSync.textContent = quality.timestamp_alignment_state === "unverified"
+    ? "原始时间 · 未验证"
+    : quality.timestamp_alignment_state;
+  elements.currentSessionSync.title =
+    `${quality.timestamp_mapping_segment_count} 个原始时间映射分段`;
+}
+
+async function pollCollectionLibrary() {
+  if (state.collectionPollInFlight || document.hidden) {
+    scheduleCollectionPoll();
+    return;
+  }
+  state.collectionPollInFlight = true;
+  try {
+    const response = await fetch(recordingLibraryEndpoint, { cache: "no-store" });
+    const payload = await readJsonResponse(response, `采集会话 HTTP ${response.status}`);
+    state.collectionLibrary = readRecordingLibrary(payload);
+    state.collectionPollError = null;
+  } catch (error) {
+    state.collectionLibrary = null;
+    state.collectionPollError = error.message;
+  } finally {
+    state.collectionPollInFlight = false;
+    renderCollectionOverview();
+    scheduleCollectionPoll();
+  }
+}
+
+async function requestNewCollectionSession() {
+  if (state.collectionCommandInFlight || elements.newSessionButton.disabled) return;
+  state.collectionCommandInFlight = true;
+  state.collectionCommandError = null;
+  renderCollectionOverview();
+  renderStreamControl();
+  try {
+    const response = await fetch(recordingSessionCommandEndpoint, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "new" }),
+    });
+    const payload = await readJsonResponse(response, `新会话 HTTP ${response.status}`);
+    applyRecordingStatus(payload);
+    addEvent("OK", "当前会话已结束", "下一次录制会自动开始新会话并保存 IMU");
+    await pollCollectionLibrary();
+  } catch (error) {
+    state.collectionCommandError = error.message;
+    addEvent("ERROR", "会话切换失败", error.message);
+  } finally {
+    state.collectionCommandInFlight = false;
+    renderCollectionOverview();
+    renderStreamControl();
+    scheduleRecordingPoll(0);
+  }
+}
+
 async function pollRecordingStatus() {
   if (state.recordingPollInFlight || state.recordingCommandInFlight || document.hidden) {
     scheduleRecordingPoll();
@@ -363,6 +511,7 @@ async function pollRecordingStatus() {
     state.recordingStatus = null;
     state.recordingPollError = error.message;
     renderRecordingControl();
+    renderCollectionOverview();
     renderStreamControl();
   } finally {
     state.recordingPollInFlight = false;
@@ -839,6 +988,7 @@ elements.streamToggleButton.addEventListener("click", () => {
 elements.recordingToggleButton.addEventListener("click", () => {
   sendRecordingCommand(elements.recordingToggleButton.dataset.action);
 });
+elements.newSessionButton.addEventListener("click", requestNewCollectionSession);
 elements.resetImuButton.addEventListener("click", resetImuReference);
 elements.clearEventsButton.addEventListener("click", () => {
   state.events = [];
@@ -852,6 +1002,7 @@ document.addEventListener("visibilitychange", () => {
     if (state.peer === null) scheduleViewerRetry(0);
     scheduleControlPoll(0);
     scheduleRecordingPoll(0);
+    scheduleCollectionPoll(0);
     scheduleImuPoll(0);
   }
 });
@@ -860,6 +1011,7 @@ window.addEventListener("beforeunload", () => {
   window.clearTimeout(state.controlPollTimer);
   window.clearTimeout(state.recordingPollTimer);
   window.clearTimeout(state.recordingCountdownTimer);
+  window.clearTimeout(state.collectionPollTimer);
   window.clearTimeout(state.imuPollTimer);
   if (state.peer !== null) closeViewerPeer(state.peer);
   imuScene?.dispose();
@@ -869,8 +1021,10 @@ addEvent("INFO", "客户端已启动", "等待 Glass3 视频、控制通路和 I
 renderVideoState();
 renderStreamControl();
 renderRecordingControl();
+renderCollectionOverview();
 setImuUnavailable("接收网关尚未收到姿态数据");
 connectLiveVideo();
 pollStreamControlStatus();
 pollRecordingStatus();
+pollCollectionLibrary();
 pollImuStatus();

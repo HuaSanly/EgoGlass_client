@@ -121,6 +121,16 @@ try {
     Write-Host 'Close the EgoGlass window or press Ctrl+C here to stop the client.'
     Wait-Process -Id $desktopProcess.Id
 } finally {
+    if ($null -ne $ingestProcess -and -not $ingestProcess.HasExited) {
+        try {
+            Complete-EgoGlassCaptureSession -IngestPort $IngestPort
+        } catch {
+            Write-Warning (
+                "Capture-session finalization failed; forcing process cleanup: " +
+                $_.Exception.Message
+            )
+        }
+    }
     Stop-ClientProcesses -Processes @($desktopProcess, $ingestProcess) `
         -ProcessJob $processJob
     Write-Host 'EgoGlass client stopped. Runtime ports have been released.'

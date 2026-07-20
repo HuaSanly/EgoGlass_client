@@ -25,6 +25,7 @@ from .recording import (
 from .recording_models import (
     RecordingCommandRequest,
     RecordingLibrary,
+    RecordingSessionCommandRequest,
     RecordingSessionRenameRequest,
     RecordingState,
     RecordingStatus,
@@ -66,6 +67,9 @@ def create_app(
         recordings_root or Path("local-data/recordings"),
         lambda: active_webrtc_runtime.recording_source(),
     )
+    set_capture_sink = getattr(active_webrtc_runtime, "set_capture_telemetry_sink", None)
+    if set_capture_sink is not None:
+        set_capture_sink(active_recording_runtime)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -200,6 +204,22 @@ def create_app(
         _require_loopback(request, viewer_allowed_hosts, "recording library")
         return await active_recording_runtime.library()
 
+    @app.post(
+        "/api/v1/recordings/session-commands",
+        response_model=RecordingStatus,
+    )
+    async def recording_session_command(
+        command: RecordingSessionCommandRequest,
+        request: Request,
+    ) -> RecordingStatus:
+        _require_loopback(request, viewer_allowed_hosts, "recording session")
+        try:
+            return await active_recording_runtime.session_command(command.action)
+        except RecordingConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except RecordingFailureError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
     @app.patch(
         "/api/v1/recordings/sessions/{session_id}",
         response_model=RecordingLibrary,
@@ -232,7 +252,27 @@ def create_app(
         _require_loopback(request, viewer_allowed_hosts, "recording deletion")
         try:
             return await active_recording_runtime.delete_clip(session_id, clip_id)
+        except RecordingConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         except RecordingClipNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except RecordingFailureError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
+    @app.delete(
+        "/api/v1/recordings/sessions/{session_id}",
+        response_model=RecordingLibrary,
+    )
+    async def delete_recording_session(
+        request: Request,
+        session_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
+    ) -> RecordingLibrary:
+        _require_loopback(request, viewer_allowed_hosts, "recording session deletion")
+        try:
+            return await active_recording_runtime.delete_session(session_id)
+        except RecordingConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except RecordingSessionNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except RecordingFailureError as error:
             raise HTTPException(status_code=500, detail=str(error)) from error

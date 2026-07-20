@@ -191,6 +191,20 @@ function Stop-ProcessTree {
     Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
 }
 
+function Complete-EgoGlassCaptureSession {
+    param(
+        [Parameter(Mandatory)]
+        [int] $IngestPort,
+        [int] $TimeoutSeconds = 15
+    )
+
+    $body = @{ action = 'finalize' } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Uri (
+        "http://127.0.0.1:$IngestPort/api/v1/recordings/session-commands"
+    ) -Method Post -ContentType 'application/json' -Body $body `
+        -TimeoutSec $TimeoutSeconds | Out-Null
+}
+
 function Stop-ClientProcesses {
     param(
         [AllowNull()]

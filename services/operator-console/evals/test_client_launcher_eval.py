@@ -31,6 +31,11 @@ def test_one_command_launcher_owns_both_process_lifecycles() -> None:
     assert "Wait-IngestHealth" in script
     assert "Wait-Process" in script
     assert "Stop-ClientProcesses" in script
+    assert "Complete-EgoGlassCaptureSession" in script
+    assert "api/v1/recordings/session-commands" in lifecycle
+    assert script.index("Complete-EgoGlassCaptureSession") < script.index(
+        "Stop-ClientProcesses"
+    )
     assert "JobObjectLimitKillOnJobClose" in lifecycle
 
 

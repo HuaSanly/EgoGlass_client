@@ -41,7 +41,12 @@ def test_recorder_normalizes_non_monotonic_webrtc_timestamps(tmp_path: Path) -> 
         path = tmp_path / "clip.mp4"
         track = NonMonotonicVideoTrack()
         original_timestamps = [frame.pts for frame in track.frames]
-        recorder = PyAvH264Mp4Recorder(path, track)
+        receipt_times = iter([10, 20, 30, 40])
+        recorder = PyAvH264Mp4Recorder(
+            path,
+            track,
+            perf_clock=lambda: next(receipt_times),
+        )
 
         await recorder.start()
         await recorder.wait()
@@ -51,6 +56,9 @@ def test_recorder_normalizes_non_monotonic_webrtc_timestamps(tmp_path: Path) -> 
         assert inspection.nominal_fps == 30.0
         assert inspection.decoded_frames == 4
         assert recorder.frames_received == 4
+        assert [
+            frame.received_at_client_perf_counter_ns for frame in recorder.frame_records
+        ] == [10, 20, 30, 40]
         assert [frame.pts for frame in track.frames] == original_timestamps
 
     asyncio.run(scenario())
