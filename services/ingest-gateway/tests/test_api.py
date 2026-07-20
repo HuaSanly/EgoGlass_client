@@ -105,6 +105,7 @@ class RecordingApiRuntime:
         self.state = RecordingState.READY
         self.deleted = False
         self.display_name: str | None = None
+        self.session_commands: list[str] = []
 
     async def status(self) -> RecordingStatus:
         return RecordingStatus(state=self.state, session_id=self.session_id)
@@ -120,6 +121,10 @@ class RecordingApiRuntime:
 
     async def stop(self) -> RecordingStatus:
         return RecordingStatus(state=RecordingState.READY, session_id=self.session_id)
+
+    async def session_command(self, action: str) -> RecordingStatus:
+        self.session_commands.append(action)
+        return RecordingStatus(state=RecordingState.READY)
 
     async def library(self) -> RecordingLibrary:
         if self.deleted:
@@ -173,6 +178,12 @@ class RecordingApiRuntime:
             raise RecordingSessionNotFoundError("recording session not found")
         self.display_name = display_name
         return await self.library()
+
+    async def delete_session(self, session_id: str) -> RecordingLibrary:
+        if self.deleted or session_id != self.session_id:
+            raise RecordingSessionNotFoundError("recording session not found")
+        self.deleted = True
+        return RecordingLibrary(sessions=[])
 
     async def close(self) -> None:
         return None
@@ -527,6 +538,48 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
             client.delete(
                 f"/api/v1/recordings/clips/{recording_runtime.session_id}/"
                 f"{recording_runtime.clip_id}"
+            ).status_code
+            == 403
+        )
+
+
+def test_session_finalize_and_delete_apis_are_strict_and_loopback_only(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "completed.mp4"
+    media.write_bytes(b"mp4-data")
+    runtime = RecordingApiRuntime(media)
+    app = create_app(
+        recording_runtime=runtime,  # type: ignore[arg-type]
+        viewer_allowed_hosts=frozenset({"testclient"}),
+    )
+    with TestClient(app) as client:
+        finalized = client.post(
+            "/api/v1/recordings/session-commands",
+            json={"action": "finalize"},
+        )
+        invalid = client.post(
+            "/api/v1/recordings/session-commands",
+            json={"action": "finalize", "force": True},
+        )
+        deleted = client.delete(f"/api/v1/recordings/sessions/{runtime.session_id}")
+        missing = client.delete(f"/api/v1/recordings/sessions/{runtime.session_id}")
+
+    assert finalized.status_code == 200
+    assert finalized.json()["session_id"] is None
+    assert runtime.session_commands == ["finalize"]
+    assert invalid.status_code == 422
+    assert deleted.status_code == 200
+    assert deleted.json()["sessions"] == []
+    assert missing.status_code == 404
+
+    with TestClient(
+        create_app(recording_runtime=RecordingApiRuntime(media))  # type: ignore[arg-type]
+    ) as client:
+        assert (
+            client.post(
+                "/api/v1/recordings/session-commands",
+                json={"action": "new"},
             ).status_code
             == 403
         )

@@ -55,14 +55,16 @@ def test_real_pyav_path_publishes_only_playable_hd_h264_mp4(
                     SyntheticSource(),
                     1280,
                     720,
+                    1,
                 ),
             ),
             sleep=no_countdown_delay,
+            session_id_factory=lambda: SESSION_ID,
         )
         await runtime.start()
         for _attempt in range(100):
             library = await runtime.library()
-            if library.sessions:
+            if library.sessions and library.sessions[0].clips:
                 break
             await asyncio.sleep(0.01)
         else:
@@ -83,10 +85,13 @@ def test_real_pyav_path_publishes_only_playable_hd_h264_mp4(
         renamed_library = await runtime.rename_session(SESSION_ID, "Eval capture")
         assert renamed_library.sessions[0].display_name == "Eval capture"
         assert path.is_file()
+        await runtime.session_command("new")
         deleted_library = await runtime.delete_clip(SESSION_ID, clip.clip_id)
-        assert deleted_library.sessions == []
+        assert deleted_library.sessions[0].clips == []
         assert not path.exists()
-        assert not list(tmp_path.rglob("*"))
+        assert (tmp_path / SESSION_ID / "telemetry" / "telemetry.sqlite").is_file()
+        assert (await runtime.delete_session(SESSION_ID)).sessions == []
+        assert not (tmp_path / SESSION_ID).exists()
         await runtime.close()
 
     asyncio.run(scenario())

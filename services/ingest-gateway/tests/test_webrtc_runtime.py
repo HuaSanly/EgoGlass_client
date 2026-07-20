@@ -114,6 +114,7 @@ def metadata_json(frame_id: int = 1, rtp_timestamp: int = 90_000) -> str:
             "message_type": "video_frame",
             "stream_id": "camera",
             "frame_id": frame_id,
+            "camera_start_generation": 1,
             "captured_at_rokid_sdk_ms": 1000,
             "received_at_elapsed_realtime_ns": 2_000_000_000,
             "video_at_monotonic_ns": 2_000_000_000,
@@ -190,7 +191,7 @@ def imu_sample_json(
 def test_authenticated_session_receives_and_matches_video_metadata() -> None:
     peers: list[FakePeer] = []
     viewers: list[FakeViewerPeer] = []
-    perf_values = iter([1_000_000_000, 1_120_000_000])
+    now_ns = 1_000_000_000
 
     def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
         peer = FakePeer(callbacks)
@@ -203,36 +204,55 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
         return viewer
 
     async def scenario() -> None:
+        nonlocal now_ns
         runtime = WebRtcSessionRuntime(
             TOKEN,
             factory,
             viewer_factory,
-            perf_clock=lambda: next(perf_values),
+            perf_clock=lambda: now_ns,
         )
         answer = await runtime.accept_offer(offer(), TOKEN)
         assert answer.type == "answer"
         await peers[0].callbacks.on_connection_state("connected")
         source = FakeVideoSource()
         await peers[0].callbacks.on_video_source(source)
-        await peers[0].callbacks.on_metadata(metadata_json())
-        await peers[0].callbacks.on_video_frame(
-            DecodedVideoFrame(1280, 720, 0, Fraction(1, 90_000))
-        )
+        for index in range(60):
+            now_ns = 1_119_000_000 + index * 33_333_333
+            await peers[0].callbacks.on_metadata(
+                metadata_json(index + 1, 90_000 + index * 3_000)
+            )
+            now_ns += 1_000_000
+            await peers[0].callbacks.on_video_frame(
+                DecodedVideoFrame(
+                    1280,
+                    720,
+                    index * 3_000,
+                    Fraction(1, 90_000),
+                )
+            )
         viewer_answer = await runtime.accept_viewer_offer(
             WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
         )
         status = await runtime.status()
 
         assert status.phase is WebRtcPhase.STREAMING
-        assert status.frames_received == 1
-        assert status.metadata_received == 1
-        assert status.metadata_matched == 1
+        assert status.frames_received == 60
+        assert status.metadata_received == 60
+        assert status.metadata_matched == 60
         assert status.metadata_rtp_origin_90khz == 90_000
+        assert status.metadata_calibrated
+        assert status.metadata_calibration_support == 60
         assert status.video_codec == "H264"
         assert viewer_answer.type == "answer"
         assert source.subscriptions == [(viewers[0].track, False)]
         assert status.first_frame_latency_ms == 120.0
         assert (status.width, status.height) == (1280, 720)
+
+        await runtime.accept_offer(offer("device-session-0002"), TOKEN)
+        replacement_status = await runtime.status()
+        assert not replacement_status.metadata_calibrated
+        assert replacement_status.metadata_calibration_support == 0
+        assert replacement_status.metadata_rtp_origin_90khz is None
 
     asyncio.run(scenario())
 
@@ -256,6 +276,7 @@ def test_recording_source_requires_recent_streaming_frames_not_control_state() -
         await peers[0].callbacks.on_video_source(source)
         assert await runtime.recording_source() is None
 
+        await peers[0].callbacks.on_metadata(metadata_json())
         await peers[0].callbacks.on_video_frame(
             DecodedVideoFrame(1280, 720, 0, Fraction(1, 90_000))
         )
@@ -275,7 +296,8 @@ def test_recording_source_requires_recent_streaming_frames_not_control_state() -
 
         recording_source = await runtime.recording_source()
         assert recording_source is not None
-        assert recording_source.session_id == answer.session_id
+        assert recording_source.connection_session_id == answer.session_id
+        assert recording_source.camera_start_generation == 1
         assert (recording_source.width, recording_source.height) == (1280, 720)
         assert recording_source.source is source
         assert (await runtime.control_status()).state is StreamControlState.ERROR

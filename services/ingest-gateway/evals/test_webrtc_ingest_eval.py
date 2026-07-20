@@ -106,6 +106,7 @@ def test_reordered_metadata_and_authenticated_replacement_stay_bounded() -> None
                 "message_type": "video_frame",
                 "stream_id": "camera",
                 "frame_id": frame_id,
+                "camera_start_generation": 1,
                 "captured_at_rokid_sdk_ms": sdk_timestamp,
                 "received_at_elapsed_realtime_ns": 2_000_000_000 + frame_id,
                 "video_at_monotonic_ns": 2_000_000_000 + frame_id,
@@ -143,9 +144,10 @@ def test_reordered_metadata_and_authenticated_replacement_stay_bounded() -> None
         await peers[0].callbacks.on_metadata("malformed")
         streaming = await runtime.status()
         assert streaming.phase is WebRtcPhase.STREAMING
-        assert streaming.metadata_matched == 1
+        assert streaming.metadata_matched == 0
+        assert not streaming.metadata_calibrated
         assert streaming.video_codec == "H264"
-        assert streaming.unmatched_entries_dropped == 1
+        assert streaming.unmatched_entries_dropped == 2
         assert streaming.sdk_clock_discontinuities == 1
         assert streaming.malformed_metadata == 1
 
@@ -161,6 +163,8 @@ def test_reordered_metadata_and_authenticated_replacement_stay_bounded() -> None
         assert replacement_status.phase is WebRtcPhase.NEGOTIATING
         assert replacement_status.device_session_id == "device-session-eval02"
         assert replacement_status.connection_state is None
+        assert not replacement_status.metadata_calibrated
+        assert replacement_status.metadata_calibration_support == 0
 
     asyncio.run(scenario())
 
@@ -195,12 +199,14 @@ def test_stream_control_round_trip_reuses_the_connected_peer() -> None:
         def send(self, message: str) -> None:
             self.sent.append(message)
 
+    runtimes: list[WebRtcSessionRuntime] = []
+
     async def acknowledge(
         channel: ControlChannel,
         command: StreamControlCommand,
         state: StreamControlState,
     ) -> None:
-        pending = asyncio.create_task(runtime.send_control_command(command))
+        pending = asyncio.create_task(runtimes[0].send_control_command(command))
         await asyncio.sleep(0)
         assert json.loads(channel.sent[-1]) == command.model_dump(mode="json")
         await peers[0].callbacks.on_control_status(
@@ -219,8 +225,8 @@ def test_stream_control_round_trip_reuses_the_connected_peer() -> None:
 
     async def scenario() -> None:
         token = "eval-pairing-token-123456"
-        nonlocal runtime
         runtime = WebRtcSessionRuntime(token, Peer)
+        runtimes.append(runtime)
         await runtime.accept_offer(
             WebRtcOffer(
                 device_session_id="device-session-control-eval",
@@ -246,7 +252,6 @@ def test_stream_control_round_trip_reuses_the_connected_peer() -> None:
         assert channel.is_open
         assert (await runtime.control_status()).state is StreamControlState.STREAMING
 
-    runtime: WebRtcSessionRuntime
     asyncio.run(scenario())
 
 
@@ -297,6 +302,25 @@ def test_recording_availability_follows_video_flow_when_control_state_is_stale()
         channel = ControlChannel()
         await peers[0].callbacks.on_connection_state("connected")
         await peers[0].callbacks.on_video_source(source)
+        await peers[0].callbacks.on_metadata(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "message_type": "video_frame",
+                    "stream_id": "camera",
+                    "frame_id": 0,
+                    "camera_start_generation": 1,
+                    "captured_at_rokid_sdk_ms": 1000,
+                    "received_at_elapsed_realtime_ns": 2_000_000_000,
+                    "video_at_monotonic_ns": 2_000_000_000,
+                    "rtp_timestamp_90khz": 90_000,
+                    "width": 1280,
+                    "height": 720,
+                    "rotation_degrees": 0,
+                    "capture_config_id": "720p30",
+                }
+            )
+        )
         await peers[0].callbacks.on_video_frame(
             DecodedVideoFrame(1280, 720, 0, Fraction(1, 90_000))
         )

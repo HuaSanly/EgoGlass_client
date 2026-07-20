@@ -33,6 +33,12 @@ def test_workspace_launcher_rejects_port_conflicts_and_cleans_process_trees() ->
     assert "AssignProcessToJobObject" in lifecycle
     assert "function Stop-ProcessTree" in lifecycle
     assert "function Stop-ClientProcesses" in lifecycle
+    assert "function Complete-EgoGlassCaptureSession" in lifecycle
+    assert "api/v1/recordings/session-commands" in lifecycle
+    assert "@{ action = 'finalize' }" in lifecycle
+    assert script.index("Complete-EgoGlassCaptureSession") < script.index(
+        "Stop-ClientProcesses"
+    )
     assert "pairing-token-123456" not in script
 
 

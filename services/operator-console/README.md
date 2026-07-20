@@ -40,11 +40,25 @@ manual reset control.
 The home page uses one two-state control for starting and stopping the Glass3
 stream. Its adjacent recording control starts a gateway-owned three-second
 countdown, can cancel during that countdown, and stops an active recording. The
-countdown shown over the live video is calculated from the gateway's
+first recording request automatically creates a capture session before the
+countdown, and the gateway persists IMU continuously until that session ends.
+The countdown shown over the live video is calculated from the gateway's
 `recording_starts_at_unix_ms`; the console does not start its own recorder or
-invent recording state. New clips are fixed at 1280x720, 30 FPS, H.264 in MP4;
-the storage library still displays historical clips at their recorded
-dimensions.
+invent recording or session state. The compact session strip polls the gateway
+library and shows the current time-based name, lifecycle state, persisted IMU
+count, recorded-frame metadata coverage, and unverified timestamp mapping
+state. New clips are fixed at 1280x720, 30 FPS, H.264 in MP4; the storage
+library still displays historical clips at their recorded dimensions.
+
+The New Session button is available only for an active session with no clip or
+countdown in progress. It finalizes the current session and arms the next
+recording request; it does not create an empty directory. The next recording
+automatically starts a new session and continuous IMU persistence.
+
+Closing the native window or pressing Ctrl+C asks the ingest gateway to
+finalize the active capture session before the Windows Job Object performs its
+port-cleanup fallback. A failed finalization is reported as a warning and the
+process tree is still terminated so ports are not leaked.
 
 The workspace below the live video contains a bounded client event history.
 It records real video, control, recording, and IMU state transitions and
@@ -52,18 +66,20 @@ deduplicates repeated polling failures. Clearing the table affects only the
 in-memory event history; it does not send a device command or change recording
 state. The event table scrolls internally so the native window remains fixed.
 
-The `/storage` page polls the loopback recording library and groups playable
-clips by the originating Glass3 WebRTC session. Media URLs are accepted only
-after the complete v1 JSON payload and loopback origin are validated. Loading,
-empty, error, and current recording states have separate visible treatments.
-The document remains fixed to the native window; only the session list scrolls.
-The first storage view contains time-named session folders rather than video
-players. Opening one folder renders only that session's clips. Operators can
-rename a folder; the custom name is persisted by the gateway without changing
-the stable media path.
-Each clip can be deleted after an explicit confirmation. The console removes a
-card only after the gateway confirms that both its MP4 and manifest entry were
-deleted.
+The `/storage` page polls the loopback recording library and treats each capture
+session as one data folder. A folder remains visible when it has no video clips
+but does contain continuous IMU or recovered session data. Its detail view
+shows lifecycle completeness, IMU counts and sequence anomalies, recorded-frame
+metadata coverage, connection segments, and timestamp mapping status above all
+playable clips. Historical video-only manifests remain manageable and are
+explicitly labelled instead of being assigned invented telemetry quality.
+Media URLs are accepted only after the complete v1 JSON payload and loopback
+origin are validated. Loading, empty, error, and current recording states have
+separate visible treatments. The document remains fixed to the native window;
+only the session list scrolls. Operators can rename a folder without changing
+its stable storage path. A clip or complete/incomplete session folder can be
+deleted after explicit confirmation; active and finalizing sessions cannot be
+deleted. The console updates the library only after gateway success.
 
 ## Run as a Windows app
 
@@ -110,8 +126,10 @@ The UI consumes these loopback-only ingest-gateway contracts:
 
 - `GET /api/v1/recordings/status`
 - `POST /api/v1/recordings/commands`
+- `POST /api/v1/recordings/session-commands`
 - `GET /api/v1/recordings/library`
 - `PATCH /api/v1/recordings/sessions/{session_id}`
+- `DELETE /api/v1/recordings/sessions/{session_id}`
 - `DELETE /api/v1/recordings/clips/{session_id}/{clip_id}`
 - `GET /api/v1/recordings/media/{session_id}/{clip_id}`
 

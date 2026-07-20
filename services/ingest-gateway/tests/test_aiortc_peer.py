@@ -6,6 +6,7 @@ from collections.abc import Callable
 from aiortc import RTCBundlePolicy
 
 from egoglass_ingest_gateway.adapters.aiortc_peer import (
+    FRAME_METADATA_CHANNEL_LABEL,
     IMU_TELEMETRY_CHANNEL_LABEL,
     STREAM_CONTROL_CHANNEL_LABEL,
     AiortcPeer,
@@ -149,6 +150,87 @@ def test_unreliable_stream_control_channel_is_rejected() -> None:
             )
             await asyncio.sleep(0)
             assert ready_channels == []
+        finally:
+            await peer.close()
+
+    asyncio.run(scenario())
+
+
+def test_unordered_reliable_metadata_channel_forwards_messages() -> None:
+    async def scenario() -> None:
+        payloads: list[str | bytes] = []
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=ignore,
+            on_video_frame=ignore,
+            on_metadata=lambda payload: append_async(payloads, payload),
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=ignore,
+        )
+        peer = AiortcPeer(callbacks)
+        channel = FakeDataChannel(
+            label=FRAME_METADATA_CHANNEL_LABEL,
+            ordered=False,
+        )
+        try:
+            peer._peer.emit("datachannel", channel)
+            channel.emit("message", b'{"message_type":"video_frame"}')
+            await asyncio.sleep(0)
+            assert payloads == [b'{"message_type":"video_frame"}']
+        finally:
+            await peer.close()
+
+    asyncio.run(scenario())
+
+
+def test_metadata_channel_rejects_ordered_or_partially_reliable_policy() -> None:
+    async def scenario() -> None:
+        payloads: list[str | bytes] = []
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=ignore,
+            on_video_frame=ignore,
+            on_metadata=lambda payload: append_async(payloads, payload),
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=ignore,
+        )
+        peer = AiortcPeer(callbacks)
+        invalid_channels = (
+            FakeDataChannel(label=FRAME_METADATA_CHANNEL_LABEL, ordered=True),
+            FakeDataChannel(
+                label=FRAME_METADATA_CHANNEL_LABEL,
+                ordered=False,
+                max_retransmits=0,
+            ),
+            FakeDataChannel(
+                label=FRAME_METADATA_CHANNEL_LABEL,
+                ordered=False,
+                max_packet_lifetime=10,
+            ),
+        )
+        try:
+            for channel in invalid_channels:
+                peer._peer.emit("datachannel", channel)
+                if "message" in channel._handlers:
+                    channel.emit("message", "invalid")
+            await asyncio.sleep(0)
+            assert payloads == []
         finally:
             await peer.close()
 

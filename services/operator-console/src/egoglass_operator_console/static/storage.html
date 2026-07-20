@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <title>视频存储 · EgoGlass</title>
+    <title>采集数据 · EgoGlass</title>
     <link rel="stylesheet" href="/assets/styles.css">
   </head>
   <body>
@@ -24,8 +24,8 @@
         <section class="storage-workspace" aria-labelledby="storage-title">
           <header class="storage-page-header">
             <div>
-              <span class="eyebrow">LOCAL RECORDING LIBRARY</span>
-              <h1 id="storage-title">视频存储</h1>
+              <span class="eyebrow">LOCAL SESSION LIBRARY</span>
+              <h1 id="storage-title">采集数据</h1>
             </div>
             <div class="storage-page-actions">
               <div class="recording-live-status" aria-live="polite">
@@ -64,17 +64,17 @@
             <div class="library-content" id="library-content" aria-live="polite">
               <div class="library-message" id="library-loading">
                 <span class="waiting-mark" aria-hidden="true"></span>
-                <strong>正在读取本地视频</strong>
+                <strong>正在读取本地会话</strong>
                 <span>请稍候</span>
               </div>
               <div class="library-message" id="library-empty" hidden>
                 <span class="library-empty-glyph" aria-hidden="true">▣</span>
-                <strong>还没有录制视频</strong>
-                <span>在主页点击“开始录制”后，会自动生成按时间命名的会话夹</span>
+                <strong>还没有采集会话</strong>
+                <span>首次录制会自动开始会话，也可以在主页点击“新会话”提前开始保存 IMU</span>
               </div>
               <div class="library-message library-error" id="library-error" role="alert" hidden>
                 <span class="library-empty-glyph" aria-hidden="true">!</span>
-                <strong>无法读取视频存储</strong>
+                <strong>无法读取采集数据</strong>
                 <span id="library-error-detail">接收网关未连接</span>
               </div>
               <div class="session-list" id="session-list" hidden></div>
@@ -100,7 +100,9 @@
             aria-label="关闭删除确认"
           >×</button>
         </header>
-        <p class="delete-dialog-warning">删除后无法恢复，本地 MP4 文件也会同时移除。</p>
+        <p class="delete-dialog-warning" id="delete-dialog-warning">
+          删除后无法恢复，本地 MP4 文件也会同时移除。
+        </p>
         <div class="delete-dialog-target" id="delete-dialog-target"></div>
         <p class="delete-dialog-error" id="delete-dialog-error" role="alert" hidden></p>
         <div class="delete-dialog-actions">
@@ -133,7 +135,7 @@
             id="session-name-input"
             name="display_name"
             type="text"
-            maxlength="64"
+            maxlength="128"
             autocomplete="off"
             required
           >

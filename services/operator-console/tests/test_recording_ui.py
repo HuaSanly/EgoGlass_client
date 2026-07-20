@@ -81,6 +81,7 @@ def test_recording_contract_is_strict_and_contains_no_simulation() -> None:
     for required in (
         'payload.schema_version !== "1.0"',
         "recordingStates.has(payload.state)",
+        "collectionSessionStates.has(payload.session_state)",
         "payload.recording_starts_at_unix_ms",
         "payload.recording_started_at_unix_ms",
         "payload.output",
@@ -97,6 +98,11 @@ def test_recording_contract_is_strict_and_contains_no_simulation() -> None:
         "recordingIdPattern.test(session.session_id)",
         "recordingIdPattern.test(clip.clip_id)",
         "session.display_name ?? null",
+        "readSessionQuality(session.quality)",
+        '"telemetry/telemetry.sqlite"',
+        'quality.timestamp_alignment_state !== "unverified"',
+        "quality.metadata_match_coverage",
+        "quality.recorded_video_frame_metadata_match_count",
         "displayName !== displayName.trim()",
         "mediaUrl.origin !== gatewayOrigin",
     ):
@@ -141,6 +147,11 @@ def test_storage_delete_requires_confirmation_and_gateway_success() -> None:
     assert "readRecordingLibrary(payload)" in script
     assert "elements.deleteDialog.close(\"deleted\")" in script
     assert "recordingDeleteEndpoint(target.session_id, target.clip_id)" in script
+    assert 'target.kind === "session"' in script
+    assert "recordingSessionEndpoint(target.session_id)" in script
+    assert "openDeleteSessionDialog(session)" in script
+    assert '["active", "finalizing"].includes(session.state)' in script
+    assert "视频、IMU、帧元数据和质量记录" in script
     assert "/api/v1/recordings/clips/${sessionId}/${clipId}" in api
     assert ".clip-delete-button" in styles
     assert ".delete-dialog::backdrop" in styles
@@ -155,8 +166,9 @@ def test_storage_session_folders_use_time_names_and_persist_renames() -> None:
     assert 'id="rename-session-dialog"' in html
     assert 'id="rename-session-form"' in html
     assert 'id="session-name-input"' in html
-    assert 'maxlength="64"' in html
-    assert "formatSessionFolderName(session.started_at_unix_ms)" in script
+    assert 'maxlength="128"' in html
+    assert "getSessionDisplayName(session)" in script
+    assert "formatSessionFolderName(session.started_at_unix_ms)" in api
     assert 'item.className = "session-folder"' in script
     assert 'openButton.addEventListener("click"' in script
     assert "openRenameDialog(session)" in script
@@ -178,3 +190,52 @@ def test_missing_video_is_distinct_from_gateway_disconnect() -> None:
     assert 'state.recordingPollError = error.message' in home_script
     assert 'unavailable: "等待 Glass3 视频"' in storage_script
     assert 'elements.recordingLabel.textContent = "录制服务未连接"' in storage_script
+
+
+def test_home_collection_session_is_gateway_backed_and_never_invented() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    api = (STATIC_DIR / "recordings-api.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    for element_id in (
+        "new-session-button",
+        "current-session-name",
+        "current-session-state",
+        "current-session-imu",
+        "current-session-metadata",
+        "current-session-sync",
+    ):
+        assert f'id="{element_id}"' in html
+    assert "recordingLibraryEndpoint" in script
+    assert "readRecordingLibrary(payload)" in script
+    assert "findCurrentSession()" in script
+    assert "getSessionDisplayName(session)" in script
+    assert "session.quality" in script
+    assert 'body: JSON.stringify({ action: "new" })' in script
+    assert "recordingSessionCommandEndpoint" in script
+    assert "sessionState !== \"active\"" in script
+    assert '["countdown", "recording", "finalizing"]' in script
+    assert "下一次录制会自动开始新会话并保存 IMU" in script
+    assert "api/v1/recordings/session-commands" in api
+    assert ".session-overview" in styles
+    assert ".session-quality-grid" in styles
+
+
+def test_storage_keeps_zero_clip_telemetry_sessions_and_exposes_quality() -> None:
+    html = (STATIC_DIR / "storage.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "storage.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "采集数据" in html
+    assert "session.quality.imu_sample_count" in script
+    assert "formatMetadataCoverage(session.quality)" in script
+    assert "session.quality.timestamp_mapping_segment_count" in script
+    assert "session.quality.telemetry_queue_overflow_count" in script
+    assert "session.clips.length === 0" in script
+    assert "IMU 仍在持续保存" in script
+    assert "历史仅视频" in script
+    assert 'session.telemetry_database === null' in script
+    assert 'session.state === "incomplete" && session.recoverable' in script
+    assert ".session-quality-summary" in styles
+    assert ".session-clips-empty" in styles

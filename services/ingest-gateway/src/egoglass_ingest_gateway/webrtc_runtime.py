@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from pydantic import ValidationError
 
@@ -22,7 +24,11 @@ from .adapters.webrtc import (
     create_aiortc_peer,
     create_aiortc_viewer_peer,
 )
-from .webrtc_matcher import DuplicateMetadataError, FrameMetadataMatcher
+from .webrtc_matcher import (
+    DuplicateMetadataError,
+    FrameMetadataMatch,
+    FrameMetadataMatcher,
+)
 from .webrtc_models import (
     IMU_TELEMETRY_ADAPTER,
     ImuCapabilities,
@@ -45,6 +51,7 @@ from .webrtc_models import (
 
 IMU_MAX_PAYLOAD_BYTES = 16_384
 RECORDING_FRAME_MAX_AGE_NS = 2_000_000_000
+LOGGER = logging.getLogger(__name__)
 
 
 class PairingTokenError(RuntimeError):
@@ -73,6 +80,51 @@ class StreamControlCommandTimeoutError(RuntimeError):
 
 class StreamControlCommandError(RuntimeError):
     """Raised when a control command cannot be sent safely."""
+
+
+class CaptureTelemetrySink(Protocol):
+    async def on_connection_started(
+        self,
+        connection_session_id: str,
+        device_session_id: str,
+        observed_at_client_monotonic_ns: int,
+    ) -> None: ...
+
+    async def on_connection_state(
+        self,
+        connection_session_id: str,
+        state: str,
+        observed_at_client_monotonic_ns: int,
+    ) -> None: ...
+
+    async def on_imu_capabilities(
+        self,
+        connection_session_id: str,
+        capabilities: ImuCapabilities,
+        received_at_client_monotonic_ns: int,
+    ) -> None: ...
+
+    async def on_imu_sample(
+        self,
+        connection_session_id: str,
+        sample: ImuSample,
+        received_at_client_monotonic_ns: int,
+    ) -> None: ...
+
+    async def on_frame_metadata_match(
+        self,
+        connection_session_id: str,
+        match: FrameMetadataMatch,
+    ) -> None: ...
+
+    async def on_video_frame_metadata(
+        self,
+        connection_session_id: str,
+        metadata: VideoFrameMetadata,
+        received_at_client_monotonic_ns: int,
+        camera_start_generation: int,
+        ingest_status: str,
+    ) -> None: ...
 
 
 WebRtcPeerFactory = Callable[[WebRtcPeerCallbacks], WebRtcPeer]
@@ -105,6 +157,7 @@ class WebRtcSessionRuntime:
         perf_clock: Callable[[], int] = time.perf_counter_ns,
         max_pending_metadata: int = 256,
         control_command_timeout_seconds: float = 3.0,
+        capture_telemetry_sink: CaptureTelemetrySink | None = None,
     ) -> None:
         if len(pairing_token) < 16:
             raise ValueError("pairing_token must contain at least 16 characters")
@@ -116,6 +169,7 @@ class WebRtcSessionRuntime:
         if control_command_timeout_seconds <= 0:
             raise ValueError("control_command_timeout_seconds must be positive")
         self._control_command_timeout_seconds = control_command_timeout_seconds
+        self._capture_telemetry_sink = capture_telemetry_sink
         self._session_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._control_command_lock = asyncio.Lock()
@@ -127,6 +181,9 @@ class WebRtcSessionRuntime:
         ] = {}
         self._generation = 0
         self._reset_state()
+
+    def set_capture_telemetry_sink(self, sink: CaptureTelemetrySink) -> None:
+        self._capture_telemetry_sink = sink
 
     async def status(self) -> WebRtcStatus:
         async with self._state_lock:
@@ -148,6 +205,8 @@ class WebRtcSessionRuntime:
                 frames_received=self._frames_received,
                 metadata_received=self._metadata_received,
                 metadata_matched=matcher.matched,
+                metadata_anchor_matches=matcher.anchor_matches,
+                metadata_ordered_gap_matches=matcher.ordered_gap_matches,
                 malformed_metadata=self._malformed_metadata,
                 duplicate_metadata=matcher.duplicates,
                 unmatched_entries_dropped=matcher.dropped,
@@ -164,6 +223,8 @@ class WebRtcSessionRuntime:
                 last_frame_time_base_num=self._last_frame_time_base_num,
                 last_frame_time_base_den=self._last_frame_time_base_den,
                 metadata_rtp_origin_90khz=matcher.metadata_origin_90khz,
+                metadata_calibrated=matcher.calibrated,
+                metadata_calibration_support=matcher.calibration_support,
                 last_frame_received_at_perf_counter_ns=self._last_frame_at_ns,
                 last_error=self._last_error,
             )
@@ -297,10 +358,18 @@ class WebRtcSessionRuntime:
             self._generation += 1
             generation = self._generation
             async with self._state_lock:
+                previous_session_id = self._session_id
                 self._fail_pending_control_locked(
                     StreamControlUnavailableError("WebRTC session was replaced")
                 )
                 self._reset_state()
+            if previous_session_id is not None and self._capture_telemetry_sink is not None:
+                await self._emit_capture_event(
+                    "on_connection_state",
+                    previous_session_id,
+                    "replaced",
+                    self._perf_clock(),
+                )
             peer, self._peer = self._peer, None
             viewer_peer, self._viewer_peer = self._viewer_peer, None
             self._video_source = None
@@ -341,6 +410,13 @@ class WebRtcSessionRuntime:
                 self._session_id = session_id
                 self._device_session_id = offer.device_session_id
                 self._negotiation_started_at_ns = self._perf_clock()
+                negotiation_started_at_ns = self._negotiation_started_at_ns
+            await self._emit_capture_event(
+                "on_connection_started",
+                session_id,
+                offer.device_session_id,
+                negotiation_started_at_ns,
+            )
 
             try:
                 answer_sdp = await peer.accept_offer(offer)
@@ -385,21 +461,24 @@ class WebRtcSessionRuntime:
                 or self._height is None
                 or self._phase is not WebRtcPhase.STREAMING
                 or self._last_frame_at_ns is None
+                or self._camera_start_generation is None
                 or self._perf_clock() - self._last_frame_at_ns
                 > RECORDING_FRAME_MAX_AGE_NS
             ):
                 return None
             return WebRtcVideoRecordingSource(
-                session_id=self._session_id,
+                connection_session_id=self._session_id,
                 source=self._video_source,
                 width=self._width,
                 height=self._height,
+                camera_start_generation=self._camera_start_generation,
             )
 
     async def close(self) -> None:
         async with self._session_lock:
             self._generation += 1
             async with self._state_lock:
+                session_id = self._session_id
                 self._fail_pending_control_locked(
                     StreamControlUnavailableError("WebRTC session closed")
                 )
@@ -409,6 +488,13 @@ class WebRtcSessionRuntime:
                     detail="WebRTC session is closed",
                 )
                 self._set_imu_unavailable_locked()
+            if session_id is not None and self._capture_telemetry_sink is not None:
+                await self._emit_capture_event(
+                    "on_connection_state",
+                    session_id,
+                    "closed",
+                    self._perf_clock(),
+                )
             peer, self._peer = self._peer, None
             viewer_peer, self._viewer_peer = self._viewer_peer, None
             self._video_source = None
@@ -424,6 +510,7 @@ class WebRtcSessionRuntime:
         if generation != self._generation:
             return
         async with self._state_lock:
+            session_id = self._session_id
             self._connection_state = state
             if state == "connected" and self._phase is WebRtcPhase.NEGOTIATING:
                 self._phase = WebRtcPhase.CONNECTED
@@ -437,6 +524,13 @@ class WebRtcSessionRuntime:
                 self._last_error = "WebRTC peer connection failed"
                 self._set_control_unavailable_locked("WebRTC peer connection failed")
                 self._set_imu_unavailable_locked()
+        if session_id is not None and self._capture_telemetry_sink is not None:
+            await self._emit_capture_event(
+                "on_connection_state",
+                session_id,
+                state,
+                self._perf_clock(),
+            )
 
     async def _on_video_source(
         self,
@@ -467,7 +561,29 @@ class WebRtcSessionRuntime:
                         (now_ns - self._negotiation_started_at_ns) / 1_000_000,
                         3,
                     )
-            self._matcher.add_frame(frame.pts)
+            first_match = self._matcher.add_frame(
+                frame.pts,
+                frame_index=self._frames_received - 1,
+                time_base_num=(
+                    frame.time_base.numerator if frame.time_base is not None else None
+                ),
+                time_base_den=(
+                    frame.time_base.denominator if frame.time_base is not None else None
+                ),
+                received_at_client_monotonic_ns=now_ns,
+            )
+            matches = (
+                (() if first_match is None else (first_match,))
+                + self._matcher.drain_matches()
+            )
+            session_id = self._session_id
+        if session_id is not None:
+            for match in matches:
+                await self._emit_capture_event(
+                    "on_frame_metadata_match",
+                    session_id,
+                    match,
+                )
 
     async def _on_metadata(self, generation: int, payload: str | bytes) -> None:
         if generation != self._generation:
@@ -487,12 +603,40 @@ class WebRtcSessionRuntime:
                 self._malformed_metadata += 1
             return
 
+        received_at_ns = self._perf_clock()
         async with self._state_lock:
             self._metadata_received += 1
+            self._camera_start_generation = metadata.camera_start_generation
+            first_match = None
+            ingest_status = "accepted"
             try:
-                self._matcher.add_metadata(metadata)
+                first_match = self._matcher.add_metadata(
+                    metadata,
+                    received_at_client_monotonic_ns=received_at_ns,
+                )
             except DuplicateMetadataError:
-                return
+                ingest_status = "duplicate"
+            matches = (
+                (() if first_match is None else (first_match,))
+                + self._matcher.drain_matches()
+            )
+            session_id = self._session_id
+        if session_id is not None and self._capture_telemetry_sink is not None:
+            await self._emit_capture_event(
+                "on_video_frame_metadata",
+                session_id,
+                metadata,
+                received_at_ns,
+                metadata.camera_start_generation,
+                ingest_status,
+            )
+        if session_id is not None:
+            for match in matches:
+                await self._emit_capture_event(
+                    "on_frame_metadata_match",
+                    session_id,
+                    match,
+                )
 
     async def _on_control_channel_ready(
         self,
@@ -607,7 +751,12 @@ class WebRtcSessionRuntime:
         except (UnicodeError, ValueError, ValidationError):
             malformed = True
 
-        received_at_ns = self._perf_clock() if isinstance(message, ImuSample) else None
+        received_at_ns = (
+            self._perf_clock()
+            if isinstance(message, ImuSample)
+            or (message is not None and self._capture_telemetry_sink is not None)
+            else None
+        )
         async with self._state_lock:
             if generation != self._generation or self._imu_channel is not channel:
                 return
@@ -618,42 +767,68 @@ class WebRtcSessionRuntime:
             if isinstance(message, ImuCapabilities):
                 self._imu_capabilities_received += 1
                 self._imu_capabilities = message
-                return
-
-            self._imu_samples_received += 1
-            self._imu_channel_state = ImuChannelState.RECEIVING
-            accumulator = self._imu_sensors[message.sensor_type]
-            accumulator.sample_count += 1
-            if accumulator.first_received_at_ns is None:
-                accumulator.first_received_at_ns = received_at_ns
-            accumulator.last_received_at_ns = received_at_ns
-            previous_sequence = accumulator.latest_sequence_number
-            if previous_sequence is None:
-                accumulator.latest_sequence_number = message.sequence_number
-            elif message.sequence_number <= previous_sequence:
-                accumulator.out_of_order_samples += 1
             else:
-                accumulator.sequence_gaps += max(
-                    0,
-                    message.sequence_number - previous_sequence - 1,
+                self._imu_samples_received += 1
+                self._imu_channel_state = ImuChannelState.RECEIVING
+                accumulator = self._imu_sensors[message.sensor_type]
+                accumulator.sample_count += 1
+                if accumulator.first_received_at_ns is None:
+                    accumulator.first_received_at_ns = received_at_ns
+                accumulator.last_received_at_ns = received_at_ns
+                previous_sequence = accumulator.latest_sequence_number
+                if previous_sequence is None:
+                    accumulator.latest_sequence_number = message.sequence_number
+                elif message.sequence_number <= previous_sequence:
+                    accumulator.out_of_order_samples += 1
+                else:
+                    accumulator.sequence_gaps += max(
+                        0,
+                        message.sequence_number - previous_sequence - 1,
+                    )
+                    accumulator.latest_sequence_number = message.sequence_number
+                delta_ns = (
+                    message.received_at_elapsed_realtime_ns
+                    - message.sensor_event_monotonic_ns
                 )
-                accumulator.latest_sequence_number = message.sequence_number
-            delta_ns = (
-                message.received_at_elapsed_realtime_ns
-                - message.sensor_event_monotonic_ns
+                accumulator.last_event_to_callback_delta_ns = delta_ns
+                accumulator.min_event_to_callback_delta_ns = (
+                    delta_ns
+                    if accumulator.min_event_to_callback_delta_ns is None
+                    else min(accumulator.min_event_to_callback_delta_ns, delta_ns)
+                )
+                accumulator.max_event_to_callback_delta_ns = (
+                    delta_ns
+                    if accumulator.max_event_to_callback_delta_ns is None
+                    else max(accumulator.max_event_to_callback_delta_ns, delta_ns)
+                )
+                accumulator.last_sample = message
+            session_id = self._session_id
+        if session_id is None or received_at_ns is None:
+            return
+        if isinstance(message, ImuCapabilities):
+            await self._emit_capture_event(
+                "on_imu_capabilities",
+                session_id,
+                message,
+                received_at_ns,
             )
-            accumulator.last_event_to_callback_delta_ns = delta_ns
-            accumulator.min_event_to_callback_delta_ns = (
-                delta_ns
-                if accumulator.min_event_to_callback_delta_ns is None
-                else min(accumulator.min_event_to_callback_delta_ns, delta_ns)
+        else:
+            await self._emit_capture_event(
+                "on_imu_sample",
+                session_id,
+                message,
+                received_at_ns,
             )
-            accumulator.max_event_to_callback_delta_ns = (
-                delta_ns
-                if accumulator.max_event_to_callback_delta_ns is None
-                else max(accumulator.max_event_to_callback_delta_ns, delta_ns)
-            )
-            accumulator.last_sample = message
+
+    async def _emit_capture_event(self, method_name: str, *args: object) -> None:
+        sink = self._capture_telemetry_sink
+        if sink is None:
+            return
+        try:
+            method = getattr(sink, method_name)
+            await method(*args)
+        except Exception:
+            LOGGER.exception("capture telemetry sink failed during %s", method_name)
 
     def _set_control_unavailable_locked(self, detail: str) -> None:
         self._control_channel = None
@@ -680,6 +855,7 @@ class WebRtcSessionRuntime:
         self._connection_state: str | None = None
         self._frames_received = 0
         self._metadata_received = 0
+        self._camera_start_generation: int | None = None
         self._malformed_metadata = 0
         self._width: int | None = None
         self._height: int | None = None

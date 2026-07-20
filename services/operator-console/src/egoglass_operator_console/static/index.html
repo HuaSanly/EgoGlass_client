@@ -131,6 +131,45 @@
               </dl>
 
               <section class="stream-control" aria-labelledby="stream-control-title">
+                <section class="session-overview" aria-labelledby="session-overview-title">
+                  <div class="session-overview-header">
+                    <div class="session-overview-identity">
+                      <span class="control-status-dot" id="session-status-dot" aria-hidden="true"></span>
+                      <div>
+                        <span id="session-overview-title">当前采集会话</span>
+                        <strong id="current-session-name">首次录制时自动创建</strong>
+                      </div>
+                    </div>
+                    <button
+                      class="button button-small new-session-button"
+                      id="new-session-button"
+                      type="button"
+                      title="结束当前会话，下一次录制自动开始新会话"
+                      disabled
+                    >
+                      <span aria-hidden="true">＋</span>
+                      新会话
+                    </button>
+                  </div>
+                  <dl class="session-quality-grid" aria-label="当前采集会话质量摘要">
+                    <div>
+                      <dt>状态</dt>
+                      <dd id="current-session-state">尚未开始</dd>
+                    </div>
+                    <div>
+                      <dt>IMU</dt>
+                      <dd id="current-session-imu">尚未保存</dd>
+                    </div>
+                    <div>
+                      <dt>帧元数据</dt>
+                      <dd id="current-session-metadata">--</dd>
+                    </div>
+                    <div>
+                      <dt>时间同步</dt>
+                      <dd id="current-session-sync">--</dd>
+                    </div>
+                  </dl>
+                </section>
                 <div class="stream-control-summary">
                   <span class="control-status-dot" id="control-status-dot" aria-hidden="true"></span>
                   <div>

@@ -104,6 +104,7 @@ class VideoFrameMetadata(BaseModel):
     message_type: Literal["video_frame"] = "video_frame"
     stream_id: Literal["camera"] = "camera"
     frame_id: int = Field(ge=0)
+    camera_start_generation: int = Field(ge=1)
     captured_at_rokid_sdk_ms: int = Field(ge=0)
     received_at_elapsed_realtime_ns: int = Field(ge=0)
     video_at_monotonic_ns: int = Field(ge=0)
@@ -251,13 +252,15 @@ class WebRtcStatus(BaseModel):
     frames_received: int = Field(default=0, ge=0)
     metadata_received: int = Field(default=0, ge=0)
     metadata_matched: int = Field(default=0, ge=0)
+    metadata_anchor_matches: int = Field(default=0, ge=0)
+    metadata_ordered_gap_matches: int = Field(default=0, ge=0)
     malformed_metadata: int = Field(default=0, ge=0)
     duplicate_metadata: int = Field(default=0, ge=0)
     unmatched_entries_dropped: int = Field(default=0, ge=0)
     sdk_clock_discontinuities: int = Field(default=0, ge=0)
     pending_frames: int = Field(default=0, ge=0)
     pending_metadata: int = Field(default=0, ge=0)
-    max_timestamp_match_error_90khz: int = Field(default=0, ge=0, le=90)
+    max_timestamp_match_error_90khz: int = Field(default=0, ge=0, le=6_000)
     width: int | None = Field(default=None, gt=0)
     height: int | None = Field(default=None, gt=0)
     video_codec: str | None = Field(default=None, pattern=r"^[A-Z0-9.-]+$")
@@ -267,5 +270,7 @@ class WebRtcStatus(BaseModel):
     last_frame_time_base_num: int | None = None
     last_frame_time_base_den: int | None = None
     metadata_rtp_origin_90khz: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
+    metadata_calibrated: bool = False
+    metadata_calibration_support: int = Field(default=0, ge=0)
     last_frame_received_at_perf_counter_ns: int | None = Field(default=None, ge=0)
     last_error: str | None = None

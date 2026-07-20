@@ -1,12 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
 import av
 from aiortc import MediaStreamError
 from av import VideoFrame
+
+
+@dataclass(frozen=True)
+class RecordedVideoFrame:
+    frame_index: int
+    source_frame_pts: int | None
+    source_frame_time_base_num: int | None
+    source_frame_time_base_den: int | None
+    mp4_pts: int
+    mp4_time_base_num: int
+    mp4_time_base_den: int
+    received_at_client_perf_counter_ns: int
 
 
 class PyAvH264Mp4Recorder:
@@ -20,20 +35,28 @@ class PyAvH264Mp4Recorder:
         width: int = 1280,
         height: int = 720,
         fps: int = 30,
+        perf_clock: Callable[[], int] = time.perf_counter_ns,
     ) -> None:
         self._path = path
         self._track = track
         self._width = width
         self._height = height
         self._fps = fps
+        self._perf_clock = perf_clock
         self._container: av.container.OutputContainer | None = None
         self._stream: av.video.stream.VideoStream | None = None
         self._task: asyncio.Task[None] | None = None
         self._frames_received = 0
+        self._source_frame_records: list[tuple[int | None, int | None, int | None, int]] = []
+        self._frame_records: list[RecordedVideoFrame] = []
 
     @property
     def frames_received(self) -> int:
         return self._frames_received
+
+    @property
+    def frame_records(self) -> tuple[RecordedVideoFrame, ...]:
+        return tuple(self._frame_records)
 
     async def start(self) -> None:
         if self._task is not None:
@@ -78,6 +101,7 @@ class PyAvH264Mp4Recorder:
         try:
             while True:
                 frame = await self._track.recv()  # type: ignore[attr-defined]
+                received_at_client_perf_counter_ns = self._perf_clock()
                 if not isinstance(frame, VideoFrame):
                     raise TypeError("recording track returned a non-video frame")
                 if (frame.width, frame.height) != (self._width, self._height):
@@ -105,6 +129,15 @@ class PyAvH264Mp4Recorder:
                     raise RuntimeError("recorder container is closed")
                 for packet in stream.encode(output_frame):
                     container.mux(packet)
+                source_time_base = frame.time_base
+                self._source_frame_records.append(
+                    (
+                        frame.pts,
+                        source_time_base.numerator if source_time_base is not None else None,
+                        source_time_base.denominator if source_time_base is not None else None,
+                        received_at_client_perf_counter_ns,
+                    )
+                )
                 self._frames_received += 1
         except MediaStreamError:
             return
@@ -118,3 +151,31 @@ class PyAvH264Mp4Recorder:
             for packet in stream.encode(None):
                 container.mux(packet)
         container.close()
+        self._load_muxed_frame_timing()
+
+    def _load_muxed_frame_timing(self) -> None:
+        muxed_frames: list[tuple[int, int, int]] = []
+        with av.open(str(self._path), mode="r") as container:
+            for frame in container.decode(video=0):
+                if frame.pts is None or frame.time_base is None:
+                    raise RuntimeError("finalized MP4 frame is missing exact PTS")
+                muxed_frames.append(
+                    (frame.pts, frame.time_base.numerator, frame.time_base.denominator)
+                )
+        if len(muxed_frames) != len(self._source_frame_records):
+            raise RuntimeError("finalized MP4 frame index does not match encoded frames")
+        self._frame_records = [
+            RecordedVideoFrame(
+                frame_index=frame_index,
+                source_frame_pts=source[0],
+                source_frame_time_base_num=source[1],
+                source_frame_time_base_den=source[2],
+                mp4_pts=muxed[0],
+                mp4_time_base_num=muxed[1],
+                mp4_time_base_den=muxed[2],
+                received_at_client_perf_counter_ns=source[3],
+            )
+            for frame_index, (source, muxed) in enumerate(
+                zip(self._source_frame_records, muxed_frames, strict=True)
+            )
+        ]

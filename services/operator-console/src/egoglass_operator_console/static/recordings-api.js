@@ -2,6 +2,8 @@ export const recordingStatusEndpoint =
   "http://127.0.0.1:8770/api/v1/recordings/status";
 export const recordingCommandEndpoint =
   "http://127.0.0.1:8770/api/v1/recordings/commands";
+export const recordingSessionCommandEndpoint =
+  "http://127.0.0.1:8770/api/v1/recordings/session-commands";
 export const recordingLibraryEndpoint =
   "http://127.0.0.1:8770/api/v1/recordings/library";
 
@@ -29,6 +31,12 @@ export const recordingStates = new Set([
   "finalizing",
   "error",
 ]);
+export const collectionSessionStates = new Set([
+  "active",
+  "finalizing",
+  "complete",
+  "incomplete",
+]);
 
 const gatewayOrigin = new URL(recordingStatusEndpoint).origin;
 
@@ -42,6 +50,11 @@ function isNullableString(value) {
 
 function isNullableUnixMs(value) {
   return value === null || (Number.isSafeInteger(value) && value >= 0);
+}
+
+function readCollectionSessionState(value, { nullable = false } = {}) {
+  if ((nullable && value === null) || collectionSessionStates.has(value)) return value;
+  throw new Error("录制服务返回了无效的采集会话状态");
 }
 
 function requireFiniteNumber(value, name, minimum = 0) {
@@ -83,6 +96,7 @@ export function readRecordingStatus(payload) {
     !isRecord(payload) ||
     payload.schema_version !== "1.0" ||
     !recordingStates.has(payload.state) ||
+    (payload.session_state !== null && !collectionSessionStates.has(payload.session_state)) ||
     !isNullableString(payload.session_id) ||
     !isNullableString(payload.clip_id) ||
     !isNullableUnixMs(payload.recording_starts_at_unix_ms) ||
@@ -102,12 +116,76 @@ export function readRecordingStatus(payload) {
   return {
     schema_version: payload.schema_version,
     state: payload.state,
+    session_state: readCollectionSessionState(payload.session_state, { nullable: true }),
     session_id: payload.session_id,
     clip_id: payload.clip_id,
     recording_starts_at_unix_ms: payload.recording_starts_at_unix_ms,
     recording_started_at_unix_ms: payload.recording_started_at_unix_ms,
     detail: payload.detail,
     output: readOutput(payload.output),
+  };
+}
+
+function readSessionQuality(quality) {
+  if (
+    !isRecord(quality) ||
+    quality.timestamp_alignment_state !== "unverified" ||
+    (
+      quality.metadata_match_coverage !== null &&
+      (
+        typeof quality.metadata_match_coverage !== "number" ||
+        !Number.isFinite(quality.metadata_match_coverage) ||
+        quality.metadata_match_coverage < 0 ||
+        quality.metadata_match_coverage > 1
+      )
+    )
+  ) {
+    throw new Error("录制服务返回了无效的会话质量摘要");
+  }
+  return {
+    imu_sample_count: requireSafeInteger(quality.imu_sample_count, "imu_sample_count"),
+    accelerometer_sample_count: requireSafeInteger(
+      quality.accelerometer_sample_count,
+      "accelerometer_sample_count",
+    ),
+    gyroscope_sample_count: requireSafeInteger(
+      quality.gyroscope_sample_count,
+      "gyroscope_sample_count",
+    ),
+    imu_sequence_gap_count: requireSafeInteger(
+      quality.imu_sequence_gap_count,
+      "imu_sequence_gap_count",
+    ),
+    imu_out_of_order_sample_count: requireSafeInteger(
+      quality.imu_out_of_order_sample_count,
+      "imu_out_of_order_sample_count",
+    ),
+    telemetry_queue_overflow_count: requireSafeInteger(
+      quality.telemetry_queue_overflow_count,
+      "telemetry_queue_overflow_count",
+    ),
+    connection_segment_count: requireSafeInteger(
+      quality.connection_segment_count,
+      "connection_segment_count",
+    ),
+    matched_video_frame_count: requireSafeInteger(
+      quality.matched_video_frame_count,
+      "matched_video_frame_count",
+    ),
+    recorded_video_frame_count: requireSafeInteger(
+      quality.recorded_video_frame_count,
+      "recorded_video_frame_count",
+    ),
+    recorded_video_frame_metadata_match_count: requireSafeInteger(
+      quality.recorded_video_frame_metadata_match_count,
+      "recorded_video_frame_metadata_match_count",
+    ),
+    metadata_match_coverage: quality.metadata_match_coverage,
+    timestamp_mapping_segment_count: requireSafeInteger(
+      quality.timestamp_mapping_segment_count,
+      "timestamp_mapping_segment_count",
+    ),
+    timestamp_alignment_state: quality.timestamp_alignment_state,
   };
 }
 
@@ -137,11 +215,13 @@ function readClip(clip) {
       clip.recorded_at_unix_ms,
       "recorded_at_unix_ms",
     ),
+    ended_at_unix_ms: requireSafeInteger(clip.ended_at_unix_ms, "ended_at_unix_ms"),
     duration_ms: requireSafeInteger(clip.duration_ms, "duration_ms"),
     width: requireSafeInteger(clip.width, "width", 1),
     height: requireSafeInteger(clip.height, "height", 1),
     fps: requireFiniteNumber(clip.fps, "fps", 0.001),
     file_size_bytes: requireSafeInteger(clip.file_size_bytes, "file_size_bytes"),
+    frame_count: requireSafeInteger(clip.frame_count, "frame_count"),
     media_url: readMediaUrl(clip.media_url),
   };
 }
@@ -150,7 +230,11 @@ function readSession(session) {
   if (
     !isRecord(session) ||
     !recordingIdPattern.test(session.session_id) ||
-    !Array.isArray(session.clips)
+    !Array.isArray(session.clips) ||
+    !collectionSessionStates.has(session.state) ||
+    !isNullableUnixMs(session.ended_at_unix_ms) ||
+    typeof session.recoverable !== "boolean" ||
+    ![null, "telemetry/telemetry.sqlite"].includes(session.telemetry_database)
   ) {
     throw new Error("录制服务返回了无效的会话");
   }
@@ -160,7 +244,7 @@ function readSession(session) {
     (
       typeof displayName !== "string" ||
       displayName.length === 0 ||
-      displayName.length > 64 ||
+      displayName.length > 128 ||
       displayName !== displayName.trim() ||
       /[\u0000-\u001f\u007f]/u.test(displayName)
     )
@@ -174,8 +258,26 @@ function readSession(session) {
       "started_at_unix_ms",
     ),
     display_name: displayName,
+    state: readCollectionSessionState(session.state),
+    ended_at_unix_ms: session.ended_at_unix_ms,
+    recoverable: session.recoverable,
+    telemetry_database: session.telemetry_database,
+    quality: readSessionQuality(session.quality),
     clips: session.clips.map(readClip),
   };
+}
+
+export function formatSessionFolderName(unixMs) {
+  const date = new Date(unixMs);
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`,
+  ].join(" ");
+}
+
+export function getSessionDisplayName(session) {
+  return session.display_name || formatSessionFolderName(session.started_at_unix_ms);
 }
 
 export function readRecordingLibrary(payload) {

@@ -41,21 +41,62 @@ one loopback WebRTC viewer. The viewer subscription is unbuffered so stale
 frames do not accumulate. It does not create JPEG snapshots or reduce the
 incoming frame size or cadence.
 
-## HD recording
+Decoded aiortc PTS starts from a receiver-relative RTP origin and therefore
+must not be anchored to the first Glass3 metadata message: the encoder can drop
+capture callbacks before its first output frame. The gateway first pairs each
+decoded frame with the metadata message nearest in client receipt time, then
+selects the dominant RTP-offset cluster. It waits for at least 60 candidates
+and a 1.5x lead over the next cluster before releasing buffered matches. The
+1,000-tick match tolerance covers the measured 622-tick device residual while
+remaining below half of a 30 fps frame. Camera-start generation changes clear
+the pending queues and require a fresh calibration.
 
-The loopback recording API stores completed clips under one directory per
-active gateway WebRTC session. A start command creates a server-authoritative
-three-second countdown. Encoding begins only when that countdown expires; a
-stop command during the countdown cancels it without creating a clip. A stop
-while recording flushes the H.264 encoder, closes the MP4 container, atomically
-renames the temporary file, and then atomically updates `session.json`.
+## Capture sessions and HD recording
+
+The first recording request automatically creates a collection session before
+the server-authoritative three-second countdown. It immediately starts
+persisting IMU telemetry. Stopping or cancelling a clip does not stop the
+session or its IMU timeline, and WebRTC reconnection creates a connection
+segment instead of a new collection session. One collection session can own
+many MP4 clips.
+
+The loopback New Session command finalizes the current session and arms the
+next recording request to create another one. It does not create an empty
+directory. New Session returns HTTP 409 while a countdown or clip is active.
+The idempotent finalize command used during client shutdown is different: it
+cancels a countdown or flushes an active MP4, drains telemetry, checkpoints
+SQLite WAL, writes the final quality report and manifest, and only then
+returns.
 
 Recording accepts only an active 1280x720 Glass3 source. It uses the incoming
 decoded frames at their full dimensions, a nominal 30 FPS H.264 stream, and a
 buffered aiortc `MediaRelay` subscription so the operator preview does not
-consume recording frames. IMU data is deliberately not stored in this version.
-PyAV supplies the FFmpeg bindings and the `libx264` encoder; no separate
-`ffmpeg.exe` process is required.
+consume recording frames. After muxing, PyAV reads back the actual MP4 PTS and
+time base for every encoded frame. Missing frame timing fails the clip; the
+gateway never derives PTS as `frame_index / fps`. PyAV supplies the FFmpeg
+bindings and the `libx264` encoder; no separate `ffmpeg.exe` process is
+required.
+
+New sessions use the versioned `capture-session-v1` layout:
+
+~~~text
+<session-id>/
+  session.json
+  quality.json
+  media/
+    <clip-id>.mp4
+  telemetry/
+    telemetry.sqlite
+  annotations/
+  derived/
+~~~
+
+`telemetry.sqlite` runs in WAL mode and preserves raw accelerometer and
+gyroscope samples, capabilities, connection segments, every valid video
+metadata message, decoded-frame matches, every MP4 frame index, lifecycle
+events, and derived clock mappings. A bounded queue keeps SQLite work out of
+WebRTC callbacks and a single worker commits batches. Queue overflow is counted
+and makes the session ineligible for training instead of silently disappearing.
 
 Set the root with `--recordings-root` or `EGOGLASS_RECORDINGS_ROOT`. The CLI
 default is `local-data/recordings` relative to the launch directory:
@@ -65,11 +106,13 @@ uv run egoglass-ingest-gateway `
   --recordings-root F:\data\Project\EgoGlass\EgoGlass_client\local-data\recordings
 ~~~
 
-Only completed files listed in a valid session manifest appear in the library
+Only checksummed files listed in a valid session manifest appear in the library
 or media endpoint. A source disconnect finalizes frames already received. An
-encoder or manifest failure moves the runtime to `error`, removes the current
-partial output, and does not advertise a clip. A process crash can leave a
-`.part.mp4` file, but partial files are never included in the library.
+encoder or manifest failure moves the runtime to `error`, removes an invalid
+partial output, and preserves the collection telemetry for recovery. On the
+next startup, sessions left `active` or `finalizing` are marked `incomplete`,
+SQLite WAL is replayed and checkpointed, and `quality.json` records the unclean
+recovery. Incomplete sessions are never silently treated as training-ready.
 
 The fixed 1280x720 profile applies to new recordings only. Library manifests
 retain each clip's actual dimensions so recordings from earlier profiles,
@@ -79,7 +122,10 @@ deletable after a profile change.
 Deleting a clip is loopback-only. The gateway first moves the MP4 out of its
 published path, atomically removes it from `session.json`, and then deletes the
 file. A failed operation restores both the MP4 and manifest. Deleting the last
-clip also removes the empty session directory.
+clip from a collection session retains its telemetry and session directory.
+The separate session-delete endpoint atomically removes the entire inactive
+session directory; active sessions return HTTP 409. Legacy video-only sessions
+retain their earlier last-clip deletion behavior.
 
 Session display names are optional, limited to 64 visible characters, and
 stored in `session.json`. Renaming changes only this display metadata; the
@@ -104,13 +150,22 @@ again on the same peer connection. Command IDs are generated by the gateway
 and matched to strict status acknowledgements from the glasses. The control
 API is not available to LAN callers.
 
-The IMU experiment opens a separate unordered, zero-retransmit
+The IMU path opens a separate unordered, zero-retransmit
 `imu-telemetry-experimental-v0` DataChannel. It accepts only Android
 accelerometer and gyroscope capabilities and raw three-axis samples. The
 loopback status endpoint reports bounded counters, observed arrival rates, and
-the latest sample only. It keeps no raw sample history and the experimental
-timestamps must not be used for dataset registration or camera alignment until
-they are verified on a Glass3 device.
+the latest sample, while an active collection session persists every sample.
+
+Derived affine clock segments are fitted independently per WebRTC connection,
+camera start generation, and IMU sensor instance. Source regression, target
+regression, or a large time gap starts a new segment. The estimator removes
+MAD-detected outliers and records scale, offset, P95/max residual, uncertainty,
+sample count, status, and evidence without overwriting raw clocks. Camera
+alignment remains `unverified` until the Glass3 motion test validates exposure
+semantics. Missing device, firmware, glasses application, or Git revision
+provenance makes a session `ineligible`; after provenance is supplied, an
+otherwise clean session remains at most `review_required` until that motion
+test passes.
 
 By default the gateway also listens for EgoGlass discovery v1 requests on UDP
 port 8771. It responds only to private or loopback IPv4 sources and returns the
@@ -142,8 +197,10 @@ control, IMU, recording, and media-library APIs enforce loopback access.
 - POST /api/v1/webrtc/control/commands (loopback-only `{ "action": "start|stop" }`)
 - GET /api/v1/recordings/status (loopback-only recording state)
 - POST /api/v1/recordings/commands (loopback-only `{ "action": "start|stop" }`)
-- GET /api/v1/recordings/library (loopback-only completed session groups)
+- POST /api/v1/recordings/session-commands (loopback-only `{ "action": "new|finalize" }`)
+- GET /api/v1/recordings/library (loopback-only active and historical session groups)
 - PATCH /api/v1/recordings/sessions/{session_id} (loopback-only display-name update)
+- DELETE /api/v1/recordings/sessions/{session_id} (loopback-only whole-session deletion)
 - DELETE /api/v1/recordings/clips/{session_id}/{clip_id} (loopback-only deletion)
 - GET /api/v1/recordings/media/{session_id}/{clip_id} (loopback-only MP4)
 - Interactive schema: http://127.0.0.1:8770/api/docs
