@@ -160,18 +160,20 @@ def test_removed_simulation_routes_are_not_exposed(method: str, path: str) -> No
     assert response.status_code == 404
 
 
-def test_sidebar_contains_home_and_storage_page_links() -> None:
+def test_sidebar_contains_home_storage_and_annotation_page_links() -> None:
     with make_client() as client:
         page = client.get("/")
 
     navigation = page.text.split('<nav class="nav-rail"', maxsplit=1)[1].split(
         "</nav>", maxsplit=1
     )[0]
-    assert navigation.count("<a ") == 2
+    assert navigation.count("<a ") == 3
     assert '<a class="nav-item is-active" href="/" aria-current="page"' in navigation
     assert "<span>主页</span>" in navigation
     assert '<a class="nav-item" href="/storage"' in navigation
     assert "<span>存储</span>" in navigation
+    assert '<a class="nav-item" href="/annotations"' in navigation
+    assert "<span>标注</span>" in navigation
     assert "data-view=" not in navigation
 
 
@@ -180,14 +182,17 @@ def test_desktop_token_becomes_session_cookie_for_ui_assets() -> None:
     with TestClient(app) as client:
         unauthorized = client.get("/")
         unauthorized_storage = client.get("/storage")
+        unauthorized_annotations = client.get("/annotations")
         health = client.get("/api/v1/health")
         wrong_token = client.get("/?desktop_token=wrong")
         authorized_root = client.get("/?desktop_token=test-desktop-token")
         authorized_storage = client.get("/storage")
+        authorized_annotations = client.get("/annotations")
         authorized_asset = client.get("/assets/app.js")
 
     assert unauthorized.status_code == 401
     assert unauthorized_storage.status_code == 401
+    assert unauthorized_annotations.status_code == 401
     assert health.status_code == 200
     assert wrong_token.status_code == 401
     assert authorized_root.status_code == 200
@@ -197,4 +202,5 @@ def test_desktop_token_becomes_session_cookie_for_ui_assets() -> None:
     assert "path=/" in set_cookie
     assert "samesite=strict" in set_cookie
     assert authorized_storage.status_code == 200
+    assert authorized_annotations.status_code == 200
     assert authorized_asset.status_code == 200
