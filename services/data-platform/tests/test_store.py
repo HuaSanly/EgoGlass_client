@@ -62,9 +62,7 @@ def test_proposal_providers_return_whole_clip_and_deterministic_windows(
     ids = iter(f"{value:032x}" for value in range(1, 20))
     store = AnnotationStore(recordings_root, clock_ns=lambda: 123, id_factory=lambda: next(ids))
 
-    whole_clip = store.proposals(
-        SESSION_ID, ProposalRequest(strategy="clip_as_episode")
-    )
+    whole_clip = store.proposals(SESSION_ID, ProposalRequest(strategy="clip_as_episode"))
     windows = store.proposals(
         SESSION_ID,
         ProposalRequest(
@@ -75,12 +73,10 @@ def test_proposal_providers_return_whole_clip_and_deterministic_windows(
     )
 
     whole_clip_intervals = [
-        (item.start_frame_index, item.end_frame_index_exclusive)
-        for item in whole_clip.proposals
+        (item.start_frame_index, item.end_frame_index_exclusive) for item in whole_clip.proposals
     ]
     window_intervals = [
-        (item.start_frame_index, item.end_frame_index_exclusive)
-        for item in windows.proposals
+        (item.start_frame_index, item.end_frame_index_exclusive) for item in windows.proposals
     ]
     assert whole_clip_intervals == [(0, 300)]
     assert window_intervals == [
@@ -152,6 +148,30 @@ def test_publish_resolves_exact_pts_and_writes_immutable_content_revision(
     )
     assert revision_path.is_file()
     assert hashlib.sha256(source_media.read_bytes()).hexdigest() == before
+
+
+def test_publish_uses_exact_pts_without_inventing_pending_session_time(
+    tmp_path: Path,
+) -> None:
+    create_capture_session(tmp_path, with_perception_alignment=False)
+    store = AnnotationStore(tmp_path, clock_ns=lambda: 790)
+    draft = store.save_draft(
+        SESSION_ID,
+        SaveDraftRequest(
+            base_revision=0,
+            segmentation_strategy="manual",
+            episodes=[complete_episode()],
+        ),
+    )
+
+    revision = store.publish(SESSION_ID, draft.draft_revision)
+
+    assert revision.episodes[0].start.mp4_pts == 90_000
+    assert revision.episodes[0].start.session_time_ns is None
+    assert revision.episodes[0].start.timing_status == "unmapped"
+    assert revision.episodes[0].end_exclusive.mp4_pts == 720_000
+    assert revision.episodes[0].end_exclusive.session_time_ns is None
+    assert revision.episodes[0].end_exclusive.timing_status == "unmapped"
 
 
 def test_publish_rejects_missing_labels_and_phases(recordings_root: Path) -> None:

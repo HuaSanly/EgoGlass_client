@@ -12,6 +12,7 @@ from egoglass_ingest_gateway.adapters.webrtc import WebRtcVideoRecordingSource
 from egoglass_ingest_gateway.capture_session import (
     CaptureSessionDatabase,
     CaptureSessionWriter,
+    read_capture_quality,
 )
 from egoglass_ingest_gateway.recording import RecordingRuntime
 from egoglass_ingest_gateway.recording_models import (
@@ -29,7 +30,7 @@ SESSION_ID = "c" * 32
 CONNECTION_ID = "d" * 32
 
 
-def test_complete_clip_contract_rejects_missing_timing_and_hash() -> None:
+def test_complete_clip_contract_rejects_missing_frame_count_and_hash() -> None:
     with pytest.raises(ValueError, match="complete clip requires"):
         CaptureSessionClip(
             clip_id="a" * 32,
@@ -42,6 +43,24 @@ def test_complete_clip_contract_rejects_missing_timing_and_hash() -> None:
             ),
             frame_count=1,
         )
+
+
+def test_complete_clip_contract_allows_deferred_session_time() -> None:
+    clip = CaptureSessionClip(
+        clip_id="a" * 32,
+        state="complete",
+        relative_media_path=f"media/{'a' * 32}.mp4",
+        video_profile=CaptureVideoProfile(
+            width=1280,
+            height=720,
+            nominal_fps=30,
+        ),
+        frame_count=1,
+        sha256="b" * 64,
+    )
+
+    assert clip.started_at_session_time_ns is None
+    assert clip.ended_at_session_time_ns is None
 
 
 def imu_sample(sensor_type: str, sequence: int, event_ns: int) -> ImuSample:
@@ -99,7 +118,7 @@ def recorded_frame(frame_index: int, source_pts: int, mp4_pts: int) -> RecordedV
     )
 
 
-def test_affine_clock_estimator_handles_both_imu_sensors_outlier_and_reset(
+def test_capture_finalization_preserves_source_clocks_without_alignment(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "telemetry.sqlite"
@@ -160,37 +179,100 @@ def test_affine_clock_estimator_handles_both_imu_sensors_outlier_and_reset(
     database.record_frame_match(CONNECTION_ID, rollback_match)
     database.flush()
 
-    result = database.finalize_derivations(0)
+    result = database.finalize_capture(0)
     database.checkpoint_and_close()
 
     connection = sqlite3.connect(path)
-    mappings = connection.execute(
+    mapping_count = connection.execute("SELECT COUNT(*) FROM clock_mapping_segments").fetchone()[0]
+    imu_rows = connection.execute(
         """
-        SELECT clock_mapping_segment_id, source_clock_id, status,
-               estimator_state, outlier_count, residual_p95_ns
-        FROM clock_mapping_segments ORDER BY mapping_row_id
+        SELECT sensor_event_monotonic_ns, received_at_elapsed_realtime_ns,
+               alignment_status, session_time_ns,
+               timestamp_uncertainty_ns, clock_mapping_segment_id
+        FROM imu_samples ORDER BY sample_id
         """
     ).fetchall()
-    imu_derived = connection.execute(
+    camera_rows = connection.execute(
         """
-        SELECT COUNT(*) FROM imu_samples
-        WHERE session_time_ns IS NOT NULL
-          AND timestamp_uncertainty_ns IS NOT NULL
-          AND clock_mapping_segment_id IS NOT NULL
+        SELECT captured_at_rokid_sdk_ms, received_at_elapsed_realtime_ns
+        FROM video_frame_metadata_raw ORDER BY metadata_row_id
         """
-    ).fetchone()[0]
+    ).fetchall()
+    metadata_keys = dict(connection.execute("SELECT key, value FROM session_metadata"))
     connection.close()
 
-    mapping_ids = [row[0] for row in mappings]
-    assert len(mapping_ids) == len(set(mapping_ids))
-    assert sum(row[1] == "sensor_event_monotonic_ns" for row in mappings) == 2
-    assert sum(row[1] == "rokid_sdk_ms" for row in mappings) == 3
-    assert any(row[3] == "discontinuous" for row in mappings)
-    assert any(row[4] >= 1 for row in mappings)
-    assert all(row[5] >= 0 for row in mappings)
-    assert imu_derived == 24
-    assert result.origin_event == "first_imu_sample"
-    assert result.quality.rejected_clock_mapping_segment_count == 0
+    assert mapping_count == 0
+    assert len(imu_rows) == 24
+    assert all(row[2:] == ("pending", None, None, None) for row in imu_rows)
+    assert imu_rows[0][:2] == (1_000_000_000, 1_000_200_000)
+    assert camera_rows[0][0] == 1_000
+    assert camera_rows[-1][0] == 5
+    assert "origin_elapsed_realtime_ns" not in metadata_keys
+    assert "origin_event" not in metadata_keys
+    assert result.quality.timestamp_mapping_segment_count == 0
+    assert result.quality.unaligned_imu_sample_count == 24
+
+
+def test_legacy_mapped_capture_quality_remains_readable(tmp_path: Path) -> None:
+    path = tmp_path / "telemetry.sqlite"
+    database = CaptureSessionDatabase(SESSION_ID, path)
+    database.record_imu_sample(
+        CONNECTION_ID,
+        imu_sample("accelerometer", 0, 1_000),
+        10_000,
+    )
+    database._connection.execute(
+        """
+        INSERT INTO clock_mapping_segments(
+            session_id, connection_session_id, source_instance_id,
+            segment_index, clock_mapping_segment_id, source_clock_id,
+            target_clock_id, source_from, source_to, target_from_ns,
+            target_to_ns, scale_target_ns_per_source_unit, offset_target_ns,
+            uncertainty_ns, fit_method, sample_count, residual_p95_ns,
+            residual_max_ns, status, estimator_state, segment_reason,
+            outlier_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            SESSION_ID,
+            CONNECTION_ID,
+            "accelerometer",
+            0,
+            "legacy-map",
+            "sensor_event_monotonic_ns",
+            "glasses_elapsed_realtime_ns",
+            1_000,
+            1_000,
+            1_200,
+            1_200,
+            1.0,
+            200.0,
+            200,
+            "identity",
+            1,
+            0,
+            0,
+            "provisional",
+            "estimated",
+            "session_start",
+            0,
+        ),
+    )
+    database._connection.execute(
+        """
+        UPDATE imu_samples
+        SET alignment_status = 'mapped', session_time_ns = 0,
+            timestamp_uncertainty_ns = 200,
+            clock_mapping_segment_id = 'legacy-map'
+        """
+    )
+    database.checkpoint_and_close()
+
+    quality = read_capture_quality(path)
+
+    assert quality.timestamp_mapping_segment_count == 1
+    assert quality.rejected_clock_mapping_segment_count == 0
+    assert quality.unaligned_imu_sample_count == 0
 
 
 def test_every_mp4_frame_requires_exact_muxed_pts_and_connection_scoped_match(
@@ -268,9 +350,7 @@ def test_mp4_match_is_scoped_to_camera_start_generation(tmp_path: Path) -> None:
     database.record_clip_frames("a" * 32, CONNECTION_ID, 2, [frame], 1)
     database.flush()
 
-    frame_id = database._connection.execute(
-        "SELECT frame_id FROM video_frame_index"
-    ).fetchone()[0]
+    frame_id = database._connection.execute("SELECT frame_id FROM video_frame_index").fetchone()[0]
     database.checkpoint_and_close()
 
     assert frame_id == 2
@@ -300,9 +380,7 @@ def test_mp4_match_compares_equivalent_rescaled_time_bases(tmp_path: Path) -> No
 
     database.record_clip_frames("a" * 32, CONNECTION_ID, 1, [frame], 1)
     database.flush()
-    frame_id = database._connection.execute(
-        "SELECT frame_id FROM video_frame_index"
-    ).fetchone()[0]
+    frame_id = database._connection.execute("SELECT frame_id FROM video_frame_index").fetchone()[0]
     database.checkpoint_and_close()
 
     assert frame_id == 30
@@ -435,18 +513,53 @@ def test_automatic_session_captures_countdown_and_between_clip_imu_then_new_arms
         quality = json.loads(
             (tmp_path / first_session_id / "quality.json").read_text(encoding="utf-8")
         )
-        connection = sqlite3.connect(
-            tmp_path / first_session_id / "telemetry" / "telemetry.sqlite"
-        )
+        connection = sqlite3.connect(tmp_path / first_session_id / "telemetry" / "telemetry.sqlite")
         samples = connection.execute("SELECT COUNT(*) FROM imu_samples").fetchone()[0]
+        pending_imu = connection.execute(
+            """
+            SELECT COUNT(*) FROM imu_samples
+            WHERE alignment_status = 'pending'
+              AND session_time_ns IS NULL
+              AND timestamp_uncertainty_ns IS NULL
+              AND clock_mapping_segment_id IS NULL
+            """
+        ).fetchone()[0]
+        pending_frames = connection.execute(
+            """
+            SELECT COUNT(*) FROM video_frame_index
+            WHERE alignment_status = 'pending'
+              AND session_time_ns IS NULL
+              AND timestamp_uncertainty_ns IS NULL
+              AND clock_mapping_segment_id IS NULL
+            """
+        ).fetchone()[0]
+        mapping_count = connection.execute(
+            "SELECT COUNT(*) FROM clock_mapping_segments"
+        ).fetchone()[0]
         connection.close()
         assert manifest["lifecycle"]["state"] == "complete"
         assert manifest["lifecycle"]["end_reason"] == "manual_new_session"
         assert manifest["clips"][0]["state"] == "complete"
-        assert manifest["clips"][0]["started_at_session_time_ns"] is not None
+        assert manifest["session_time_origin"] == {
+            "status": "pending",
+            "clock_id": "glasses_elapsed_realtime_ns",
+            "origin_elapsed_realtime_ns": None,
+            "origin_event": None,
+        }
+        assert manifest["clips"][0]["requested_at_session_time_ns"] is None
+        assert manifest["clips"][0]["started_at_session_time_ns"] is None
+        assert manifest["clips"][0]["ended_at_session_time_ns"] is None
         assert manifest["provenance"]["device"]["manufacturer"] == "Rokid"
         assert quality["counts"]["accelerometer_sample_count"] == 2
+        assert quality["counts"]["unaligned_imu_sample_count"] == 4
+        assert quality["counts"]["clock_mapping_segment_count"] == 0
+        assert quality["training_eligibility"] == "ineligible"
+        assert quality["checks"][0]["check_id"] == "perception_alignment"
+        assert quality["checks"][0]["status"] == "not_evaluated"
         assert samples == 4
+        assert pending_imu == 4
+        assert pending_frames == 1
+        assert mapping_count == 0
         assert not (tmp_path / ("2" * 32)).exists()
 
         second = await runtime.start()

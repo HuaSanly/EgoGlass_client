@@ -58,13 +58,12 @@ def test_home_uses_two_state_stream_and_recording_controls() -> None:
     assert 'id="start-stream-button"' not in html
     assert 'id="stop-stream-button"' not in html
     assert 'dataset.action = shouldStop ? "stop" : "start"' in script
-    assert 'sendRecordingCommand(elements.recordingToggleButton.dataset.action)' in script
-    assert 'body: JSON.stringify({ action })' in script
-    assert 'Math.ceil(remainingMs / 1000)' in script
+    assert "sendRecordingCommand(elements.recordingToggleButton.dataset.action)" in script
+    assert "body: JSON.stringify({ action })" in script
+    assert "Math.ceil(remainingMs / 1000)" in script
     assert "Date.now()" in script
     assert (
-        "elements.streamToggleButton.disabled = !controlReady || busy || recordingActive"
-        in script
+        "elements.streamToggleButton.disabled = !controlReady || busy || recordingActive" in script
     )
     assert html.count('class="stream-control-icon"') == 2
     assert html.count('class="stream-control-label"') == 2
@@ -145,7 +144,7 @@ def test_storage_delete_requires_confirmation_and_gateway_success() -> None:
     assert 'deleteButton.addEventListener("click"' in script
     assert 'method: "DELETE"' in script
     assert "readRecordingLibrary(payload)" in script
-    assert "elements.deleteDialog.close(\"deleted\")" in script
+    assert 'elements.deleteDialog.close("deleted")' in script
     assert "recordingDeleteEndpoint(target.session_id, target.clip_id)" in script
     assert 'target.kind === "session"' in script
     assert "recordingSessionEndpoint(target.session_id)" in script
@@ -174,7 +173,7 @@ def test_storage_session_folders_use_time_names_and_persist_renames() -> None:
     assert "openRenameDialog(session)" in script
     assert "recordingSessionEndpoint(pendingRenameSessionId)" in script
     assert 'method: "PATCH"' in script
-    assert 'body: JSON.stringify({ display_name: displayName })' in script
+    assert "body: JSON.stringify({ display_name: displayName })" in script
     assert 'elements.renameDialog.close("renamed")' in script
     assert "/api/v1/recordings/sessions/${sessionId}" in api
     assert ".session-folder-open" in styles
@@ -187,7 +186,7 @@ def test_missing_video_is_distinct_from_gateway_disconnect() -> None:
     storage_script = (STATIC_DIR / "storage.js").read_text(encoding="utf-8")
 
     assert 'unavailable: "等待 Glass3 视频"' in home_script
-    assert 'state.recordingPollError = error.message' in home_script
+    assert "state.recordingPollError = error.message" in home_script
     assert 'unavailable: "等待 Glass3 视频"' in storage_script
     assert 'elements.recordingLabel.textContent = "录制服务未连接"' in storage_script
 
@@ -214,7 +213,7 @@ def test_home_collection_session_is_gateway_backed_and_never_invented() -> None:
     assert "session.quality" in script
     assert 'body: JSON.stringify({ action: "new" })' in script
     assert "recordingSessionCommandEndpoint" in script
-    assert "sessionState !== \"active\"" in script
+    assert 'sessionState !== "active"' in script
     assert '["countdown", "recording", "finalizing"]' in script
     assert "下一次录制会自动开始新会话并保存 IMU" in script
     assert "api/v1/recordings/session-commands" in api
@@ -230,12 +229,13 @@ def test_storage_keeps_zero_clip_telemetry_sessions_and_exposes_quality() -> Non
     assert "采集数据" in html
     assert "session.quality.imu_sample_count" in script
     assert "formatMetadataCoverage(session.quality)" in script
-    assert "session.quality.timestamp_mapping_segment_count" in script
+    assert "感知阶段待处理" in script
+    assert "源时间与 MP4 PTS 已保留，采集阶段不生成映射" in script
     assert "session.quality.telemetry_queue_overflow_count" in script
     assert "session.clips.length === 0" in script
     assert "IMU 仍在持续保存" in script
     assert "历史仅视频" in script
-    assert 'session.telemetry_database === null' in script
+    assert "session.telemetry_database === null" in script
     assert 'session.state === "incomplete" && session.recoverable' in script
     assert ".session-quality-summary" in styles
     assert ".session-clips-empty" in styles

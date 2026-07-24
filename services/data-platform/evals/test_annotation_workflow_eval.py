@@ -6,7 +6,7 @@ from pathlib import Path
 
 from egoglass_data_platform.models import ProposalRequest, SaveDraftRequest
 from egoglass_data_platform.store import AnnotationStore
-from tests.conftest import CLIP_ID, SESSION_ID, complete_episode
+from tests.conftest import CLIP_ID, SESSION_ID, complete_episode, create_capture_session
 
 
 def test_eval_manual_review_publishes_traceable_non_destructive_revision(
@@ -62,6 +62,28 @@ def test_eval_declared_future_providers_never_return_placeholder_proposals(
         "hand_object_interaction",
         "vlm_semantic",
     }
+
+
+def test_eval_pending_capture_remains_annotatable_without_invented_time(
+    tmp_path: Path,
+) -> None:
+    create_capture_session(tmp_path, with_perception_alignment=False)
+    store = AnnotationStore(tmp_path)
+    draft = store.save_draft(
+        SESSION_ID,
+        SaveDraftRequest(
+            base_revision=0,
+            segmentation_strategy="manual",
+            episodes=[complete_episode()],
+        ),
+    )
+
+    revision = store.publish(SESSION_ID, draft.draft_revision)
+
+    assert revision.quality.status == "pass"
+    assert revision.episodes[0].start.mp4_pts == 90_000
+    assert revision.episodes[0].start.session_time_ns is None
+    assert revision.episodes[0].start.timing_status == "unmapped"
 
 
 def test_eval_mixed_session_root_keeps_valid_v1_sessions_visible(

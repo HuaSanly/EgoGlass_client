@@ -397,8 +397,8 @@ function renderSessionDetail(session) {
       ),
       createQualityMetric(
         "时间同步",
-        "原始时间已保存",
-        `${session.quality.timestamp_mapping_segment_count} 个映射分段 · 尚未对齐`,
+        "感知阶段待处理",
+        "源时间与 MP4 PTS 已保留，采集阶段不生成映射",
       ),
       createQualityMetric(
         "连接分段",

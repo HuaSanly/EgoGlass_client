@@ -163,12 +163,15 @@ class CaptureSessionLifecycle(BaseModel):
     start_reason: Literal["first_recording_request"] = "first_recording_request"
     started_at_unix_ns: int = Field(ge=0)
     ended_at_unix_ns: int | None = Field(default=None, ge=0)
-    end_reason: Literal[
-        "manual_new_session",
-        "client_shutdown",
-        "device_changed",
-        "recovery_finalization",
-    ] | None = None
+    end_reason: (
+        Literal[
+            "manual_new_session",
+            "client_shutdown",
+            "device_changed",
+            "recovery_finalization",
+        ]
+        | None
+    ) = None
 
 
 class CaptureSessionTimeOrigin(BaseModel):
@@ -177,19 +180,20 @@ class CaptureSessionTimeOrigin(BaseModel):
     status: Literal["pending", "established"] = "pending"
     clock_id: Literal["glasses_elapsed_realtime_ns"] = "glasses_elapsed_realtime_ns"
     origin_elapsed_realtime_ns: int | None = Field(default=None, ge=0)
-    origin_event: Literal[
-        "first_imu_sample",
-        "first_video_frame",
-        "glasses_clock_handshake",
-    ] | None = None
+    origin_event: (
+        Literal[
+            "first_imu_sample",
+            "first_video_frame",
+            "glasses_clock_handshake",
+        ]
+        | None
+    ) = None
 
 
 class CaptureSessionStorage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    telemetry_database_path: Literal["telemetry/telemetry.sqlite"] = (
-        "telemetry/telemetry.sqlite"
-    )
+    telemetry_database_path: Literal["telemetry/telemetry.sqlite"] = "telemetry/telemetry.sqlite"
     quality_report_path: Literal["quality.json"] = "quality.json"
     media_directory: Literal["media"] = "media"
     annotations_directory: Literal["annotations"] = "annotations"
@@ -269,15 +273,9 @@ class CaptureSessionClip(BaseModel):
     @model_validator(mode="after")
     def validate_complete_clip(self) -> CaptureSessionClip:
         if self.state == "complete" and (
-            self.frame_count is None
-            or self.frame_count < 1
-            or self.sha256 is None
-            or self.started_at_session_time_ns is None
-            or self.ended_at_session_time_ns is None
+            self.frame_count is None or self.frame_count < 1 or self.sha256 is None
         ):
-            raise ValueError(
-                "complete clip requires frame_count, sha256, and session time bounds"
-            )
+            raise ValueError("complete clip requires frame_count and sha256")
         if (
             self.started_at_session_time_ns is not None
             and self.ended_at_session_time_ns is not None

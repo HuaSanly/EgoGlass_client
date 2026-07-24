@@ -94,9 +94,11 @@ New sessions use the versioned `capture-session-v1` layout:
 `telemetry.sqlite` runs in WAL mode and preserves raw accelerometer and
 gyroscope samples, capabilities, connection segments, every valid video
 metadata message, decoded-frame matches, every MP4 frame index, lifecycle
-events, and derived clock mappings. A bounded queue keeps SQLite work out of
-WebRTC callbacks and a single worker commits batches. Queue overflow is counted
-and makes the session ineligible for training instead of silently disappearing.
+events, and every source timestamp needed by later perception processing. New
+capture records remain alignment-pending and do not generate clock mappings. A
+bounded queue keeps SQLite work out of WebRTC callbacks and a single worker
+commits batches. Queue overflow is counted and makes the session ineligible for
+training instead of silently disappearing.
 
 Set the root with `--recordings-root` or `EGOGLASS_RECORDINGS_ROOT`. The CLI
 default is `local-data/recordings` relative to the launch directory:
@@ -156,16 +158,14 @@ accelerometer and gyroscope capabilities and raw three-axis samples. The
 loopback status endpoint reports bounded counters, observed arrival rates, and
 the latest sample, while an active collection session persists every sample.
 
-Derived affine clock segments are fitted independently per WebRTC connection,
-camera start generation, and IMU sensor instance. Source regression, target
-regression, or a large time gap starts a new segment. The estimator removes
-MAD-detected outliers and records scale, offset, P95/max residual, uncertainty,
-sample count, status, and evidence without overwriting raw clocks. Camera
-alignment remains `unverified` until the Glass3 motion test validates exposure
-semantics. Missing device, firmware, glasses application, or Git revision
-provenance makes a session `ineligible`; after provenance is supplied, an
-otherwise clean session remains at most `review_required` until that motion
-test passes.
+The gateway does not fit video-to-IMU clock mappings. It preserves Rokid camera
+time, Android sensor time, callback elapsed-realtime, Windows receipt time, RTP
+time, and exact MP4 PTS/time bases. A later versioned perception pipeline uses
+those values with VIO output to associate frames, camera pose, IMU, and hands
+without rewriting raw capture records. Missing device, firmware, glasses
+application, or Git revision provenance still makes a session ineligible, and
+raw capture remains ineligible until perception processing emits its own
+quality decision.
 
 By default the gateway also listens for EgoGlass discovery v1 requests on UDP
 port 8771. It responds only to private or loopback IPv4 sources and returns the

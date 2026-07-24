@@ -6,6 +6,10 @@ serves their local MP4 files, resolves selected frame boundaries against the
 persisted MP4 PTS index, autosaves conflict-checked drafts, and publishes
 immutable content-addressed annotation revisions.
 
+Raw captures normally have pending perception alignment. Annotation continues
+to use exact frame indices and MP4 PTS; it preserves `session_time_ns=null` and
+`timing_status=unmapped` instead of inventing a cross-modal timestamp.
+
 The initial proposal providers are whole-clip and fixed-window segmentation.
 Manual editing happens in the operator console. Event-marker, motion-change,
 hand-object interaction, and VLM providers are declared future capabilities;

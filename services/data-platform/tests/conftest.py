@@ -26,6 +26,7 @@ def create_capture_session(
     frame_count: int = 300,
     fps: float = 30.0,
     with_frame_index: bool = True,
+    with_perception_alignment: bool = True,
 ) -> Path:
     session_directory = root / session_id
     media_directory = session_directory / "media"
@@ -52,10 +53,10 @@ def create_capture_session(
             "end_reason": None if state in {"active", "finalizing"} else "client_shutdown",
         },
         "session_time_origin": {
-            "status": "established",
+            "status": "established" if with_perception_alignment else "pending",
             "clock_id": "glasses_elapsed_realtime_ns",
-            "origin_elapsed_realtime_ns": 1_000_000,
-            "origin_event": "first_imu_sample",
+            "origin_elapsed_realtime_ns": (1_000_000 if with_perception_alignment else None),
+            "origin_event": "first_imu_sample" if with_perception_alignment else None,
         },
         "imu_capture_policy": "continuous_while_session_active",
         "provenance": {},
@@ -65,9 +66,11 @@ def create_capture_session(
                 "clip_id": clip_id,
                 "state": "complete",
                 "relative_media_path": f"media/{clip_id}.mp4",
-                "requested_at_session_time_ns": 0,
-                "started_at_session_time_ns": 1_000_000_000,
-                "ended_at_session_time_ns": 11_000_000_000,
+                "requested_at_session_time_ns": (0 if with_perception_alignment else None),
+                "started_at_session_time_ns": (
+                    1_000_000_000 if with_perception_alignment else None
+                ),
+                "ended_at_session_time_ns": (11_000_000_000 if with_perception_alignment else None),
                 "video_profile": {
                     "container": "mp4",
                     "codec": "h264",
@@ -100,7 +103,12 @@ def create_capture_session(
             database.executemany(
                 "INSERT INTO video_frame_index VALUES (?, ?, ?, 1, 90000, ?)",
                 (
-                    (clip_id, frame, frame * 3000, 1_000_000_000 + frame * 33_333_333)
+                    (
+                        clip_id,
+                        frame,
+                        frame * 3000,
+                        (1_000_000_000 + frame * 33_333_333 if with_perception_alignment else None),
+                    )
                     for frame in range(frame_count)
                 ),
             )
