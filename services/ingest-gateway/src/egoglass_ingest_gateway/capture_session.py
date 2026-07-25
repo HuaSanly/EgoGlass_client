@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import math
 import sqlite3
-import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,16 +24,7 @@ class CachedConnection:
 
 
 @dataclass(frozen=True)
-class ClipTimeBounds:
-    started_at_session_time_ns: int | None
-    ended_at_session_time_ns: int | None
-
-
-@dataclass(frozen=True)
-class CaptureDerivationResult:
-    origin_elapsed_realtime_ns: int | None
-    origin_event: str | None
-    clip_time_bounds: dict[str, ClipTimeBounds]
+class CaptureFinalizationResult:
     quality: CaptureSessionQuality
 
 
@@ -82,13 +70,13 @@ class CaptureSessionWriter:
         self._raise_if_failed()
         await asyncio.to_thread(self.database.flush)
 
-    async def finalize(self) -> CaptureDerivationResult:
+    async def finalize(self) -> CaptureFinalizationResult:
         if self._closed:
             raise RuntimeError("capture telemetry writer is already finalized")
         self._accepting = False
         await self.flush()
         result = await asyncio.to_thread(
-            self.database.finalize_derivations,
+            self.database.finalize_capture,
             self.overflow_count,
         )
         self._queue.put_nowait(None)
@@ -590,10 +578,7 @@ class CaptureSessionDatabase:
     ) -> sqlite3.Row | None:
         if frame.source_frame_pts is None:
             return None
-        if (
-            frame.source_frame_time_base_num is None
-            or frame.source_frame_time_base_den is None
-        ):
+        if frame.source_frame_time_base_num is None or frame.source_frame_time_base_den is None:
             timing_predicate = """
               decoded_frame_pts = ?
               AND decoded_frame_time_base_num IS NULL
@@ -700,304 +685,18 @@ class CaptureSessionDatabase:
             ),
         )
 
-    def finalize_derivations(
+    def finalize_capture(
         self,
         telemetry_queue_overflow_count: int,
-    ) -> CaptureDerivationResult:
-        self._connection.execute("BEGIN")
-        try:
-            self._rebuild_clock_mappings()
-            origin, origin_event = self._derive_session_time()
-            self._connection.executemany(
-                "INSERT OR REPLACE INTO session_metadata(key, value) VALUES (?, ?)",
-                (
-                    ("origin_elapsed_realtime_ns", "" if origin is None else str(origin)),
-                    ("origin_event", "" if origin_event is None else origin_event),
-                    ("telemetry_queue_overflow_count", str(telemetry_queue_overflow_count)),
-                ),
-            )
-            self._connection.commit()
-        except Exception:
-            self._connection.rollback()
-            raise
-        return CaptureDerivationResult(
-            origin_elapsed_realtime_ns=origin,
-            origin_event=origin_event,
-            clip_time_bounds=self._clip_bounds(),
+    ) -> CaptureFinalizationResult:
+        self._connection.execute(
+            "INSERT OR REPLACE INTO session_metadata(key, value) VALUES (?, ?)",
+            ("telemetry_queue_overflow_count", str(telemetry_queue_overflow_count)),
+        )
+        self._connection.commit()
+        return CaptureFinalizationResult(
             quality=self.quality(telemetry_queue_overflow_count),
         )
-
-    def _rebuild_clock_mappings(self) -> None:
-        self._connection.execute("DELETE FROM clock_mapping_segments")
-        camera_rows = self._connection.execute(
-            """
-            SELECT connection_session_id,
-                   'camera-' || camera_start_generation,
-                   captured_at_rokid_sdk_ms,
-                   received_at_elapsed_realtime_ns
-            FROM video_frame_metadata_raw
-            WHERE ingest_status = 'accepted'
-            ORDER BY metadata_row_id
-            """
-        ).fetchall()
-        self._write_mapping_groups(
-            camera_rows,
-            source_clock_id="rokid_sdk_ms",
-            nominal_scale=1_000_000.0,
-        )
-        imu_rows = self._connection.execute(
-            """
-            SELECT connection_session_id, sensor_type,
-                   sensor_event_monotonic_ns,
-                   received_at_elapsed_realtime_ns
-            FROM imu_samples ORDER BY sample_id
-            """
-        ).fetchall()
-        self._write_mapping_groups(
-            imu_rows,
-            source_clock_id="sensor_event_monotonic_ns",
-            nominal_scale=1.0,
-        )
-
-    def _write_mapping_groups(
-        self,
-        rows: Iterable[tuple[str, str, int, int]],
-        *,
-        source_clock_id: str,
-        nominal_scale: float,
-    ) -> None:
-        groups: dict[tuple[str, str], list[tuple[int, int]]] = {}
-        for connection_id, source_instance_id, source_time, target_time in rows:
-            groups.setdefault((connection_id, source_instance_id), []).append(
-                (source_time, target_time)
-            )
-        for (connection_id, source_instance_id), observations in groups.items():
-            segments = _split_clock_observations(observations)
-            for index, (segment, discontinuous) in enumerate(segments):
-                fit = _fit_robust_affine(segment, nominal_scale)
-                group_key = f"{connection_id}:{source_instance_id}"
-                group_digest = hashlib.sha256(group_key.encode("utf-8")).hexdigest()[:12]
-                mapping_id = f"map-{source_clock_id[:8]}-{group_digest}-{index}"
-                status = "rejected" if fit.rejected else "provisional"
-                state = (
-                    "discontinuous"
-                    if discontinuous
-                    else ("estimated" if fit.inlier_count >= 10 else "estimating")
-                )
-                reason = "timestamp_discontinuity" if discontinuous else "camera_start"
-                if source_clock_id == "sensor_event_monotonic_ns":
-                    reason = "session_start" if not discontinuous else reason
-                self._connection.execute(
-                    """
-                    INSERT INTO clock_mapping_segments(
-                        session_id, connection_session_id, source_instance_id,
-                        segment_index, clock_mapping_segment_id, source_clock_id,
-                        target_clock_id, source_from, source_to,
-                        target_from_ns, target_to_ns,
-                        scale_target_ns_per_source_unit, offset_target_ns,
-                        uncertainty_ns, fit_method, sample_count,
-                        residual_p95_ns, residual_max_ns, status,
-                        estimator_state, segment_reason, outlier_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'glasses_elapsed_realtime_ns',
-                              ?, ?, ?, ?, ?, ?, ?, 'affine_robust', ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.session_id,
-                        connection_id,
-                        source_instance_id,
-                        index,
-                        mapping_id,
-                        source_clock_id,
-                        segment[0][0],
-                        segment[-1][0],
-                        min(target for _source, target in segment),
-                        max(target for _source, target in segment),
-                        fit.scale,
-                        fit.offset,
-                        fit.uncertainty_ns,
-                        fit.inlier_count,
-                        fit.residual_p95_ns,
-                        fit.residual_max_ns,
-                        status,
-                        state,
-                        reason,
-                        fit.outlier_count,
-                    ),
-                )
-
-    def _derive_session_time(self) -> tuple[int | None, str | None]:
-        mappings = self._mapping_rows()
-        mapped_imu_times: list[int] = []
-        for connection_id, sensor_type, source_time in self._connection.execute(
-            """
-            SELECT connection_session_id, sensor_type,
-                   sensor_event_monotonic_ns FROM imu_samples
-            """
-        ).fetchall():
-            mapping = _find_mapping(
-                mappings,
-                connection_id,
-                sensor_type,
-                "sensor_event_monotonic_ns",
-                source_time,
-            )
-            if mapping is not None:
-                if mapping["status"] == "rejected":
-                    continue
-                mapped_imu_times.append(
-                    round(float(mapping["scale"]) * source_time + float(mapping["offset"]))
-                )
-        if mapped_imu_times:
-            origin = min(mapped_imu_times)
-            origin_event = "first_imu_sample"
-        else:
-            video_origin = self._connection.execute(
-                "SELECT MIN(received_at_elapsed_realtime_ns) FROM video_frame_matches"
-            ).fetchone()[0]
-            origin = None if video_origin is None else int(video_origin)
-            origin_event = None if origin is None else "first_video_frame"
-        if origin is None:
-            return None, None
-
-        for row in self._connection.execute(
-            """
-            SELECT sample_id, connection_session_id, sensor_type,
-                   sensor_event_monotonic_ns FROM imu_samples
-            """
-        ).fetchall():
-            mapping = _find_mapping(
-                mappings,
-                row[1],
-                row[2],
-                "sensor_event_monotonic_ns",
-                row[3],
-            )
-            if mapping is None:
-                continue
-            if mapping["status"] == "rejected":
-                self._connection.execute(
-                    """
-                    UPDATE imu_samples SET alignment_status = 'rejected',
-                        session_time_ns = NULL, timestamp_uncertainty_ns = NULL,
-                        clock_mapping_segment_id = ? WHERE sample_id = ?
-                    """,
-                    (mapping["id"], row[0]),
-                )
-                continue
-            target = round(float(mapping["scale"]) * row[3] + float(mapping["offset"]))
-            self._connection.execute(
-                """
-                UPDATE imu_samples SET alignment_status = 'mapped', session_time_ns = ?,
-                    timestamp_uncertainty_ns = ?, clock_mapping_segment_id = ?
-                WHERE sample_id = ?
-                """,
-                (
-                    max(0, target - origin),
-                    int(mapping["uncertainty"]),
-                    mapping["id"],
-                    row[0],
-                ),
-            )
-        frame_rows = self._connection.execute(
-            """
-            SELECT video_frame_row_id, video_frame_metadata_id,
-                   captured_at_rokid_sdk_ms FROM video_frame_index
-            WHERE video_frame_metadata_id IS NOT NULL
-            """
-        ).fetchall()
-        for video_row_id, metadata_id, source_time in frame_rows:
-            metadata_row = self._connection.execute(
-                """
-                SELECT connection_session_id, camera_start_generation
-                FROM video_frame_metadata_raw
-                WHERE video_frame_metadata_id = ?
-                """,
-                (metadata_id,),
-            ).fetchone()
-            if metadata_row is None:
-                continue
-            mapping = _find_mapping(
-                mappings,
-                metadata_row[0],
-                f"camera-{metadata_row[1]}",
-                "rokid_sdk_ms",
-                source_time,
-            )
-            if mapping is None:
-                continue
-            if mapping["status"] == "rejected":
-                self._connection.execute(
-                    """
-                    UPDATE video_frame_index SET alignment_status = 'rejected',
-                        session_time_ns = NULL, timestamp_uncertainty_ns = NULL,
-                        clock_mapping_segment_id = ? WHERE video_frame_row_id = ?
-                    """,
-                    (mapping["id"], video_row_id),
-                )
-                continue
-            target = round(
-                float(mapping["scale"]) * source_time + float(mapping["offset"])
-            )
-            self._connection.execute(
-                """
-                UPDATE video_frame_index SET alignment_status = 'mapped', session_time_ns = ?,
-                    timestamp_uncertainty_ns = ?, clock_mapping_segment_id = ?
-                WHERE video_frame_row_id = ?
-                """,
-                (
-                    max(0, target - origin),
-                    int(mapping["uncertainty"]),
-                    mapping["id"],
-                    video_row_id,
-                ),
-            )
-        self._connection.execute(
-            """
-            UPDATE session_events
-            SET session_time_ns = MAX(0, occurred_at_elapsed_realtime_ns - ?)
-            WHERE occurred_at_elapsed_realtime_ns IS NOT NULL
-            """,
-            (origin,),
-        )
-        return origin, origin_event
-
-    def _mapping_rows(self) -> list[dict[str, object]]:
-        rows = self._connection.execute(
-            """
-            SELECT connection_session_id, source_instance_id,
-                   source_clock_id, source_from,
-                   source_to, scale_target_ns_per_source_unit,
-                   offset_target_ns, uncertainty_ns,
-                   clock_mapping_segment_id, status
-            FROM clock_mapping_segments
-            """
-        ).fetchall()
-        return [
-            {
-                "connection": row[0],
-                "source_instance": row[1],
-                "source_clock": row[2],
-                "source_from": row[3],
-                "source_to": row[4],
-                "scale": row[5],
-                "offset": row[6],
-                "uncertainty": row[7],
-                "id": row[8],
-                "status": row[9],
-            }
-            for row in rows
-        ]
-
-    def _clip_bounds(self) -> dict[str, ClipTimeBounds]:
-        return {
-            clip_id: ClipTimeBounds(started, ended)
-            for clip_id, started, ended in self._connection.execute(
-                """
-                SELECT clip_id, MIN(session_time_ns), MAX(session_time_ns)
-                FROM video_frame_index GROUP BY clip_id
-                """
-            ).fetchall()
-        }
 
     def quality(self, telemetry_queue_overflow_count: int | None = None) -> CaptureSessionQuality:
         if telemetry_queue_overflow_count is None:
@@ -1061,9 +760,7 @@ class CaptureSessionDatabase:
             ),
             timestamp_mapping_segment_count=int(counts[7]),
             rejected_clock_mapping_segment_count=int(counts[8]),
-            timestamp_max_uncertainty_ns=(
-                None if counts[9] is None else int(counts[9])
-            ),
+            timestamp_max_uncertainty_ns=(None if counts[9] is None else int(counts[9])),
             unaligned_imu_sample_count=int(counts[10]),
         )
 
@@ -1097,136 +794,6 @@ def read_capture_quality(path: Path) -> CaptureSessionQuality:
         return CaptureSessionQuality()
     finally:
         connection.close()
-
-
-@dataclass(frozen=True)
-class _AffineFit:
-    scale: float
-    offset: float
-    uncertainty_ns: int
-    residual_p95_ns: int
-    residual_max_ns: int
-    inlier_count: int
-    outlier_count: int
-    rejected: bool
-
-
-def _split_clock_observations(
-    observations: Sequence[tuple[int, int]],
-) -> list[tuple[list[tuple[int, int]], bool]]:
-    segments: list[tuple[list[tuple[int, int]], bool]] = []
-    for observation in observations:
-        previous = None if not segments else segments[-1][0][-1]
-        discontinuity = previous is not None and (
-            observation[0] < previous[0]
-            or observation[1] < previous[1]
-            or observation[1] - previous[1] > 5_000_000_000
-        )
-        if not segments or discontinuity:
-            segments.append(([observation], bool(segments)))
-        else:
-            segments[-1][0].append(observation)
-    return segments
-
-
-def _fit_robust_affine(
-    observations: Sequence[tuple[int, int]],
-    nominal_scale: float,
-) -> _AffineFit:
-    initial_scale, initial_offset = _fit_initial_robust(observations, nominal_scale)
-    residuals = [
-        target - (initial_scale * source + initial_offset)
-        for source, target in observations
-    ]
-    median_residual = statistics.median(residuals)
-    mad = statistics.median(abs(value - median_residual) for value in residuals)
-    threshold = max(5_000_000.0, 6.0 * 1.4826 * mad)
-    inliers = [
-        observation
-        for observation, residual in zip(observations, residuals, strict=True)
-        if abs(residual - median_residual) <= threshold
-    ]
-    if not inliers:
-        inliers = list(observations)
-    scale, offset = _fit_affine(inliers, nominal_scale)
-    final_residuals = sorted(
-        abs(target - (scale * source + offset)) for source, target in inliers
-    )
-    p95_index = max(0, math.ceil(0.95 * len(final_residuals)) - 1)
-    p95 = round(final_residuals[p95_index])
-    maximum = round(final_residuals[-1])
-    quantization_uncertainty = 500_000 if nominal_scale == 1_000_000.0 else 0
-    uncertainty = max(
-        p95,
-        quantization_uncertainty,
-        10_000_000 if len(inliers) < 3 else 0,
-    )
-    scale_ratio = scale / nominal_scale
-    rejected = len(inliers) >= 2 and not 0.95 <= scale_ratio <= 1.05
-    return _AffineFit(
-        scale=scale,
-        offset=offset,
-        uncertainty_ns=uncertainty,
-        residual_p95_ns=p95,
-        residual_max_ns=maximum,
-        inlier_count=len(inliers),
-        outlier_count=len(observations) - len(inliers),
-        rejected=rejected,
-    )
-
-
-def _fit_affine(
-    observations: Sequence[tuple[int, int]],
-    default_scale: float,
-) -> tuple[float, float]:
-    source_origin, target_origin = observations[0]
-    source_offsets = [source - source_origin for source, _target in observations]
-    target_offsets = [target - target_origin for _source, target in observations]
-    denominator = sum(offset * offset for offset in source_offsets)
-    if denominator == 0:
-        scale = default_scale
-    else:
-        scale = sum(
-            source * target
-            for source, target in zip(source_offsets, target_offsets, strict=True)
-        ) / denominator
-    return scale, float(target_origin) - scale * float(source_origin)
-
-
-def _fit_initial_robust(
-    observations: Sequence[tuple[int, int]],
-    default_scale: float,
-) -> tuple[float, float]:
-    slopes = [
-        (right_target - left_target) / (right_source - left_source)
-        for (left_source, left_target), (right_source, right_target) in zip(
-            observations,
-            observations[1:],
-            strict=False,
-        )
-        if right_source > left_source
-    ]
-    scale = statistics.median(slopes) if slopes else default_scale
-    offsets = [target - scale * source for source, target in observations]
-    return scale, float(statistics.median(offsets))
-
-
-def _find_mapping(
-    mappings: Sequence[dict[str, object]],
-    connection_session_id: str,
-    source_instance_id: str,
-    source_clock_id: str,
-    source_time: int,
-) -> dict[str, object] | None:
-    for mapping in mappings:
-        if (
-            mapping["connection"] == connection_session_id
-            and mapping["source_instance"] == source_instance_id
-            and mapping["source_clock"] == source_clock_id
-            and int(mapping["source_from"]) <= source_time <= int(mapping["source_to"])
-        ):
-            return mapping
-    return None
 
 
 def _sequence_quality(

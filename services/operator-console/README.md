@@ -46,7 +46,7 @@ The countdown shown over the live video is calculated from the gateway's
 `recording_starts_at_unix_ms`; the console does not start its own recorder or
 invent recording or session state. The compact session strip polls the gateway
 library and shows the current time-based name, lifecycle state, persisted IMU
-count, recorded-frame metadata coverage, and unverified timestamp mapping
+count, recorded-frame metadata coverage, and deferred perception-alignment
 state. New clips are fixed at 1280x720, 30 FPS, H.264 in MP4; the storage
 library still displays historical clips at their recorded dimensions.
 
@@ -70,8 +70,9 @@ The `/storage` page polls the loopback recording library and treats each capture
 session as one data folder. A folder remains visible when it has no video clips
 but does contain continuous IMU or recovered session data. Its detail view
 shows lifecycle completeness, IMU counts and sequence anomalies, recorded-frame
-metadata coverage, connection segments, and timestamp mapping status above all
-playable clips. Historical video-only manifests remain manageable and are
+metadata coverage, connection segments, and source-time status above all
+playable clips. New captures state that source time is preserved and perception
+alignment is pending. Historical video-only manifests remain manageable and are
 explicitly labelled instead of being assigned invented telemetry quality.
 Media URLs are accepted only after the complete v1 JSON payload and loopback
 origin are validated. Loading, empty, error, and current recording states have
@@ -81,11 +82,18 @@ its stable storage path. A clip or complete/incomplete session folder can be
 deleted after explicit confirmation; active and finalizing sessions cannot be
 deleted. The console updates the library only after gateway success.
 
+The `/annotations` page uses the separately versioned loopback data platform.
+It provides manual task-attempt boundaries, reviewed whole-clip and
+non-overlapping fixed-window proposals, episode semantic labels, and internal
+phase intervals. Drafts autosave with optimistic revision checks. Publishing
+requires complete task labels and at least one contained phase per episode,
+then writes an immutable revision without changing source MP4 or telemetry.
+
 ## Run as a Windows app
 
 For the complete workspace client, use `..\..\scripts\start-client.ps1` from
-the client repository root. It owns both the ingest gateway and this desktop
-window.
+the client repository root. It owns the ingest gateway, data platform, and this
+desktop window.
 
 For operator-console-only development:
 
@@ -132,6 +140,16 @@ The UI consumes these loopback-only ingest-gateway contracts:
 - `DELETE /api/v1/recordings/sessions/{session_id}`
 - `DELETE /api/v1/recordings/clips/{session_id}/{clip_id}`
 - `GET /api/v1/recordings/media/{session_id}/{clip_id}`
+
+The annotation page reads the data-platform origin from authenticated runtime
+configuration and consumes:
+
+- `GET /api/v1/annotations/workspace`
+- `GET /api/v1/annotations/sessions/{session_id}`
+- `PUT /api/v1/annotations/sessions/{session_id}/draft`
+- `POST /api/v1/annotations/sessions/{session_id}/proposals`
+- `POST /api/v1/annotations/sessions/{session_id}/publish`
+- `GET /api/v1/annotations/media/{session_id}/{clip_id}`
 
 ## Verification
 

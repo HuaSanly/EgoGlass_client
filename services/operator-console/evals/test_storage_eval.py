@@ -11,7 +11,7 @@ def test_recording_workflow_is_gateway_backed_and_countdown_is_authoritative() -
     assert "recordingStatusEndpoint" in app_script
     assert "recordingCommandEndpoint" in app_script
     assert 'method: "POST"' in app_script
-    assert 'body: JSON.stringify({ action })' in app_script
+    assert "body: JSON.stringify({ action })" in app_script
     assert "status.recording_starts_at_unix_ms - Date.now()" in app_script
     assert 'status?.state !== "countdown"' in app_script
     assert "setTimeout(updateRecordingCountdown, 50)" in app_script
@@ -85,7 +85,7 @@ def test_connected_gateway_without_video_is_presented_as_waiting() -> None:
 
     assert 'unavailable: "等待 Glass3 视频"' in home_script
     assert 'unavailable: "等待 Glass3 视频"' in storage_script
-    assert 'state.recordingPollError = error.message' in home_script
+    assert "state.recordingPollError = error.message" in home_script
     assert 'elements.recordingLabel.textContent = "录制服务未连接"' in storage_script
 
 
@@ -98,7 +98,7 @@ def test_collection_session_switch_is_authoritative_and_defers_creation() -> Non
     assert 'id="current-session-imu"' in html
     assert "recordingSessionCommandEndpoint" in app_script
     assert 'body: JSON.stringify({ action: "new" })' in app_script
-    assert "sessionState !== \"active\"" in app_script
+    assert 'sessionState !== "active"' in app_script
     assert '["countdown", "recording", "finalizing"]' in app_script
     assert "下一次录制会自动开始新会话并保存 IMU" in app_script
     assert "api/v1/recordings/session-commands" in api_script
@@ -115,7 +115,8 @@ def test_unified_storage_preserves_telemetry_only_and_legacy_sessions() -> None:
     assert "历史仅视频" in script
     assert "session.quality.imu_sample_count" in script
     assert "session.quality.recorded_video_frame_metadata_match_count" in script
-    assert "session.quality.timestamp_mapping_segment_count" in script
+    assert "源时间与 MP4 PTS 已保留，采集阶段不生成映射" in script
+    assert "quality.timestamp_mapping_segment_count" in api_script
     assert 'quality.timestamp_alignment_state !== "unverified"' in api_script
     assert '"telemetry/telemetry.sqlite"' in api_script
     assert "readSessionQuality(session.quality)" in api_script
@@ -130,5 +131,5 @@ def test_collection_session_delete_is_confirmed_and_active_safe() -> None:
     assert '["active", "finalizing"].includes(session.state)' in script
     assert 'target.kind === "session"' in script
     assert "recordingSessionEndpoint(target.session_id)" in script
-    assert "elements.deleteDialog.close(\"deleted\")" in script
+    assert 'elements.deleteDialog.close("deleted")' in script
     assert "视频、IMU、帧元数据和质量记录" in script

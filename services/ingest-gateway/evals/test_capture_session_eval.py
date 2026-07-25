@@ -168,24 +168,26 @@ def test_multiclip_collection_keeps_continuous_imu_and_raw_metadata() -> None:
         assert status.session_id is None
         assert not (tmp_path / ("9" * 32)).exists()
 
-        manifest = json.loads(
-            (tmp_path / SESSION_ID / "session.json").read_text(encoding="utf-8")
-        )
-        quality = json.loads(
-            (tmp_path / SESSION_ID / "quality.json").read_text(encoding="utf-8")
-        )
-        connection = sqlite3.connect(
-            tmp_path / SESSION_ID / "telemetry" / "telemetry.sqlite"
-        )
+        manifest = json.loads((tmp_path / SESSION_ID / "session.json").read_text(encoding="utf-8"))
+        quality = json.loads((tmp_path / SESSION_ID / "quality.json").read_text(encoding="utf-8"))
+        connection = sqlite3.connect(tmp_path / SESSION_ID / "telemetry" / "telemetry.sqlite")
         counts = connection.execute(
             """
             SELECT
                 (SELECT COUNT(*) FROM imu_samples),
                 (SELECT COUNT(*) FROM video_frame_metadata_raw),
                 (SELECT COUNT(*) FROM video_frame_index),
-                (SELECT COUNT(DISTINCT clock_mapping_segment_id)
-                 FROM clock_mapping_segments),
-                (SELECT COUNT(*) FROM clock_mapping_segments)
+                (SELECT COUNT(*) FROM clock_mapping_segments),
+                (SELECT COUNT(*) FROM imu_samples
+                 WHERE alignment_status = 'pending'
+                   AND session_time_ns IS NULL
+                   AND timestamp_uncertainty_ns IS NULL
+                   AND clock_mapping_segment_id IS NULL),
+                (SELECT COUNT(*) FROM video_frame_index
+                 WHERE alignment_status = 'pending'
+                   AND session_time_ns IS NULL
+                   AND timestamp_uncertainty_ns IS NULL
+                   AND clock_mapping_segment_id IS NULL)
             """
         ).fetchone()
         connection.close()
@@ -193,13 +195,21 @@ def test_multiclip_collection_keeps_continuous_imu_and_raw_metadata() -> None:
         assert manifest["lifecycle"]["state"] == "complete"
         assert [clip["state"] for clip in manifest["clips"]] == ["complete", "complete"]
         assert counts[:3] == (6, 3, 2)
-        assert counts[3] == counts[4] == 4
+        assert counts[3:] == (0, 6, 2)
+        assert manifest["session_time_origin"]["status"] == "pending"
+        assert all(
+            clip["started_at_session_time_ns"] is None and clip["ended_at_session_time_ns"] is None
+            for clip in manifest["clips"]
+        )
         assert quality["counts"]["unmatched_video_metadata_count"] == 1
-        assert quality["counts"]["unaligned_imu_sample_count"] == 0
+        assert quality["counts"]["unaligned_imu_sample_count"] == 6
+        assert quality["counts"]["clock_mapping_segment_count"] == 0
         assert quality["training_eligibility"] == "ineligible"
         assert any(
-            issue["issue_id"] == "capture_provenance_incomplete"
-            for issue in quality["issues"]
+            issue["issue_id"] == "perception_processing_required" for issue in quality["issues"]
+        )
+        assert any(
+            issue["issue_id"] == "capture_provenance_incomplete" for issue in quality["issues"]
         )
 
     from tempfile import TemporaryDirectory
@@ -246,12 +256,8 @@ def test_startup_recovery_preserves_unclean_session_as_incomplete() -> None:
         database.checkpoint_and_close()
 
         runtime = RecordingRuntime(root, lambda: asyncio.sleep(0, result=None))
-        recovered = json.loads(
-            (session_directory / "session.json").read_text(encoding="utf-8")
-        )
-        quality = json.loads(
-            (session_directory / "quality.json").read_text(encoding="utf-8")
-        )
+        recovered = json.loads((session_directory / "session.json").read_text(encoding="utf-8"))
+        quality = json.loads((session_directory / "quality.json").read_text(encoding="utf-8"))
 
         assert recovered["lifecycle"]["state"] == "incomplete"
         assert recovered["lifecycle"]["end_reason"] == "recovery_finalization"

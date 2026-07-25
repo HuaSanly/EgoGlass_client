@@ -20,6 +20,8 @@ data.
   keypoint, object-pose, inpainting, and trajectory processing.
 - `services/dataset-builder/`: future immutable training-dataset assembly from
   raw captures, derived perception artifacts, and reviewed annotations.
+- `services/data-platform/`: loopback-only task-attempt annotation service with
+  frame-aligned proposals, drafts, quality checks, and immutable revisions.
 
 The three perception and dataset services are currently boundary-only
 scaffolds. They contain no algorithm implementations or copied third-party
@@ -34,11 +36,12 @@ Start the complete client from the repository root:
 .\scripts\start-client.ps1
 ```
 
-The command starts the LAN ingest gateway, enables Glass3 auto-discovery, and
-opens the native Windows operator console. Leave the PowerShell command running
+The command starts the LAN ingest gateway and local data platform, enables
+Glass3 auto-discovery, and opens the native Windows operator console. Leave the
+PowerShell command running
 while using EgoGlass. Closing the Windows application or pressing `Ctrl+C` in
-the launcher stops the desktop and ingest process trees and releases ports
-`8770` and `8771`. A Windows Job Object also releases them if the launcher is
+the launcher stops all three process trees and releases ports `8770`, `8771`,
+and `8780`. A Windows Job Object also releases them if the launcher is
 terminated without running its normal cleanup. After the client reports ready,
 open EgoGlass directly from the Glass3 application list; no ADB launch
 parameters are required.
@@ -46,6 +49,12 @@ parameters are required.
 Completed recordings are grouped by Glass3 WebRTC session under
 `local-data/recordings/`. The entire `local-data/` tree is ignored by Git and
 must not be committed.
+
+The native annotation page supports manual task-attempt boundaries, whole-clip
+proposals, non-overlapping fixed windows, episode labels, internal action
+phases, autosave, undo/redo, and immutable publishing. It writes only beneath
+each session's ignored `annotations/` directory and never edits source MP4 or
+telemetry.
 
 For individual operator-console development only:
 
@@ -76,6 +85,9 @@ uv run pytest
 uv run pytest -q evals
 uv run ruff check src tests evals
 ```
+
+Run the same three commands from `services/data-platform` for annotation
+persistence and publishing.
 
 The direct video path has passed a real-device first-frame check. World-aligned
 feedback is a separate future service and must carry a verified calibration

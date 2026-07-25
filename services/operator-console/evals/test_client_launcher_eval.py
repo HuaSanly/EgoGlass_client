@@ -22,12 +22,15 @@ def test_one_command_launcher_keeps_pairing_secret_ephemeral() -> None:
     assert "'--pairing-token'," not in script
 
 
-def test_one_command_launcher_owns_both_process_lifecycles() -> None:
+def test_one_command_launcher_owns_all_process_lifecycles() -> None:
     script = (CLIENT_ROOT / "scripts" / "start-client.ps1").read_text(encoding="utf-8")
     lifecycle = PROCESS_LIFECYCLE.read_text(encoding="utf-8")
 
     assert "egoglass_ingest_gateway.app" in script
+    assert "egoglass_data_platform.app" in script
     assert "egoglass_operator_console.desktop" in script
+    assert "Wait-DataPlatformHealth" in script
+    assert "EGOGLASS_DATA_PLATFORM_ORIGIN" in script
     assert "Wait-IngestHealth" in script
     assert "Wait-Process" in script
     assert "Stop-ClientProcesses" in script

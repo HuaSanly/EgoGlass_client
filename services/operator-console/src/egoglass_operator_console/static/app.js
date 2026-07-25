@@ -439,10 +439,10 @@ function renderCollectionOverview() {
   elements.currentSessionMetadata.title =
     `${quality.recorded_video_frame_metadata_match_count} / ${quality.recorded_video_frame_count} 个录制帧已匹配`;
   elements.currentSessionSync.textContent = quality.timestamp_alignment_state === "unverified"
-    ? "原始时间 · 未验证"
+    ? "源时间已保留"
     : quality.timestamp_alignment_state;
   elements.currentSessionSync.title =
-    `${quality.timestamp_mapping_segment_count} 个原始时间映射分段`;
+    "跨模态对齐将在感知阶段执行";
 }
 
 async function pollCollectionLibrary() {

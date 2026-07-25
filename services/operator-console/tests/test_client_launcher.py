@@ -5,7 +5,7 @@ LAUNCHER = CLIENT_ROOT / "scripts" / "start-client.ps1"
 PROCESS_LIFECYCLE = CLIENT_ROOT / "scripts" / "client-process-lifecycle.ps1"
 
 
-def test_workspace_launcher_starts_discovery_ingest_and_native_desktop() -> None:
+def test_workspace_launcher_starts_ingest_data_platform_and_native_desktop() -> None:
     script = LAUNCHER.read_text(encoding="utf-8")
 
     assert "RandomNumberGenerator" in script
@@ -13,6 +13,7 @@ def test_workspace_launcher_starts_discovery_ingest_and_native_desktop() -> None
     assert "--discovery-port" in script
     assert "--hide-pairing-token" in script
     assert "egoglass_ingest_gateway.app" in script
+    assert "egoglass_data_platform.app" in script
     assert "egoglass_operator_console.desktop" in script
     assert "-WindowStyle Hidden" in script
 
@@ -25,7 +26,9 @@ def test_workspace_launcher_rejects_port_conflicts_and_cleans_process_trees() ->
     assert "Assert-UdpPortAvailable" in script
     assert "client-process-lifecycle.ps1" in script
     assert "New-EgoGlassProcessJob" in script
-    assert script.count("Add-ProcessTreeToJob") == 2
+    assert script.count("Add-ProcessTreeToJob") == 3
+    assert "Wait-DataPlatformHealth" in script
+    assert "EGOGLASS_DATA_PLATFORM_ORIGIN" in script
     assert "Wait-Process -Id $desktopProcess.Id" in script
     assert "Stop-ClientProcesses" in script
     assert "finally {" in script

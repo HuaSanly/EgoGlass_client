@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import secrets
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -16,7 +18,12 @@ DESKTOP_COOKIE_NAME = "egoglass_desktop_session"
 def create_app(
     *,
     desktop_token: str | None = None,
+    data_platform_origin: str | None = None,
 ) -> FastAPI:
+    resolved_data_platform_origin = _loopback_origin(
+        data_platform_origin
+        or os.environ.get("EGOGLASS_DATA_PLATFORM_ORIGIN", "http://127.0.0.1:8780")
+    )
     app = FastAPI(
         title="EgoGlass Operator Console",
         version="0.1.0",
@@ -24,6 +31,7 @@ def create_app(
         redoc_url=None,
     )
     app.state.desktop_token = desktop_token
+    app.state.data_platform_origin = resolved_data_platform_origin
 
     @app.middleware("http")
     async def require_desktop_session(request: Request, call_next):
@@ -57,11 +65,38 @@ def create_app(
     async def storage() -> FileResponse:
         return FileResponse(STATIC_DIR / "storage.html")
 
+    @app.get("/annotations", include_in_schema=False)
+    async def annotations() -> FileResponse:
+        return FileResponse(STATIC_DIR / "annotations.html")
+
     @app.get("/api/v1/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "operator-console", "version": "0.1.0"}
 
+    @app.get("/api/v1/runtime")
+    async def runtime() -> dict[str, str]:
+        return {
+            "schema_version": "1.0",
+            "data_platform_origin": resolved_data_platform_origin,
+        }
+
     return app
+
+
+def _loopback_origin(value: str) -> str:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.port is None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("data platform origin must be an explicit 127.0.0.1 HTTP origin")
+    return f"http://127.0.0.1:{parsed.port}"
 
 
 app = create_app()

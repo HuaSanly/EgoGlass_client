@@ -22,7 +22,6 @@ from .adapters.mp4_recorder import PyAvH264Mp4Recorder, RecordedVideoFrame
 from .adapters.webrtc import WebRtcVideoRecordingSource
 from .capture_session import (
     CachedConnection,
-    CaptureDerivationResult,
     CaptureSessionDatabase,
     CaptureSessionWriter,
     read_capture_quality,
@@ -261,9 +260,7 @@ class RecordingRuntime:
                 clip
                 for clip in legacy.clips
                 if self._legacy_completed_path(legacy.session_id, clip.clip_id).is_file()
-                and self._legacy_completed_path(
-                    legacy.session_id, clip.clip_id
-                ).stat().st_size
+                and self._legacy_completed_path(legacy.session_id, clip.clip_id).stat().st_size
                 == clip.file_size_bytes
             ]
             if complete_clips:
@@ -291,8 +288,7 @@ class RecordingRuntime:
                 (
                     item
                     for item in capture.clips
-                    if item.clip_id == clip_id
-                    and item.state in {"complete", "incomplete"}
+                    if item.clip_id == clip_id and item.state in {"complete", "incomplete"}
                 ),
                 None,
             )
@@ -327,9 +323,7 @@ class RecordingRuntime:
                 if clip is None or not completed_path.is_file():
                     raise RecordingClipNotFoundError("recording clip not found")
                 updated = capture.model_copy(
-                    update={
-                        "clips": [item for item in capture.clips if item.clip_id != clip_id]
-                    }
+                    update={"clips": [item for item in capture.clips if item.clip_id != clip_id]}
                 )
                 await self._delete_clip_file_and_manifest(
                     completed_path,
@@ -676,8 +670,7 @@ class RecordingRuntime:
         ended_at_ms = self._unix_clock_ms()
         duration_ms = max(
             0,
-            (self._monotonic_clock_ns() - self._recording_started_at_monotonic_ns)
-            // 1_000_000,
+            (self._monotonic_clock_ns() - self._recording_started_at_monotonic_ns) // 1_000_000,
         )
         completed_path = self._completed_path(self._session_id, self._clip_id)
         os.replace(partial_path, completed_path)
@@ -739,15 +732,11 @@ class RecordingRuntime:
         self._record_event(event_type, details={"end_reason": reason})
         writer, self._session_writer = self._require_writer(), None
         result = await writer.finalize()
-        complete = (
-            result.origin_elapsed_realtime_ns is not None
-            and result.quality.telemetry_queue_overflow_count == 0
+        clips = [self._finalize_capture_clip(clip) for clip in finalizing.clips]
+        complete = result.quality.telemetry_queue_overflow_count == 0 and all(
+            clip.state != "incomplete" for clip in clips
         )
         state = CaptureSessionState.COMPLETE if complete else CaptureSessionState.INCOMPLETE
-        clips = [
-            self._clip_with_bounds(clip, result)
-            for clip in finalizing.clips
-        ]
         ended_at_unix_ns = self._unix_clock_ms() * 1_000_000
         completed_manifest = finalizing.model_copy(
             update={
@@ -758,15 +747,7 @@ class RecordingRuntime:
                         "end_reason": reason,
                     }
                 ),
-                "session_time_origin": CaptureSessionTimeOrigin(
-                    status=(
-                        "established"
-                        if result.origin_elapsed_realtime_ns is not None
-                        else "pending"
-                    ),
-                    origin_elapsed_realtime_ns=result.origin_elapsed_realtime_ns,
-                    origin_event=result.origin_event,
-                ),
+                "session_time_origin": CaptureSessionTimeOrigin(),
                 "clips": clips,
             }
         )
@@ -851,8 +832,7 @@ class RecordingRuntime:
         }:
             duration_ms = max(
                 0,
-                (self._monotonic_clock_ns() - self._recording_started_at_monotonic_ns)
-                // 1_000_000,
+                (self._monotonic_clock_ns() - self._recording_started_at_monotonic_ns) // 1_000_000,
             )
         return RecordingStatus(
             state=self._state,
@@ -907,13 +887,9 @@ class RecordingRuntime:
         self._session_manifest = updated
 
     @staticmethod
-    def _clip_with_bounds(
+    def _finalize_capture_clip(
         clip: CaptureSessionClip,
-        result: CaptureDerivationResult,
     ) -> CaptureSessionClip:
-        bounds = result.clip_time_bounds.get(clip.clip_id)
-        if bounds is None:
-            return clip
         return CaptureSessionClip.model_validate(
             {
                 **clip.model_dump(mode="python"),
@@ -922,12 +898,8 @@ class RecordingRuntime:
                     if clip.frame_count is not None
                     and clip.frame_count > 0
                     and clip.sha256 is not None
-                    and bounds.started_at_session_time_ns is not None
-                    and bounds.ended_at_session_time_ns is not None
                     else "incomplete"
                 ),
-                "started_at_session_time_ns": bounds.started_at_session_time_ns,
-                "ended_at_session_time_ns": bounds.ended_at_session_time_ns,
             }
         )
 
@@ -963,9 +935,7 @@ class RecordingRuntime:
                     fps=30,
                     file_size_bytes=path.stat().st_size,
                     frame_count=clip.frame_count or 0,
-                    media_url=(
-                        f"/api/v1/recordings/media/{manifest.session_id}/{clip.clip_id}"
-                    ),
+                    media_url=(f"/api/v1/recordings/media/{manifest.session_id}/{clip.clip_id}"),
                 )
             )
         quality = read_capture_quality(self._telemetry_path(manifest.session_id))
@@ -995,9 +965,7 @@ class RecordingRuntime:
     ) -> CaptureSessionQualityReport:
         complete_clips = sum(clip.state == "complete" for clip in manifest.clips)
         incomplete_clips = sum(clip.state == "incomplete" for clip in manifest.clips)
-        missing_imu = (
-            quality.accelerometer_sample_count == 0 or quality.gyroscope_sample_count == 0
-        )
+        missing_imu = quality.accelerometer_sample_count == 0 or quality.gyroscope_sample_count == 0
         provenance = manifest.provenance
         missing_provenance = any(
             value is None
@@ -1014,20 +982,21 @@ class RecordingRuntime:
             manifest.lifecycle.state is CaptureSessionState.INCOMPLETE
             or missing_imu
             or quality.telemetry_queue_overflow_count > 0
-            or quality.rejected_clock_mapping_segment_count > 0
             or incomplete_clips > 0
             or missing_provenance
         )
-        status = "incomplete" if manifest.lifecycle.state is CaptureSessionState.INCOMPLETE else (
-            "fail" if failed else "warn"
+        status = (
+            "incomplete"
+            if manifest.lifecycle.state is CaptureSessionState.INCOMPLETE
+            else ("fail" if failed else "pass")
         )
         issues: list[CaptureQualityIssue] = [
             CaptureQualityIssue(
-                issue_id="camera_clock_unverified",
-                severity="warning",
-                message="Glass3 camera clock mapping has not passed the device motion test",
+                issue_id="perception_processing_required",
+                severity="info",
+                message="Perception processing is required before multimodal training export",
                 recoverable=True,
-                evidence="camera mapping status remains provisional",
+                evidence="capture preserved source clocks and left alignment pending",
             )
         ]
         if missing_imu:
@@ -1079,18 +1048,12 @@ class RecordingRuntime:
         coverage = quality.metadata_match_coverage
         checks = [
             CaptureQualityCheck(
-                check_id="session_time_origin",
-                status=(
-                    "pass"
-                    if manifest.session_time_origin.status == "established"
-                    else "fail"
-                ),
-                metric_value=(
-                    1.0 if manifest.session_time_origin.status == "established" else 0.0
-                ),
-                threshold=1.0,
-                unit="boolean",
-                evidence=f"origin_status={manifest.session_time_origin.status}",
+                check_id="perception_alignment",
+                status="not_evaluated",
+                metric_value=None,
+                threshold=None,
+                unit=None,
+                evidence="deferred to the versioned perception pipeline",
             ),
             CaptureQualityCheck(
                 check_id="capture_provenance",
@@ -1098,9 +1061,7 @@ class RecordingRuntime:
                 metric_value=0.0 if missing_provenance else 1.0,
                 threshold=1.0,
                 unit="boolean",
-                evidence=(
-                    "required device, firmware, application, and source revisions"
-                ),
+                evidence=("required device, firmware, application, and source revisions"),
             ),
             CaptureQualityCheck(
                 check_id="video_metadata_coverage",
@@ -1114,24 +1075,12 @@ class RecordingRuntime:
                 unit="ratio",
                 evidence="matched MP4 frames divided by all MP4 frames",
             ),
-            CaptureQualityCheck(
-                check_id="video_imu_alignment_uncertainty",
-                status="not_evaluated",
-                metric_value=(
-                    None
-                    if quality.timestamp_max_uncertainty_ns is None
-                    else quality.timestamp_max_uncertainty_ns / 1_000_000
-                ),
-                threshold=10.0,
-                unit="ms",
-                evidence="device motion validation has not yet verified exposure alignment",
-            ),
         ]
         return CaptureSessionQualityReport(
             session_id=manifest.session_id,
             generated_at_unix_ns=self._unix_clock_ms() * 1_000_000,
             status=status,
-            training_eligibility=("ineligible" if failed else "review_required"),
+            training_eligibility="ineligible",
             recoverable=recoverable,
             finalization="unclean" if status == "incomplete" else "clean",
             counts=CaptureQualityCounts(
@@ -1141,9 +1090,7 @@ class RecordingRuntime:
                 video_metadata_count=quality.video_metadata_count,
                 unmatched_video_metadata_count=quality.unmatched_video_metadata_count,
                 video_frame_count=quality.recorded_video_frame_count,
-                video_frames_with_metadata=(
-                    quality.recorded_video_frame_metadata_match_count
-                ),
+                video_frames_with_metadata=(quality.recorded_video_frame_metadata_match_count),
                 accelerometer_sample_count=quality.accelerometer_sample_count,
                 gyroscope_sample_count=quality.gyroscope_sample_count,
                 unaligned_imu_sample_count=quality.unaligned_imu_sample_count,
@@ -1151,9 +1098,7 @@ class RecordingRuntime:
                 imu_duplicate_count=quality.imu_duplicate_sample_count,
                 imu_out_of_order_count=quality.imu_out_of_order_sample_count,
                 clock_mapping_segment_count=quality.timestamp_mapping_segment_count,
-                rejected_clock_mapping_segment_count=(
-                    quality.rejected_clock_mapping_segment_count
-                ),
+                rejected_clock_mapping_segment_count=(quality.rejected_clock_mapping_segment_count),
             ),
             checks=checks,
             issues=issues,
@@ -1174,26 +1119,20 @@ class RecordingRuntime:
             session_id = manifest.session_id
             database_path = self._telemetry_path(session_id)
             quality = CaptureSessionQuality()
-            origin: int | None = None
-            origin_event: str | None = None
             if database_path.is_file():
                 try:
                     database = CaptureSessionDatabase(session_id, database_path)
-                    result = database.finalize_derivations(0)
+                    result = database.finalize_capture(0)
                     database.checkpoint_and_close()
                     quality = result.quality
-                    origin = result.origin_elapsed_realtime_ns
-                    origin_event = result.origin_event
-                    clips = [self._clip_with_bounds(clip, result) for clip in manifest.clips]
+                    clips = [self._finalize_capture_clip(clip) for clip in manifest.clips]
                 except (OSError, sqlite3.Error, ValueError):
                     LOGGER.exception("capture session recovery failed for %s", session_id)
                     clips = manifest.clips
             else:
                 clips = manifest.clips
             clips = [
-                clip.model_copy(
-                    update={"state": "incomplete"}
-                )
+                clip.model_copy(update={"state": "incomplete"})
                 if clip.state in {"preparing", "recording"}
                 else clip
                 for clip in clips
@@ -1207,11 +1146,7 @@ class RecordingRuntime:
                             "end_reason": "recovery_finalization",
                         }
                     ),
-                    "session_time_origin": CaptureSessionTimeOrigin(
-                        status="established" if origin is not None else "pending",
-                        origin_elapsed_realtime_ns=origin,
-                        origin_event=origin_event,
-                    ),
+                    "session_time_origin": CaptureSessionTimeOrigin(),
                     "clips": clips,
                 }
             )
