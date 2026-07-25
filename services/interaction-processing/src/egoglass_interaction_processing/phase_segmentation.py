@@ -1,0 +1,1 @@
+"""Interaction-phase segmentation boundary."""

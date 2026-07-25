@@ -14,9 +14,17 @@ data.
 - `services/operator-console/`: authenticated local UI for the real Glass3
   WebRTC track, measured displayed FPS, stream and recording controls, relative
   IMU orientation, and the local recording library.
+- `services/spatial-perception/`: future session-local calibration, VIO, hand
+  tracking, post-perception time association, and spatial quality reporting.
+- `services/interaction-processing/`: future interaction-phase, object,
+  keypoint, object-pose, inpainting, and trajectory processing.
+- `services/dataset-builder/`: future immutable training-dataset assembly from
+  raw captures, derived perception artifacts, and reviewed annotations.
 
-Future services will be added behind versioned contracts rather than imported
-from the operator console.
+The three perception and dataset services are currently boundary-only
+scaffolds. They contain no algorithm implementations or copied third-party
+code. Future service communication must use versioned contracts rather than
+private Python imports.
 
 ## Windows desktop
 
