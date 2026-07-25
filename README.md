@@ -1,74 +1,78 @@
 # EgoGlass Client
 
-The client repository owns the Windows ingest, online inference orchestration,
-operator tooling, and data platform. The current runnable slice receives direct
-Glass3 WebRTC video and renders its live preview in the operator console. It
-does not generate placeholder trajectories, metrics, calibration, or session
-data.
+The client is one Python workspace for Glass3 ingest, the Windows operator
+console, annotation, spatial perception, interaction processing, and dataset
+assembly. It has one dependency declaration, one lock file, and one virtual
+environment. Code is separated by package responsibility, not by independent
+service scaffolds.
 
-## Services
+## Layout
 
-- `services/ingest-gateway/`: terminates the direct Glass3 WebRTC video and
-  frame-metadata channels, relays the live track to one loopback viewer,
-  and records operator-selected H.264 MP4 clips.
-- `services/operator-console/`: authenticated local UI for the real Glass3
-  WebRTC track, measured displayed FPS, stream and recording controls, relative
-  IMU orientation, and the local recording library.
+```text
+src/
+  ingest_gateway/            # WebRTC ingress, recording, and raw sessions
+  operator_console/          # Native Windows operator UI
+  data_platform/             # Episode annotation and immutable revisions
+  spatial_perception/        # Calibration, VIO, hands, and time association
+  interaction_processing/    # Phases, objects, keypoints, and trajectories
+  dataset_builder/           # Training samples, splits, and provenance
+config/                      # Shared client configuration
+tests/                       # Fast tests, named with package prefixes
+evals/                       # Periodic evaluations and device evidence
+scripts/                     # Client launch, lifecycle, build, and inspection
+packaging/                   # Windows executable packaging assets
+docs/                        # Component-specific operation notes
+```
 
-Future services will be added behind versioned contracts rather than imported
-from the operator console.
+The perception, interaction, and dataset packages are boundaries only. They
+contain no copied HumanEgo or other third-party algorithm code yet.
 
-## Windows desktop
+Detailed notes are available in [ingest gateway](docs/ingest-gateway.md),
+[operator console](docs/operator-console.md), [data platform](docs/data-platform.md),
+[spatial perception](docs/spatial-perception.md),
+[interaction processing](docs/interaction-processing.md), and
+[dataset builder](docs/dataset-builder.md).
 
-Start the complete client from the repository root:
+## Setup
+
+Run once from this directory:
+
+```powershell
+uv sync --group dev
+```
+
+This creates the only workspace environment at `.venv/`.
+
+## Windows Client
+
+Start the complete client from this directory:
 
 ```powershell
 .\scripts\start-client.ps1
 ```
 
-The command starts the LAN ingest gateway, enables Glass3 auto-discovery, and
-opens the native Windows operator console. Leave the PowerShell command running
-while using EgoGlass. Closing the Windows application or pressing `Ctrl+C` in
-the launcher stops the desktop and ingest process trees and releases ports
-`8770` and `8771`. A Windows Job Object also releases them if the launcher is
-terminated without running its normal cleanup. After the client reports ready,
-open EgoGlass directly from the Glass3 application list; no ADB launch
-parameters are required.
+The command starts the LAN ingest gateway and local data platform, enables
+Glass3 discovery, and opens the native Windows operator console. Closing the
+desktop window or pressing `Ctrl+C` stops all three process trees and releases
+ports `8770`, `8771`, and `8780`.
 
-Completed recordings are grouped by Glass3 WebRTC session under
-`local-data/recordings/`. The entire `local-data/` tree is ignored by Git and
-must not be committed.
+Completed recordings live under `local-data/recordings/`. The entire
+`local-data/` tree is ignored by Git. Annotation writes only beneath each
+session's ignored `annotations/` directory and never changes source MP4 or
+telemetry files.
 
-For individual operator-console development only:
+Build the local Windows executable with:
 
 ```powershell
-cd services/operator-console
-uv sync --group dev
-uv run egoglass-desktop
-```
-
-The desktop command opens the operator console in a native Windows WebView2
-window. It does not open the system browser. The bundled FastAPI server uses a
-dynamic loopback port and shuts down with the window.
-
-Build and verify the local executable with:
-
-```powershell
-cd services/operator-console
 .\scripts\build-desktop.ps1
 ```
 
-The ignored build output is `dist/EgoGlass/EgoGlass.exe`.
+The ignored output is `dist/EgoGlass/EgoGlass.exe`.
 
 ## Verification
 
 ```powershell
-cd services/operator-console
 uv run pytest
 uv run pytest -q evals
 uv run ruff check src tests evals
 ```
-
-The direct video path has passed a real-device first-frame check. World-aligned
-feedback is a separate future service and must carry a verified calibration
-profile before the glasses application is allowed to render it.

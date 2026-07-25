@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "egoglass-client"
+version = "0.1.0"
+description = "EgoGlass Windows client, data platform, and perception modules"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = [
+  "aiortc>=1.15,<2",
+  "av>=16,<17",
+  "fastapi>=0.115,<1",
+  "pydantic>=2.10,<3",
+  "pywebview>=6,<7",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.scripts]
+egoglass-ingest-gateway = "ingest_gateway.app:main"
+egoglass-data-platform = "data_platform.app:main"
+egoglass-console = "operator_console.app:main"
+egoglass-desktop = "operator_console.desktop:main"
+
+[dependency-groups]
+dev = [
+  "httpx2>=2,<3",
+  "pyinstaller>=6.12,<7",
+  "pytest>=8.3,<9",
+  "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "src/ingest_gateway",
+  "src/operator_console",
+  "src/data_platform",
+  "src/spatial_perception",
+  "src/interaction_processing",
+  "src/dataset_builder",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = [".", "src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
