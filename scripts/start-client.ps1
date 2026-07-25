@@ -8,15 +8,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'client-process-lifecycle.ps1')
-$ingestPython = Join-Path $repositoryRoot (
-    'services\ingest-gateway\.venv\Scripts\python.exe'
-)
-$dataPython = Join-Path $repositoryRoot (
-    'services\data-platform\.venv\Scripts\python.exe'
-)
-$desktopPython = Join-Path $repositoryRoot (
-    'services\operator-console\.venv\Scripts\pythonw.exe'
-)
+$workspacePython = Join-Path $repositoryRoot '.venv\Scripts\python.exe'
+$desktopPython = Join-Path $repositoryRoot '.venv\Scripts\pythonw.exe'
 $dataRoot = if ($env:LOCALAPPDATA) {
     Join-Path $env:LOCALAPPDATA 'EgoGlass'
 } else {
@@ -91,9 +84,9 @@ function Wait-DataPlatformHealth([int] $Port, [int] $TimeoutSeconds = 15) {
 if ($env:OS -ne 'Windows_NT') {
     throw 'The EgoGlass client launcher requires Windows.'
 }
-foreach ($executable in @($ingestPython, $dataPython, $desktopPython)) {
+foreach ($executable in @($workspacePython, $desktopPython)) {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-        throw "Missing workspace environment: $executable. Run uv sync in all three services first."
+        throw "Missing client environment: $executable. Run uv sync --group dev from the client root."
     }
 }
 if ($IngestPort -notin 1..65535 -or $DiscoveryPort -notin 1..65535 -or $DataPort -notin 1..65535) {
@@ -114,24 +107,24 @@ $dataProcess = $null
 $desktopProcess = $null
 $processJob = New-EgoGlassProcessJob
 try {
-    $dataProcess = Start-Process -FilePath $dataPython -ArgumentList @(
+    $dataProcess = Start-Process -FilePath $workspacePython -ArgumentList @(
         '-m',
-        'egoglass_data_platform.app',
+        'data_platform.app',
         '--host',
         '127.0.0.1',
         '--port',
         $DataPort,
         '--recordings-root',
         $recordingsDirectory
-    ) -WorkingDirectory (Split-Path -Parent $dataPython) -WindowStyle Hidden `
+    ) -WorkingDirectory $repositoryRoot -WindowStyle Hidden `
         -RedirectStandardOutput $dataStdout -RedirectStandardError $dataStderr -PassThru
     Add-ProcessTreeToJob -Job $processJob -ProcessId $dataProcess.Id
 
     try {
         $env:EGOGLASS_PAIRING_TOKEN = $pairingToken
-        $ingestProcess = Start-Process -FilePath $ingestPython -ArgumentList @(
+        $ingestProcess = Start-Process -FilePath $workspacePython -ArgumentList @(
             '-m',
-            'egoglass_ingest_gateway.app',
+            'ingest_gateway.app',
             '--host',
             '0.0.0.0',
             '--port',
@@ -141,7 +134,7 @@ try {
             '--recordings-root',
             $recordingsDirectory,
             '--hide-pairing-token'
-        ) -WorkingDirectory (Split-Path -Parent $ingestPython) -WindowStyle Hidden `
+        ) -WorkingDirectory $repositoryRoot -WindowStyle Hidden `
             -RedirectStandardOutput $ingestStdout -RedirectStandardError $ingestStderr -PassThru
         Add-ProcessTreeToJob -Job $processJob -ProcessId $ingestProcess.Id
     } finally {
@@ -154,8 +147,8 @@ try {
         $env:EGOGLASS_DATA_PLATFORM_ORIGIN = "http://127.0.0.1:$DataPort"
         $desktopProcess = Start-Process -FilePath $desktopPython -ArgumentList @(
             '-m',
-            'egoglass_operator_console.desktop'
-        ) -WorkingDirectory (Split-Path -Parent $desktopPython) -PassThru
+            'operator_console.desktop'
+        ) -WorkingDirectory $repositoryRoot -PassThru
         Add-ProcessTreeToJob -Job $processJob -ProcessId $desktopProcess.Id
     } finally {
         $env:EGOGLASS_DATA_PLATFORM_ORIGIN = $previousDataPlatformOrigin

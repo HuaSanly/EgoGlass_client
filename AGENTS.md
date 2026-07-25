@@ -38,12 +38,19 @@ The Python client subproject owns:
 
 It does not own Android capture internals or offline model training.
 
-## Service boundaries
+## Client workspace boundaries
 
-Keep the ingest gateway, online inference runtime, operator interface, and data
-platform independently testable. They exchange versioned contracts and stable
-storage references. They must not import each other's private modules or share
-mutable process state.
+The client is one Python workspace with one root `pyproject.toml`, one
+`uv.lock`, one `.venv`, one `tests/` directory, and one `evals/` directory.
+Do not add package-local environments, lock files, test trees, eval trees, or
+project manifests.
+
+Code packages live directly under `src/` and use concise responsibility names:
+`ingest_gateway`, `operator_console`, `data_platform`, `spatial_perception`,
+`interaction_processing`, and `dataset_builder`. Do not add an `egoglass_`
+prefix to internal Python package names. Keep these packages independently
+testable, and do not import another package's private modules or share mutable
+process state.
 
 The device stream format and the cloud transport are separate concerns. An
 adapter may convert SDK-provided NV21 frames into a WebRTC media track, but the
@@ -51,8 +58,8 @@ ingest contract must preserve the source format and timestamps.
 
 ## Python rules
 
-- Use a repository-selected Python version and a committed lock file once the
-  first package is created. Do not mix package managers inside this subtree.
+- Use the repository-selected Python version and the committed root lock file.
+  Do not mix package managers or create nested Python projects in this subtree.
 - Use type hints at service boundaries and validate all external messages.
 - Use UTC for wall-clock times and explicit monotonic clocks for durations.
   Never compare timestamps from different clocks without a recorded mapping.
@@ -65,8 +72,10 @@ ingest contract must preserve the source format and timestamps.
 
 ## Verification
 
-- Each service has its own unit/integration tests, eval suite, README, config,
-  and runnable entry point.
+- Package tests and evals live in the shared root directories and use the
+  owning package name as a filename prefix.
+- Run `uv run pytest`, `uv run pytest -q evals`, and
+  `uv run ruff check src tests evals` from the client root.
 - Ingest tests cover reorder, duplicate, disconnect, resume, malformed metadata,
   backpressure, and clock discontinuity.
 - Data tests cover idempotent registration, alignment bounds, corrections,
