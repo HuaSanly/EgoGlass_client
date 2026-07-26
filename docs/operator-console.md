@@ -82,18 +82,17 @@ its stable storage path. A clip or complete/incomplete session folder can be
 deleted after explicit confirmation; active and finalizing sessions cannot be
 deleted. The console updates the library only after gateway success.
 
-The `/annotations` page uses the separately versioned loopback data platform.
-It provides manual task-attempt boundaries, reviewed whole-clip and
-non-overlapping fixed-window proposals, episode semantic labels, and internal
-phase intervals. Drafts autosave with optimistic revision checks. Publishing
-requires complete task labels and at least one contained phase per episode,
-then writes an immutable revision without changing source MP4 or telemetry.
+The `/annotations` page owns its local annotation workflow. It provides manual
+task-attempt boundaries, reviewed whole-clip and non-overlapping fixed-window
+proposals, episode semantic labels, and internal phase intervals. Drafts
+autosave with optimistic revision checks. Publishing requires complete task
+labels and at least one contained phase per episode, then writes an immutable
+revision without changing source MP4 or telemetry.
 
 ## Run as a Windows app
 
 For the complete workspace client, use `.\scripts\start-client.ps1` from
-the client repository root. It owns the ingest gateway, data platform, and this
-desktop window.
+the client repository root. It owns the ingest gateway and this desktop window.
 
 For operator-console-only development:
 
@@ -141,8 +140,7 @@ The UI consumes these loopback-only ingest-gateway contracts:
 - `DELETE /api/v1/recordings/clips/{session_id}/{clip_id}`
 - `GET /api/v1/recordings/media/{session_id}/{clip_id}`
 
-The annotation page reads the data-platform origin from authenticated runtime
-configuration and consumes:
+The annotation page uses the operator console's same-origin API:
 
 - `GET /api/v1/annotations/workspace`
 - `GET /api/v1/annotations/sessions/{session_id}`

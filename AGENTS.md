@@ -46,8 +46,10 @@ Do not add package-local environments, lock files, test trees, eval trees, or
 project manifests.
 
 Code packages live directly under `src/` and use concise responsibility names:
-`ingest_gateway`, `operator_console`, `data_platform`, `spatial_perception`,
-`interaction_processing`, and `dataset_builder`. Do not add an `egoglass_`
+`ingest_gateway`, `operator_console`, `spatial_perception`, `interaction_processing`,
+and `dataset_builder`. The operator console owns annotation UI, validation, and
+annotation persistence; `dataset_builder` owns dataset versions and provenance.
+Do not add an `egoglass_`
 prefix to internal Python package names. Keep these packages independently
 testable, and do not import another package's private modules or share mutable
 process state.

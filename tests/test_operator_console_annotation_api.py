@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from data_platform.app import _is_loopback_client, create_app
+from operator_console.app import create_app
 from tests.conftest import CLIP_ID, SESSION_ID, complete_episode
 
 
@@ -34,7 +34,7 @@ def test_annotation_api_runs_complete_draft_proposal_and_publish_workflow(
         )
         media = client.get(f"/api/v1/annotations/media/{SESSION_ID}/{CLIP_ID}")
 
-    assert health.json()["service"] == "data-platform"
+    assert health.json()["service"] == "operator-console"
     assert workspace.json()["sessions"][0]["session_id"] == SESSION_ID
     assert session.json()["draft"]["draft_revision"] == 0
     assert proposals.json()["proposals"][0]["end_frame_index_exclusive"] == 300
@@ -69,9 +69,14 @@ def test_api_returns_structured_validation_and_conflict_errors(recordings_root: 
     assert missing.status_code == 404
 
 
-def test_data_platform_accepts_only_loopback_client_hosts() -> None:
-    assert _is_loopback_client("127.0.0.1") is True
-    assert _is_loopback_client("::1") is True
-    assert _is_loopback_client("testclient") is True
-    assert _is_loopback_client("192.168.1.20") is False
-    assert _is_loopback_client("data-platform.local") is False
+def test_annotation_api_uses_the_desktop_session(recordings_root: Path) -> None:
+    app = create_app(recordings_root, desktop_token="desktop-test-token")
+    with TestClient(app) as client:
+        unauthorized = client.get("/api/v1/annotations/workspace")
+        authorized = client.get(
+            "/api/v1/annotations/workspace?desktop_token=desktop-test-token"
+        )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert authorized.json()["sessions"][0]["session_id"] == SESSION_ID

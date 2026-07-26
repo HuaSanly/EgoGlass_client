@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from data_platform.models import ProposalRequest, SaveDraftRequest
-from data_platform.store import (
+from operator_console.annotation_models import ProposalRequest, SaveDraftRequest
+from operator_console.annotation_store import (
     AnnotationReadOnlyError,
     AnnotationStore,
     AnnotationValidationError,

@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from .models import (
+from .annotation_models import (
     AnnotationDraft,
     AnnotationQuality,
     AnnotationQualityCheck,
