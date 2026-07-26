@@ -5,7 +5,6 @@ from pathlib import Path
 
 CLIENT_ROOT = Path(__file__).parents[1]
 EXPECTED_PACKAGES = {
-    "src/data_platform",
     "src/dataset_builder",
     "src/ingest_gateway",
     "src/interaction_processing",
@@ -24,7 +23,6 @@ def test_workspace_manifest_builds_every_client_package_once() -> None:
     assert packages == EXPECTED_PACKAGES
     assert set(scripts) == {
         "egoglass-console",
-        "egoglass-data-platform",
         "egoglass-desktop",
         "egoglass-ingest-gateway",
     }

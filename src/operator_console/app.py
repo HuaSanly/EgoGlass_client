@@ -4,25 +4,26 @@ import argparse
 import os
 import secrets
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .annotation_api import create_annotation_router
+from .annotation_store import AnnotationStore
+
 STATIC_DIR = Path(__file__).parent / "static"
 DESKTOP_COOKIE_NAME = "egoglass_desktop_session"
 
 
 def create_app(
+    recordings_root: Path | None = None,
     *,
     desktop_token: str | None = None,
-    data_platform_origin: str | None = None,
 ) -> FastAPI:
-    resolved_data_platform_origin = _loopback_origin(
-        data_platform_origin
-        or os.environ.get("EGOGLASS_DATA_PLATFORM_ORIGIN", "http://127.0.0.1:8780")
+    resolved_recordings_root = recordings_root or Path(
+        os.environ.get("EGOGLASS_RECORDINGS_ROOT", "local-data/recordings")
     )
     app = FastAPI(
         title="EgoGlass Operator Console",
@@ -31,7 +32,7 @@ def create_app(
         redoc_url=None,
     )
     app.state.desktop_token = desktop_token
-    app.state.data_platform_origin = resolved_data_platform_origin
+    app.state.annotation_store = AnnotationStore(resolved_recordings_root)
 
     @app.middleware("http")
     async def require_desktop_session(request: Request, call_next):
@@ -56,6 +57,7 @@ def create_app(
         return response
 
     app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
+    app.include_router(create_annotation_router(app.state.annotation_store))
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
@@ -73,30 +75,7 @@ def create_app(
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "operator-console", "version": "0.1.0"}
 
-    @app.get("/api/v1/runtime")
-    async def runtime() -> dict[str, str]:
-        return {
-            "schema_version": "1.0",
-            "data_platform_origin": resolved_data_platform_origin,
-        }
-
     return app
-
-
-def _loopback_origin(value: str) -> str:
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname != "127.0.0.1"
-        or parsed.port is None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-        or parsed.username is not None
-        or parsed.password is not None
-    ):
-        raise ValueError("data platform origin must be an explicit 127.0.0.1 HTTP origin")
-    return f"http://127.0.0.1:{parsed.port}"
 
 
 app = create_app()
@@ -106,13 +85,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the EgoGlass operator console")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--recordings-root",
+        type=Path,
+        default=Path(os.environ.get("EGOGLASS_RECORDINGS_ROOT", "local-data/recordings")),
+    )
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args()
+    app_target: FastAPI | str = create_app(args.recordings_root)
+    if args.reload:
+        os.environ["EGOGLASS_RECORDINGS_ROOT"] = str(args.recordings_root)
+        app_target = "operator_console.app:create_app"
     uvicorn.run(
-        "operator_console.app:app",
+        app_target,
         host=args.host,
         port=args.port,
         reload=args.reload,
+        factory=args.reload,
     )
 
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "egoglass-client"
 version = "0.1.0"
-description = "EgoGlass Windows client, data platform, and perception modules"
+description = "EgoGlass Windows client and perception modules"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
@@ -20,7 +20,6 @@ dependencies = [
 
 [project.scripts]
 egoglass-ingest-gateway = "ingest_gateway.app:main"
-egoglass-data-platform = "data_platform.app:main"
 egoglass-console = "operator_console.app:main"
 egoglass-desktop = "operator_console.desktop:main"
 
@@ -36,7 +35,6 @@ dev = [
 packages = [
   "src/ingest_gateway",
   "src/operator_console",
-  "src/data_platform",
   "src/spatial_perception",
   "src/interaction_processing",
   "src/dataset_builder",

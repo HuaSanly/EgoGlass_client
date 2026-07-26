@@ -27,12 +27,15 @@ def test_one_command_launcher_owns_all_process_lifecycles() -> None:
     lifecycle = PROCESS_LIFECYCLE.read_text(encoding="utf-8")
 
     assert "ingest_gateway.app" in script
-    assert "data_platform.app" in script
+    assert "data_platform" not in script
+    assert "DataPort" not in script
+    assert "8780" not in script
     assert "operator_console.desktop" in script
     assert ".venv\\Scripts\\python.exe" in script
     assert "services\\" not in script
-    assert "Wait-DataPlatformHealth" in script
-    assert "EGOGLASS_DATA_PLATFORM_ORIGIN" in script
+    assert "Wait-DataPlatformHealth" not in script
+    assert "EGOGLASS_DATA_PLATFORM_ORIGIN" not in script
+    assert "EGOGLASS_RECORDINGS_ROOT" in script
     assert "Wait-IngestHealth" in script
     assert "Wait-Process" in script
     assert "Stop-ClientProcesses" in script

@@ -76,8 +76,8 @@ class SingleInstance:
 class LocalConsoleServer:
     """Runs Uvicorn on a reserved loopback socket in a background thread."""
 
-    def __init__(self, desktop_token: str) -> None:
-        app = create_app(desktop_token=desktop_token)
+    def __init__(self, desktop_token: str, recordings_root: Path | None = None) -> None:
+        app = create_app(recordings_root, desktop_token=desktop_token)
         self._config = uvicorn.Config(
             app,
             host="127.0.0.1",
@@ -234,9 +234,12 @@ def launch_desktop(
     resolved_data_root.mkdir(parents=True, exist_ok=True)
     configure_logging(resolved_data_root)
     token = desktop_token or secrets.token_urlsafe(32)
+    recordings_root = Path(
+        os.environ.get("EGOGLASS_RECORDINGS_ROOT", resolved_data_root / "recordings")
+    )
 
     with SingleInstance(mutex_name):
-        server = LocalConsoleServer(token)
+        server = LocalConsoleServer(token, recordings_root)
         try:
             server.start()
             if webview_module is None:

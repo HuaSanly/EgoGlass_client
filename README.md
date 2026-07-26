@@ -11,8 +11,7 @@ service scaffolds.
 ```text
 src/
   ingest_gateway/            # WebRTC ingress, recording, and raw sessions
-  operator_console/          # Native Windows operator UI
-  data_platform/             # Episode annotation and immutable revisions
+  operator_console/          # Native UI, annotation, and annotation persistence
   spatial_perception/        # Calibration, VIO, hands, and time association
   interaction_processing/    # Phases, objects, keypoints, and trajectories
   dataset_builder/           # Training samples, splits, and provenance
@@ -28,8 +27,7 @@ The perception, interaction, and dataset packages are boundaries only. They
 contain no copied HumanEgo or other third-party algorithm code yet.
 
 Detailed notes are available in [ingest gateway](docs/ingest-gateway.md),
-[operator console](docs/operator-console.md), [data platform](docs/data-platform.md),
-[spatial perception](docs/spatial-perception.md),
+[operator console](docs/operator-console.md), [spatial perception](docs/spatial-perception.md),
 [interaction processing](docs/interaction-processing.md), and
 [dataset builder](docs/dataset-builder.md).
 
@@ -51,10 +49,10 @@ Start the complete client from this directory:
 .\scripts\start-client.ps1
 ```
 
-The command starts the LAN ingest gateway and local data platform, enables
-Glass3 discovery, and opens the native Windows operator console. Closing the
-desktop window or pressing `Ctrl+C` stops all three process trees and releases
-ports `8770`, `8771`, and `8780`.
+The command starts the LAN ingest gateway, enables Glass3 discovery, and opens
+the native Windows operator console. The annotation page uses the console's
+same-origin API. Closing the desktop window or pressing `Ctrl+C` stops both
+process trees and releases ports `8770` and `8771`.
 
 Completed recordings live under `local-data/recordings/`. The entire
 `local-data/` tree is ignored by Git. Annotation writes only beneath each

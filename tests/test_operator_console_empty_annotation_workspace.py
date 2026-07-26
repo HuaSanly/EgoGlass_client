@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from data_platform.store import AnnotationStore
+from operator_console.annotation_store import AnnotationStore
 
 
 def test_missing_recordings_root_stays_absent_and_returns_empty_workspace(

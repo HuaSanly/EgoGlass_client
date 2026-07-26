@@ -4,8 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from data_platform.models import ProposalRequest, SaveDraftRequest
-from data_platform.store import AnnotationStore
+from operator_console.annotation_models import ProposalRequest, SaveDraftRequest
+from operator_console.annotation_store import AnnotationStore
 from tests.conftest import CLIP_ID, SESSION_ID, complete_episode, create_capture_session
 
 
