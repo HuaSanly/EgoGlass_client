@@ -78,6 +78,34 @@ Future persistence must use a separate versioned derived artifact containing
 the integer anchors and scale numerator/denominator; completed raw telemetry is
 never updated by preprocessing.
 
+## Unified pipeline
+
+`pipeline.py` is the only orchestration module in this package. It loads one
+strict sensor-calibration JSON, applies the session clock mapper, rotates and
+undistorts frames, sorts mapped IMU evidence, and emits immutable
+`PreparedFrameBundle` values. Each bundle contains one read-only BGR frame and
+the IMU samples assigned to its frame interval, plus the exact calibration and
+time-mapping provenance required by VIO and hand tracking.
+
+The two input paths share all preparation after frame acquisition:
+
+- `process_live_frame()` accepts an aiortc/PyAV `VideoFrame` that the gateway
+  has already decoded. It never decodes or encodes video.
+- `iter_recorded_session()` verifies the completed capture, decodes each MP4
+  frame once, checks decoded PTS against the stored exact frame index, and feeds
+  the same image preparation and output contract.
+
+The pipeline does not persist decoded RGB frames. Long-term capture remains
+compressed MP4 plus immutable metadata and IMU; the same decoded frame can be
+shared with live VIO, hand tracking, and visualization in memory.
+
+`config/sensor-calibration.sample.json` contains guessed intrinsics, zero
+distortion, an identity Camera-to-IMU transform, and placeholder IMU noise. It
+exists only to exercise the interface. Both `SensorCalibration.load()` and the
+pipeline constructor reject it by default; callers must explicitly set
+`allow_placeholder_calibration=True`. Replace every placeholder with parameters
+from a measured external calibration before collecting algorithm results.
+
 ## Implemented boundary
 
 `CaptureSessionReader.open()` accepts only finalized `capture-session-v1`
@@ -167,10 +195,22 @@ aligned = mapper.map(
 )
 ```
 
+```python
+from perception.sensor_preprocessing import SensorPreprocessingPipeline
+
+pipeline = SensorPreprocessingPipeline.from_calibration_file(
+    "config/sensor-calibration.json",
+    mapper,
+)
+
+for bundle in pipeline.iter_recorded_session("recordings/session-id"):
+    spatial_perception.process(bundle)
+```
+
 ## Verification
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_sensor_preprocessing_models.py tests\test_sensor_preprocessing_capture_reader.py tests\test_sensor_preprocessing_clock_mapping.py
-.\.venv\Scripts\python.exe -m pytest -q evals\test_sensor_preprocessing_boundary.py evals\test_sensor_preprocessing_clock_mapping.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_sensor_preprocessing_models.py tests\test_sensor_preprocessing_capture_reader.py tests\test_sensor_preprocessing_clock_mapping.py tests\test_sensor_preprocessing_pipeline.py
+.\.venv\Scripts\python.exe -m pytest -q evals\test_sensor_preprocessing_boundary.py evals\test_sensor_preprocessing_clock_mapping.py evals\test_sensor_preprocessing_pipeline.py
 .\.venv\Scripts\ruff.exe check src tests evals
 ```
