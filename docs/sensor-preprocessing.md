@@ -81,8 +81,9 @@ never updated by preprocessing.
 ## Unified pipeline
 
 `pipeline.py` is the only orchestration module in this package. It loads one
-strict sensor-calibration JSON, applies the session clock mapper, rotates and
-undistorts frames, sorts mapped IMU evidence, and emits immutable
+strict module YAML and the sensor-calibration JSON selected by that YAML,
+applies the session clock mapper, rotates and optionally undistorts frames,
+sorts mapped IMU evidence, and emits immutable
 `PreparedFrameBundle` values. Each bundle contains one read-only BGR frame and
 the IMU samples assigned to its frame interval, plus the exact calibration and
 time-mapping provenance required by VIO and hand tracking.
@@ -99,12 +100,17 @@ The pipeline does not persist decoded RGB frames. Long-term capture remains
 compressed MP4 plus immutable metadata and IMU; the same decoded frame can be
 shared with live VIO, hand tracking, and visualization in memory.
 
+`config/sensor-preprocessing.yaml` selects the calibration file and contains
+the common runtime controls: media-hash verification, FFmpeg decode thread
+count, undistortion and remap modes, and the live pending-IMU limit. Relative
+calibration paths are resolved from the YAML directory. Unknown settings and
+wrong value types are rejected.
+
 `config/sensor-calibration.sample.json` contains guessed intrinsics, zero
-distortion, an identity Camera-to-IMU transform, and placeholder IMU noise. It
-exists only to exercise the interface. Both `SensorCalibration.load()` and the
-pipeline constructor reject it by default; callers must explicitly set
-`allow_placeholder_calibration=True`. Replace every placeholder with parameters
-from a measured external calibration before collecting algorithm results.
+distortion, an identity Camera-to-IMU transform, and unmeasured IMU noise. It
+exists to exercise the interface. The pipeline uses whichever valid calibration
+JSON the YAML selects. Replace the sample values with parameters from a measured
+external calibration before collecting algorithm results.
 
 ## Implemented boundary
 
@@ -198,8 +204,8 @@ aligned = mapper.map(
 ```python
 from perception.sensor_preprocessing import SensorPreprocessingPipeline
 
-pipeline = SensorPreprocessingPipeline.from_calibration_file(
-    "config/sensor-calibration.json",
+pipeline = SensorPreprocessingPipeline.from_config_file(
+    "config/sensor-preprocessing.yaml",
     mapper,
 )
 

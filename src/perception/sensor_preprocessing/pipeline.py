@@ -15,6 +15,7 @@ from typing import Literal
 import av
 import cv2
 import numpy as np
+import yaml
 from av import VideoFrame
 from av.error import FFmpegError
 from numpy.typing import NDArray
@@ -51,6 +52,22 @@ _Matrix4 = tuple[
     tuple[float, float, float, float],
 ]
 _BgrImage = NDArray[np.uint8]
+_InterpolationName = Literal["nearest", "linear", "cubic", "area", "lanczos4"]
+_BorderModeName = Literal["constant", "replicate", "reflect", "reflect_101"]
+
+_CV_INTERPOLATIONS: dict[_InterpolationName, int] = {
+    "nearest": cv2.INTER_NEAREST,
+    "linear": cv2.INTER_LINEAR,
+    "cubic": cv2.INTER_CUBIC,
+    "area": cv2.INTER_AREA,
+    "lanczos4": cv2.INTER_LANCZOS4,
+}
+_CV_BORDER_MODES: dict[_BorderModeName, int] = {
+    "constant": cv2.BORDER_CONSTANT,
+    "replicate": cv2.BORDER_REPLICATE,
+    "reflect": cv2.BORDER_REFLECT,
+    "reflect_101": cv2.BORDER_REFLECT_101,
+}
 
 
 class SensorPreprocessingError(RuntimeError):
@@ -58,7 +75,7 @@ class SensorPreprocessingError(RuntimeError):
 
 
 class CalibrationProvenance(BaseModel):
-    """标定参数的来源，防止占位值或未知文件被当作实测标定。"""
+    """标定参数的来源，用于追踪工具版本和实测证据。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -87,7 +104,6 @@ class SensorCalibration(BaseModel):
 
     schema_version: Literal["1.0"]
     profile_name: str = Field(min_length=1)
-    placeholder: bool
     capture_config_id: str = Field(min_length=1)
     source_width: int = Field(gt=0)
     source_height: int = Field(gt=0)
@@ -156,13 +172,8 @@ class SensorCalibration(BaseModel):
         return f"sensor-calibration-v1-{digest}"
 
     @classmethod
-    def load(
-        cls,
-        path: str | Path,
-        *,
-        allow_placeholder: bool = False,
-    ) -> SensorCalibration:
-        """读取并验证标定 JSON；正式运行默认拒绝占位参数。"""
+    def load(cls, path: str | Path) -> SensorCalibration:
+        """读取并严格验证标定 JSON；文件被选中后直接按其中参数运行。"""
 
         calibration_path = Path(path)
         try:
@@ -170,11 +181,82 @@ class SensorCalibration(BaseModel):
             calibration = cls.model_validate_json(payload)
         except (OSError, UnicodeError, ValidationError) as exc:
             raise SensorPreprocessingError("invalid sensor calibration file") from exc
-        if calibration.placeholder and not allow_placeholder:
-            raise SensorPreprocessingError(
-                "placeholder calibration requires explicit opt-in"
-            )
         return calibration
+
+
+class RecordedPreprocessingConfig(BaseModel):
+    """离线录像读取参数。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    verify_media_hashes: bool = True
+    decode_threads: int = Field(default=0, ge=0)
+
+
+class ImagePreprocessingConfig(BaseModel):
+    """图像去畸变参数；旋转角度仍由标定文件决定。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    undistort: bool = True
+    interpolation: _InterpolationName = "linear"
+    border_mode: _BorderModeName = "constant"
+
+
+class LivePreprocessingConfig(BaseModel):
+    """实时数据路径的有界缓冲参数。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    max_pending_imu_samples: int = Field(default=2048, gt=0)
+
+
+class SensorPreprocessingConfig(BaseModel):
+    """传感器预处理模块的统一运行配置。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["1.0"]
+    calibration_file: Path
+    recorded: RecordedPreprocessingConfig = Field(
+        default_factory=RecordedPreprocessingConfig
+    )
+    image: ImagePreprocessingConfig = Field(default_factory=ImagePreprocessingConfig)
+    live: LivePreprocessingConfig = Field(default_factory=LivePreprocessingConfig)
+
+    @classmethod
+    def load(cls, path: str | Path) -> SensorPreprocessingConfig:
+        """读取 YAML，并把标定文件路径相对 YAML 所在目录解析。"""
+
+        try:
+            config_path = Path(path).resolve()
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise SensorPreprocessingError(
+                "invalid sensor preprocessing config file"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise SensorPreprocessingError(
+                "invalid sensor preprocessing config file"
+            )
+        calibration_file = payload.get("calibration_file")
+        if not isinstance(calibration_file, str) or not calibration_file.strip():
+            raise SensorPreprocessingError(
+                "invalid sensor preprocessing config file"
+            )
+        try:
+            calibration_path = Path(calibration_file)
+            if not calibration_path.is_absolute():
+                calibration_path = config_path.parent / calibration_path
+            normalized_payload = {
+                **payload,
+                "calibration_file": calibration_path.resolve(),
+            }
+            return cls.model_validate(normalized_payload)
+        except (OSError, ValueError, ValidationError) as exc:
+            raise SensorPreprocessingError(
+                "invalid sensor preprocessing config file"
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,18 +376,31 @@ class SensorPreprocessingPipeline:
         calibration: SensorCalibration,
         clock_mapper: SegmentedClockMapper,
         *,
-        allow_placeholder_calibration: bool = False,
+        recorded_config: RecordedPreprocessingConfig | None = None,
+        image_config: ImagePreprocessingConfig | None = None,
+        live_config: LivePreprocessingConfig | None = None,
     ) -> None:
         if not isinstance(calibration, SensorCalibration):
             raise TypeError("calibration must be a SensorCalibration")
         if not isinstance(clock_mapper, SegmentedClockMapper):
             raise TypeError("clock_mapper must be a SegmentedClockMapper")
-        if calibration.placeholder and not allow_placeholder_calibration:
-            raise SensorPreprocessingError(
-                "placeholder calibration requires explicit opt-in"
-            )
+        if recorded_config is not None and not isinstance(
+            recorded_config, RecordedPreprocessingConfig
+        ):
+            raise TypeError("recorded_config must be a RecordedPreprocessingConfig")
+        if image_config is not None and not isinstance(
+            image_config, ImagePreprocessingConfig
+        ):
+            raise TypeError("image_config must be an ImagePreprocessingConfig")
+        if live_config is not None and not isinstance(
+            live_config, LivePreprocessingConfig
+        ):
+            raise TypeError("live_config must be a LivePreprocessingConfig")
         self.calibration = calibration
         self.clock_mapper = clock_mapper
+        self.recorded_config = recorded_config or RecordedPreprocessingConfig()
+        self.image_config = image_config or ImagePreprocessingConfig()
+        self.live_config = live_config or LivePreprocessingConfig()
         self._map_x: NDArray[np.float32] | None = None
         self._map_y: NDArray[np.float32] | None = None
         self._initialize_rectification_maps()
@@ -316,32 +411,43 @@ class SensorPreprocessingPipeline:
         cls,
         calibration_path: str | Path,
         clock_mapper: SegmentedClockMapper,
-        *,
-        allow_placeholder_calibration: bool = False,
     ) -> SensorPreprocessingPipeline:
         """从标定文件构造 pipeline，时钟映射由当前采集会话提供。"""
 
-        calibration = SensorCalibration.load(
-            calibration_path,
-            allow_placeholder=allow_placeholder_calibration,
-        )
+        return cls(SensorCalibration.load(calibration_path), clock_mapper)
+
+    @classmethod
+    def from_config_file(
+        cls,
+        config_path: str | Path,
+        clock_mapper: SegmentedClockMapper,
+    ) -> SensorPreprocessingPipeline:
+        """读取模块 YAML 和其中选定的标定文件，构造完整 pipeline。"""
+
+        config = SensorPreprocessingConfig.load(config_path)
         return cls(
-            calibration,
+            SensorCalibration.load(config.calibration_file),
             clock_mapper,
-            allow_placeholder_calibration=allow_placeholder_calibration,
+            recorded_config=config.recorded,
+            image_config=config.image,
+            live_config=config.live,
         )
 
     def iter_recorded_session(
         self,
         session_directory: str | Path,
         *,
-        verify_media_hashes: bool = True,
+        verify_media_hashes: bool | None = None,
     ) -> Iterator[PreparedFrameBundle]:
         """按 clip 和帧顺序解码一个已完成会话，并组装对应 IMU 时间窗。"""
 
         reader = CaptureSessionReader.open(
             session_directory,
-            verify_media_hashes=verify_media_hashes,
+            verify_media_hashes=(
+                self.recorded_config.verify_media_hashes
+                if verify_media_hashes is None
+                else verify_media_hashes
+            ),
         )
         if reader.session.session_id != self.clock_mapper.session_id:
             raise SensorPreprocessingError(
@@ -407,6 +513,9 @@ class SensorPreprocessingPipeline:
             frame_time.session_time_ns,
         )
         frame_imu = tuple(pending_imu[:split_at])
+        remaining_imu = pending_imu[split_at:]
+        if len(remaining_imu) > self.live_config.max_pending_imu_samples:
+            raise SensorPreprocessingError("live pending IMU buffer limit exceeded")
         bundle = self._build_bundle(
             decoded_frame,
             session_id=frame_input.session_id,
@@ -416,7 +525,7 @@ class SensorPreprocessingPipeline:
             rotation_degrees=frame_input.rotation_degrees,
             imu_samples=frame_imu,
         )
-        self._pending_live_imu = pending_imu[split_at:]
+        self._pending_live_imu = remaining_imu
         self._live_session_id = frame_input.session_id
         self._last_live_frame_time_ns = frame_time.session_time_ns
         return bundle
@@ -431,6 +540,8 @@ class SensorPreprocessingPipeline:
     def _initialize_rectification_maps(self) -> None:
         """只计算一次 OpenCV 去畸变映射，避免逐帧重复准备。"""
 
+        if not self.image_config.undistort:
+            return
         camera_matrix = np.asarray(self.calibration.camera_matrix, dtype=np.float64)
         rectified_matrix = np.asarray(
             self.calibration.rectified_camera_matrix,
@@ -470,7 +581,11 @@ class SensorPreprocessingPipeline:
         sentinel = object()
         try:
             with av.open(str(clip.media_path), mode="r") as container:
-                decoded_frames = container.decode(video=0)
+                video_stream = container.streams.video[0]
+                video_stream.codec_context.thread_count = (
+                    self.recorded_config.decode_threads
+                )
+                decoded_frames = container.decode(video_stream)
                 pairs = zip_longest(decoded_frames, frame_refs, fillvalue=sentinel)
                 for decoded_frame, frame_ref in pairs:
                     if decoded_frame is sentinel or frame_ref is sentinel:
@@ -641,8 +756,8 @@ class SensorPreprocessingPipeline:
                 image,
                 self._map_x,
                 self._map_y,
-                interpolation=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
+                interpolation=_CV_INTERPOLATIONS[self.image_config.interpolation],
+                borderMode=_CV_BORDER_MODES[self.image_config.border_mode],
             )
         image = np.ascontiguousarray(image, dtype=np.uint8)
         image.setflags(write=False)

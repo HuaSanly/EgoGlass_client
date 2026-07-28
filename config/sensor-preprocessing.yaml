@@ -1,0 +1,22 @@
+# Sensor preprocessing runtime configuration.
+schema_version: "1.0"
+
+# Relative paths are resolved from this YAML file's directory.
+calibration_file: sensor-calibration.sample.json
+
+recorded:
+  # Verify every MP4 against the SHA256 recorded in the session manifest.
+  verify_media_hashes: true
+  # FFmpeg decoder worker count. Zero lets FFmpeg select automatically.
+  decode_threads: 0
+
+image:
+  undistort: true
+  # nearest | linear | cubic | area | lanczos4
+  interpolation: linear
+  # constant | replicate | reflect | reflect_101
+  border_mode: constant
+
+live:
+  # Maximum future IMU samples retained between decoded video frames.
+  max_pending_imu_samples: 2048

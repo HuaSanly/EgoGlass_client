@@ -8,6 +8,7 @@ from pathlib import Path
 import av
 import numpy as np
 import pytest
+import yaml
 from av import VideoFrame
 
 from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
@@ -29,6 +30,7 @@ from perception.sensor_preprocessing import (
     LiveImuInput,
     SegmentedClockMapper,
     SensorCalibration,
+    SensorPreprocessingConfig,
     SensorPreprocessingError,
     SensorPreprocessingPipeline,
     TimeObservation,
@@ -48,7 +50,6 @@ def _calibration_payload(
     width: int = 8,
     height: int = 6,
     rotation_degrees: int = 0,
-    placeholder: bool = True,
 ) -> dict[str, object]:
     calibrated_width, calibrated_height = (
         (height, width) if rotation_degrees in {90, 270} else (width, height)
@@ -61,7 +62,6 @@ def _calibration_payload(
     return {
         "schema_version": "1.0",
         "profile_name": "tiny-test-calibration",
-        "placeholder": placeholder,
         "capture_config_id": "tiny",
         "source_width": width,
         "source_height": height,
@@ -97,6 +97,36 @@ def _calibration_payload(
 def _write_calibration(path: Path, **overrides: object) -> Path:
     payload = _calibration_payload(**overrides)
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _write_preprocessing_config(
+    path: Path,
+    calibration_file: str | Path,
+    *,
+    verify_media_hashes: bool = True,
+    decode_threads: int = 0,
+    undistort: bool = True,
+    max_pending_imu_samples: int = 2048,
+    extra: dict[str, object] | None = None,
+) -> Path:
+    payload: dict[str, object] = {
+        "schema_version": "1.0",
+        "calibration_file": str(calibration_file),
+        "recorded": {
+            "verify_media_hashes": verify_media_hashes,
+            "decode_threads": decode_threads,
+        },
+        "image": {
+            "undistort": undistort,
+            "interpolation": "linear",
+            "border_mode": "constant",
+        },
+        "live": {"max_pending_imu_samples": max_pending_imu_samples},
+    }
+    if extra:
+        payload.update(extra)
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path
 
 
@@ -137,7 +167,6 @@ def _pipeline(calibration: SensorCalibration) -> SensorPreprocessingPipeline:
     return SensorPreprocessingPipeline(
         calibration,
         SegmentedClockMapper(SESSION_ID, (_segment(),)),
-        allow_placeholder_calibration=True,
     )
 
 
@@ -177,31 +206,46 @@ def _live_imu(sample_id: int, timestamp_ns: int) -> LiveImuInput:
     )
 
 
-def test_repository_sample_calibration_is_explicitly_placeholder() -> None:
-    path = Path(__file__).parents[1] / "config" / "sensor-calibration.sample.json"
+def test_repository_config_selects_sample_calibration() -> None:
+    config_directory = Path(__file__).parents[1] / "config"
+    config = SensorPreprocessingConfig.load(
+        config_directory / "sensor-preprocessing.yaml"
+    )
+    calibration = SensorCalibration.load(config.calibration_file)
 
-    with pytest.raises(SensorPreprocessingError, match="explicit opt-in"):
-        SensorCalibration.load(path)
-
-    calibration = SensorCalibration.load(path, allow_placeholder=True)
-
-    assert calibration.placeholder is True
+    assert config.calibration_file == (
+        config_directory / "sensor-calibration.sample.json"
+    ).resolve()
+    assert calibration.profile_name == "rokid-glass3-720p30-sample"
     assert calibration.calibrated_width == 720
     assert calibration.calibrated_height == 1280
     assert calibration.calibration_profile_id.startswith("sensor-calibration-v1-")
 
 
-def test_pipeline_constructor_rejects_placeholder_without_opt_in(tmp_path: Path) -> None:
-    calibration = SensorCalibration.load(
-        _write_calibration(tmp_path / "calibration.json"),
-        allow_placeholder=True,
+def test_preprocessing_config_rejects_unknown_fields(tmp_path: Path) -> None:
+    calibration_path = _write_calibration(tmp_path / "calibration.json")
+    config_path = _write_preprocessing_config(
+        tmp_path / "sensor-preprocessing.yaml",
+        calibration_path.name,
+        extra={"unknown_setting": True},
     )
 
-    with pytest.raises(SensorPreprocessingError, match="explicit opt-in"):
-        SensorPreprocessingPipeline(
-            calibration,
-            SegmentedClockMapper(SESSION_ID, (_segment(),)),
-        )
+    with pytest.raises(SensorPreprocessingError, match="invalid sensor preprocessing"):
+        SensorPreprocessingConfig.load(config_path)
+
+
+def test_preprocessing_config_rejects_string_instead_of_boolean(tmp_path: Path) -> None:
+    calibration_path = _write_calibration(tmp_path / "calibration.json")
+    config_path = _write_preprocessing_config(
+        tmp_path / "sensor-preprocessing.yaml",
+        calibration_path.name,
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload["recorded"]["verify_media_hashes"] = "false"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(SensorPreprocessingError, match="invalid sensor preprocessing"):
+        SensorPreprocessingConfig.load(config_path)
 
 
 def test_calibration_rejects_dimensions_inconsistent_with_rotation(tmp_path: Path) -> None:
@@ -211,7 +255,7 @@ def test_calibration_rejects_dimensions_inconsistent_with_rotation(tmp_path: Pat
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(SensorPreprocessingError, match="invalid sensor calibration"):
-        SensorCalibration.load(path, allow_placeholder=True)
+        SensorCalibration.load(path)
 
 
 def test_live_pipeline_reuses_decoded_frame_and_windows_imu(tmp_path: Path) -> None:
@@ -219,8 +263,7 @@ def test_live_pipeline_reuses_decoded_frame_and_windows_imu(tmp_path: Path) -> N
         _write_calibration(
             tmp_path / "calibration.json",
             rotation_degrees=90,
-        ),
-        allow_placeholder=True,
+        )
     )
     pipeline = _pipeline(calibration)
     image = np.arange(6 * 8 * 3, dtype=np.uint8).reshape((6, 8, 3))
@@ -249,7 +292,7 @@ def test_live_pipeline_applies_nonzero_distortion_map(tmp_path: Path) -> None:
     payload["distortion_coefficients"] = [0.5, 0.1, 0.0, 0.0, 0.0]
     calibration_path = tmp_path / "calibration.json"
     calibration_path.write_text(json.dumps(payload), encoding="utf-8")
-    calibration = SensorCalibration.load(calibration_path, allow_placeholder=True)
+    calibration = SensorCalibration.load(calibration_path)
     pipeline = _pipeline(calibration)
     image = np.arange(24 * 32 * 3, dtype=np.uint8).reshape((24, 32, 3))
     decoded_frame = VideoFrame.from_ndarray(image, format="bgr24")
@@ -268,10 +311,72 @@ def test_live_pipeline_applies_nonzero_distortion_map(tmp_path: Path) -> None:
     assert not np.array_equal(bundle.image_bgr, image)
 
 
+def test_yaml_config_can_disable_undistortion(tmp_path: Path) -> None:
+    payload = _calibration_payload(width=32, height=24)
+    payload["distortion_coefficients"] = [0.5, 0.1, 0.0, 0.0, 0.0]
+    calibration_path = tmp_path / "calibration.json"
+    calibration_path.write_text(json.dumps(payload), encoding="utf-8")
+    config_path = _write_preprocessing_config(
+        tmp_path / "sensor-preprocessing.yaml",
+        calibration_path.name,
+        undistort=False,
+    )
+    pipeline = SensorPreprocessingPipeline.from_config_file(
+        config_path,
+        SegmentedClockMapper(SESSION_ID, (_segment(),)),
+    )
+    image = np.arange(24 * 32 * 3, dtype=np.uint8).reshape((24, 32, 3))
+    frame_input = LiveFrameInput(
+        session_id=SESSION_ID,
+        stream_id="live-stream-1",
+        frame_index=0,
+        time_observation=_observation(1, TimestampSemantic.CAMERA_CALLBACK),
+        rotation_degrees=0,
+        capture_config_id="tiny",
+    )
+
+    bundle = pipeline.process_live_frame(
+        VideoFrame.from_ndarray(image, format="bgr24"),
+        frame_input,
+    )
+
+    assert np.array_equal(bundle.image_bgr, image)
+
+
+def test_yaml_live_imu_limit_rejects_without_committing_state(tmp_path: Path) -> None:
+    calibration_path = _write_calibration(
+        tmp_path / "calibration.json",
+        rotation_degrees=90,
+    )
+    config_path = _write_preprocessing_config(
+        tmp_path / "sensor-preprocessing.yaml",
+        calibration_path.name,
+        max_pending_imu_samples=1,
+    )
+    pipeline = SensorPreprocessingPipeline.from_config_file(
+        config_path,
+        SegmentedClockMapper(SESSION_ID, (_segment(),)),
+    )
+    frame = VideoFrame.from_ndarray(
+        np.zeros((6, 8, 3), dtype=np.uint8),
+        format="bgr24",
+    )
+
+    with pytest.raises(SensorPreprocessingError, match="buffer limit"):
+        pipeline.process_live_frame(
+            frame,
+            _live_frame_input(0, 20_000_000),
+            (_live_imu(1, 25_000_000), _live_imu(2, 30_000_000)),
+        )
+
+    bundle = pipeline.process_live_frame(frame, _live_frame_input(0, 20_000_000))
+
+    assert bundle.imu_samples == ()
+
+
 def test_live_pipeline_rejects_config_mismatch(tmp_path: Path) -> None:
     calibration = SensorCalibration.load(
-        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90),
-        allow_placeholder=True,
+        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90)
     )
     pipeline = _pipeline(calibration)
     frame = VideoFrame.from_ndarray(np.zeros((6, 8, 3), dtype=np.uint8), format="bgr24")
@@ -290,8 +395,7 @@ def test_live_pipeline_rejects_config_mismatch(tmp_path: Path) -> None:
 
 def test_live_pipeline_rejects_late_imu_and_regressing_frames(tmp_path: Path) -> None:
     calibration = SensorCalibration.load(
-        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90),
-        allow_placeholder=True,
+        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90)
     )
     frame = VideoFrame.from_ndarray(np.zeros((6, 8, 3), dtype=np.uint8), format="bgr24")
     pipeline = _pipeline(calibration)
@@ -309,13 +413,11 @@ def test_live_pipeline_rejects_late_imu_and_regressing_frames(tmp_path: Path) ->
 
 def test_pipeline_rejects_unmapped_frame_time(tmp_path: Path) -> None:
     calibration = SensorCalibration.load(
-        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90),
-        allow_placeholder=True,
+        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90)
     )
     pipeline = SensorPreprocessingPipeline(
         calibration,
         SegmentedClockMapper(SESSION_ID, ()),
-        allow_placeholder_calibration=True,
     )
     frame = VideoFrame.from_ndarray(np.zeros((6, 8, 3), dtype=np.uint8), format="bgr24")
 
@@ -434,12 +536,22 @@ def _recorded_session(root: Path) -> tuple[Path, list[tuple[int, Fraction]]]:
     return session_directory, timings
 
 
-def test_recorded_pipeline_decodes_once_and_assembles_imu_windows(tmp_path: Path) -> None:
+def test_recorded_pipeline_applies_yaml_and_assembles_imu_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session_directory, timings = _recorded_session(tmp_path)
-    calibration = SensorCalibration.load(
-        _write_calibration(tmp_path / "calibration.json"),
-        allow_placeholder=True,
+    calibration_path = _write_calibration(tmp_path / "calibration.json")
+    config_path = _write_preprocessing_config(
+        tmp_path / "sensor-preprocessing.yaml",
+        calibration_path.name,
+        verify_media_hashes=False,
+        decode_threads=1,
     )
+    manifest_path = session_directory / "session.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["clips"][0]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     first_pts, time_base = timings[0]
     last_pts, last_time_base = timings[-1]
     assert last_time_base == time_base
@@ -457,14 +569,38 @@ def test_recorded_pipeline_decodes_once_and_assembles_imu_windows(tmp_path: Path
         scale_numerator_ns=1_000_000_000 * time_base.numerator,
         scale_denominator_source_units=time_base.denominator,
     )
-    pipeline = SensorPreprocessingPipeline(
-        calibration,
+    pipeline = SensorPreprocessingPipeline.from_config_file(
+        config_path,
         SegmentedClockMapper(SESSION_ID, (_segment(), mp4_segment)),
-        allow_placeholder_calibration=True,
     )
+
+    real_av_open = av.open
+    observed_decode_threads: list[int] = []
+
+    class TrackingInputContainer:
+        def __init__(self, container: av.container.InputContainer) -> None:
+            self._container = container
+            self.streams = container.streams
+
+        def __enter__(self) -> TrackingInputContainer:
+            self._container.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self._container.__exit__(*args)
+
+        def decode(self, stream: av.video.stream.VideoStream):
+            observed_decode_threads.append(stream.codec_context.thread_count)
+            return self._container.decode(stream)
+
+    def tracking_av_open(*args: object, **kwargs: object) -> TrackingInputContainer:
+        return TrackingInputContainer(real_av_open(*args, **kwargs))
+
+    monkeypatch.setattr(av, "open", tracking_av_open)
 
     bundles = list(pipeline.iter_recorded_session(session_directory))
 
+    assert observed_decode_threads == [1]
     assert [bundle.frame_index for bundle in bundles] == [0, 1]
     assert bundles[0].imu_samples == ()
     assert [sample.sample_id for sample in bundles[1].imu_samples] == [1, 2]

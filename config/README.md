@@ -5,8 +5,12 @@ named files such as `capture.toml`, `spatial-perception.toml`,
 `interaction-processing.toml`, and `dataset-builder.toml` only after their
 contracts and supported parameters are defined.
 
-`sensor-calibration.sample.json` is an interface-only placeholder for the
-sensor-preprocessing pipeline. Its zero distortion, guessed intrinsics, IMU
-noise values, and identity Camera-to-IMU transform are not measured Glass3
-calibration. Runtime code rejects it unless placeholder use is explicitly
-enabled.
+`sensor-preprocessing.yaml` is the sensor-preprocessing runtime configuration.
+It selects the calibration JSON and controls the common recorded, image, and
+live-path settings. Relative file paths are resolved from the YAML directory.
+
+`sensor-calibration.sample.json` exercises the calibration interface. Its zero
+distortion, guessed intrinsics, IMU noise values, and identity Camera-to-IMU
+transform are not measured Glass3 calibration. The pipeline loads whichever
+calibration file `sensor-preprocessing.yaml` selects, without a separate
+classification or opt-in flag.

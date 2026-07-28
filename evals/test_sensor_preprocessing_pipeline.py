@@ -18,7 +18,7 @@ from perception.sensor_preprocessing import (
 )
 
 
-def test_placeholder_profile_exercises_the_real_720p30_live_boundary() -> None:
+def test_repository_profile_exercises_the_real_720p30_live_boundary() -> None:
     session_id = "pipeline-eval-session"
     connection_id = "pipeline-eval-connection"
     instance_id = glasses_elapsed_source_instance_id(session_id, connection_id)
@@ -39,13 +39,12 @@ def test_placeholder_profile_exercises_the_real_720p30_live_boundary() -> None:
         provenance_id="pipeline-eval",
         uncertainty_basis="fixed_eval_bound",
     )
-    calibration_path = (
-        Path(__file__).parents[1] / "config" / "sensor-calibration.sample.json"
+    config_path = (
+        Path(__file__).parents[1] / "config" / "sensor-preprocessing.yaml"
     )
-    pipeline = SensorPreprocessingPipeline.from_calibration_file(
-        calibration_path,
+    pipeline = SensorPreprocessingPipeline.from_config_file(
+        config_path,
         SegmentedClockMapper(session_id, (segment,)),
-        allow_placeholder_calibration=True,
     )
     frame_observation = TimeObservation(
         session_id=session_id,
@@ -92,5 +91,5 @@ def test_placeholder_profile_exercises_the_real_720p30_live_boundary() -> None:
     assert bundle.image_bgr.shape == (1280, 720, 3)
     assert bundle.session_time_ns == 20_000_000
     assert bundle.imu_samples[0].session_time_ns == 10_000_000
-    assert bundle.calibration.placeholder is True
+    assert bundle.calibration.profile_name == "rokid-glass3-720p30-sample"
     assert bundle.timestamp_semantic is TimestampSemantic.CAMERA_CALLBACK

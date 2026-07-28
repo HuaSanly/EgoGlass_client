@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
-  "profile_name": "rokid-glass3-720p30-placeholder",
-  "placeholder": true,
+  "profile_name": "rokid-glass3-720p30-sample",
   "capture_config_id": "720p30",
   "source_width": 1280,
   "source_height": 720,
@@ -34,9 +33,9 @@
     "gyroscope_random_walk_rad_s2_sqrt_hz": 0.0002
   },
   "provenance": {
-    "source": "placeholder values for pipeline integration only",
+    "source": "unmeasured sample values for pipeline integration only",
     "tool": "none",
     "tool_version": "none",
-    "evidence_id": "unverified-placeholder-2026-07-28"
+    "evidence_id": "unverified-sample-2026-07-28"
   }
 }
