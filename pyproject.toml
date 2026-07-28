@@ -7,7 +7,7 @@ name = "egoglass-client"
 version = "0.1.0"
 description = "EgoGlass Windows client and perception modules"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11,<3.13"
 license = { text = "Proprietary" }
 dependencies = [
   "aiortc>=1.15,<2",
@@ -41,6 +41,47 @@ packages = [
   "src/perception",
 ]
 
+[tool.hatch.build]
+exclude = [
+  "/.venv",
+  "/build",
+  "/dist",
+  "/local-data",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[project.optional-dependencies]
+hand-tracking = [
+  "easy_ViTPose @ git+https://github.com/JunkyByte/easy_ViTPose.git@bb9860359e55b099a507c8000e360d48a27cc36d",
+  "einops==0.8.2",
+  "filterpy==1.4.5",
+  "gdown==6.1.0",
+  "huggingface-hub==1.25.1",
+  "mediapipe==1.0.0",
+  "pandas==3.0.5",
+  "pyrender==0.1.45",
+  "pytorch-lightning==2.6.5",
+  "roma==1.5.7",
+  "scikit-image==0.26.0",
+  "smplx==0.1.28",
+  "timm==1.0.28",
+  "torch==2.5.1",
+  "torchvision==0.20.1",
+  "ultralytics==8.3.107",
+  "webdataset==1.0.2",
+  "xtcocotools==1.14.3",
+  "yacs==0.1.8",
+]
+
+[tool.egoglass.hand-tracking]
+# These packages require HumanEgo's --no-deps/special-patch install path.
+hamer_revision = "3a01849f4148352e9260b69bf28b65d1671a4905"
+wilor_mini_revision = "ebec42f94c389070cdd7dda6fd1bf0b4a659c960"
+chumpy_version = "0.70"
+setup_script = "scripts/setup_hand_tracking.ps1"
+
 [tool.pytest.ini_options]
 addopts = "-q"
 pythonpath = [".", "src"]
@@ -48,7 +89,16 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

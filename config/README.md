@@ -14,3 +14,7 @@ distortion, guessed intrinsics, IMU noise values, and identity Camera-to-IMU
 transform are not measured Glass3 calibration. The pipeline loads whichever
 calibration file `sensor-preprocessing.yaml` selects, without a separate
 classification or opt-in flag.
+
+`hand-tracking.yaml` selects the native Windows CUDA device, detector fallback,
+confidence/geometry thresholds, ignored model directory, and exact upstream
+code and model revisions for the HumanEgo-compatible HaMeR pipeline.

@@ -14,7 +14,7 @@ src/
   operator_console/          # Native UI, annotation, and annotation persistence
   perception/                # Independently reusable perception core
     sensor_preprocessing/    # Sensor time, calibration binding, and preparation
-    spatial_perception/      # Planned VIO, hands, and coordinate fusion
+    spatial_perception/      # HaMeR hands; planned VIO and coordinate fusion
 config/                      # Shared client configuration
 tests/                       # Fast tests, named with package prefixes
 evals/                       # Periodic evaluations and device evidence
@@ -24,12 +24,14 @@ docs/                        # Component-specific operation notes
 ```
 
 The `perception` package isolates the research and runtime core from the ingest
-gateway and operator console. It contains no copied HumanEgo or other
-third-party algorithm code yet.
+gateway and operator console. Hand tracking adapts HumanEgo's
+ViTPose/MediaPipe + HaMeR pipeline under its noncommercial license; source and
+license records live beside the adapted module.
 
 Detailed notes are available in [ingest gateway](docs/ingest-gateway.md),
 [operator console](docs/operator-console.md),
 [sensor preprocessing](docs/sensor-preprocessing.md),
+[hand tracking](docs/hand-tracking.md),
 [spatial perception](docs/spatial-perception.md),
 [interaction processing](docs/interaction-processing.md), and
 [dataset builder](docs/dataset-builder.md).
@@ -43,6 +45,16 @@ uv sync --group dev
 ```
 
 This creates the only workspace environment at `.venv/`.
+
+HaMeR uses a separate native Windows Conda environment because its verified
+baseline is Python 3.11, PyTorch 2.5.1, and CUDA 12.1:
+
+```powershell
+.\scripts\setup_hand_tracking.ps1
+conda run -n egoglass-hamer python scripts\download_hand_tracking_models.py
+```
+
+Neither command imports or executes `reference_code/HumanEgo`.
 
 ## Windows Client
 
@@ -76,4 +88,11 @@ The ignored output is `dist/EgoGlass/EgoGlass.exe`.
 uv run pytest
 uv run pytest -q evals
 uv run ruff check src tests evals
+```
+
+Run the CUDA model eval from the HaMeR environment:
+
+```powershell
+$env:EGOGLASS_RUN_HAND_MODEL_EVAL = "1"
+conda run -n egoglass-hamer python -m pytest -q -s evals\test_hand_tracking_model.py
 ```
