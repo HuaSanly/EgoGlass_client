@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -23,6 +24,8 @@ from ingest_gateway.recording_models import (
 from ingest_gateway.webrtc_models import ImuSample
 from ingest_gateway.webrtc_models import ImuSensorType as GatewayImuSensorType
 from perception.sensor_preprocessing import (
+    AlignmentStatus,
+    CaptureSessionReader,
     ClockId,
     ClockMappingSegment,
     ImuSensorType,
@@ -33,6 +36,7 @@ from perception.sensor_preprocessing import (
     SensorPreprocessingConfig,
     SensorPreprocessingError,
     SensorPreprocessingPipeline,
+    StoredAlignment,
     TimeObservation,
     TimestampSemantic,
     TimeStatus,
@@ -610,3 +614,32 @@ def test_recorded_pipeline_applies_yaml_and_assembles_imu_windows(
         bundle.timestamp_semantic is TimestampSemantic.MEDIA_PRESENTATION
         for bundle in bundles
     )
+
+
+def test_recorded_frame_reuses_persisted_alignment_without_clock_segments(
+    tmp_path: Path,
+) -> None:
+    session_directory, _ = _recorded_session(tmp_path)
+    reader = CaptureSessionReader.open(session_directory)
+    raw_frame = next(reader.iter_frames(CLIP_ID))
+    mapped_frame = replace(
+        raw_frame,
+        stored_alignment=StoredAlignment(
+            status=AlignmentStatus.MAPPED,
+            session_time_ns=123_000_000,
+            uncertainty_ns=2_000_000,
+            clock_mapping_segment_id="persisted-segment-1",
+        ),
+    )
+    calibration = SensorCalibration.load(_write_calibration(tmp_path / "calibration.json"))
+    pipeline = SensorPreprocessingPipeline(
+        calibration,
+        SegmentedClockMapper(SESSION_ID, ()),
+    )
+
+    estimate = pipeline._map_recorded_frame(mapped_frame)
+
+    assert estimate.session_time_ns == 123_000_000
+    assert estimate.uncertainty_ns == 2_000_000
+    assert estimate.clock_mapping_id == "persisted-segment-1"
+    assert estimate.status is TimeStatus.ESTIMATED

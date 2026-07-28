@@ -31,7 +31,8 @@ def test_one_command_launcher_owns_all_process_lifecycles() -> None:
     assert "DataPort" not in script
     assert "8780" not in script
     assert "operator_console.desktop" in script
-    assert ".venv\\Scripts\\python.exe" in script
+    assert "conda info --base" in script
+    assert "envs\\$EnvironmentName\\python.exe" in script
     assert "services\\" not in script
     assert "Wait-DataPlatformHealth" not in script
     assert "EGOGLASS_DATA_PLATFORM_ORIGIN" not in script

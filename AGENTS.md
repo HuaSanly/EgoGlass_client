@@ -40,10 +40,10 @@ It does not own Android capture internals or offline model training.
 
 ## Client workspace boundaries
 
-The client is one Python workspace with one root `pyproject.toml`, one
-`uv.lock`, one `.venv`, one `tests/` directory, and one `evals/` directory.
-Do not add package-local environments, lock files, test trees, eval trees, or
-project manifests.
+The client uses one native Windows Conda environment named `egoglass`, one root
+`environment.yml`, one root `pyproject.toml`, one `tests/` directory, and one
+`evals/` directory. Do not add package-local environments, lock files, test
+trees, eval trees, or project manifests.
 
 Top-level code packages live directly under `src/` and use concise
 responsibility names: `ingest_gateway`, `operator_console`, and `perception`.
@@ -60,8 +60,10 @@ ingest contract must preserve the source format and timestamps.
 
 ## Python rules
 
-- Use the repository-selected Python version and the committed root lock file.
-  Do not mix package managers or create nested Python projects in this subtree.
+- Use Python 3.11 from the repository Conda environment. Do not use `uv`,
+  virtualenvs, package-local environments, or nested Python projects in this
+  subtree. Third-party HaMeR compatibility installs remain recorded in
+  `scripts/setup_client.ps1`.
 - Use type hints at service boundaries and validate all external messages.
 - Use UTC for wall-clock times and explicit monotonic clocks for durations.
   Never compare timestamps from different clocks without a recorded mapping.
@@ -76,8 +78,9 @@ ingest contract must preserve the source format and timestamps.
 
 - Package tests and evals live in the shared root directories and use the
   owning package name as a filename prefix.
-- Run `uv run pytest`, `uv run pytest -q evals`, and
-  `uv run ruff check src tests evals` from the client root.
+- Run `conda run -n egoglass python -m pytest`,
+  `conda run -n egoglass python -m pytest -q evals`, and
+  `conda run -n egoglass ruff check src tests evals` from the client root.
 - Ingest tests cover reorder, duplicate, disconnect, resume, malformed metadata,
   backpressure, and clock discontinuity.
 - Data tests cover idempotent registration, alignment bounds, corrections,

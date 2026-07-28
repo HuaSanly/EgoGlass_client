@@ -38,6 +38,50 @@ from ingest_gateway.webrtc_runtime import (
 PAIRING_TOKEN = "api-pairing-token-123456"
 
 
+class HandTrackingApiRuntime:
+    def __init__(self, video_path: Path) -> None:
+        self.video_path = video_path
+        self.replay_requests: list[str] = []
+        self.closed = False
+
+    async def status(self) -> dict[str, object]:
+        return {
+            "schema_version": "1.0",
+            "state": "ready",
+            "detail": "latest result is ready",
+            "live_frames_received": 3,
+            "live_frames_dropped": 1,
+            "live_inferences": 2,
+            "latest_preview_available": True,
+            "latest_result": None,
+            "last_error": None,
+            "replay": {
+                "state": "idle",
+                "detail": "no replay requested",
+                "frames_processed": 0,
+                "frame_total": 0,
+                "report": None,
+            },
+        }
+
+    async def latest_preview(self) -> bytes:
+        return b"jpeg-preview"
+
+    async def start_replay(self, session_id: str) -> None:
+        self.replay_requests.append(session_id)
+
+    async def replay_video_path(
+        self,
+        _session_id: str,
+        _run_id: str,
+        _clip_id: str,
+    ) -> Path:
+        return self.video_path
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class ViewerRuntime:
     async def accept_viewer_offer(self, offer: WebRtcViewerOffer) -> WebRtcViewerAnswer:
         assert "viewer-offer" in offer.sdp
@@ -609,3 +653,41 @@ def test_cli_disables_high_frequency_preview_access_logs(monkeypatch, capsys) ->
     assert captured["access_log"] is False
     assert PAIRING_TOKEN not in capsys.readouterr().out
     assert captured["app"].state.discovery_service is not None
+
+
+def test_hand_tracking_status_preview_and_replay_are_loopback_only(tmp_path: Path) -> None:
+    video = tmp_path / "replay.mp4"
+    video.write_bytes(b"mp4-data")
+    runtime = HandTrackingApiRuntime(video)
+    session_id = "a" * 32
+    clip_id = "b" * 32
+    run_id = "20260728T120000Z-abcd1234"
+    app = create_app(
+        perception_runtime=runtime,  # type: ignore[arg-type]
+        viewer_allowed_hosts=frozenset({"testclient"}),
+    )
+
+    with TestClient(app) as client:
+        status = client.get("/api/v1/perception/hand-tracking/status")
+        preview = client.get("/api/v1/perception/hand-tracking/preview.jpg")
+        replay = client.post(
+            "/api/v1/perception/hand-tracking/replays",
+            json={"session_id": session_id},
+        )
+        media = client.get(
+            f"/api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}"
+        )
+
+    assert status.status_code == 200
+    assert status.json()["live_inferences"] == 2
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "image/jpeg"
+    assert preview.content == b"jpeg-preview"
+    assert replay.status_code == 202
+    assert runtime.replay_requests == [session_id]
+    assert media.content == b"mp4-data"
+    assert runtime.closed is True
+
+    remote_app = create_app(perception_runtime=HandTrackingApiRuntime(video))  # type: ignore[arg-type]
+    with TestClient(remote_app) as client:
+        assert client.get("/api/v1/perception/hand-tracking/status").status_code == 403

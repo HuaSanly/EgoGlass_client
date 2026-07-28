@@ -44,10 +44,20 @@ const elements = {
   currentSessionSync: document.querySelector("#current-session-sync"),
   newSessionButton: document.querySelector("#new-session-button"),
   fullscreenButton: document.querySelector("#fullscreen-button"),
-  clearEventsButton: document.querySelector("#clear-events-button"),
-  eventRows: document.querySelector("#event-rows"),
-  eventEmpty: document.querySelector("#event-empty"),
-  eventCount: document.querySelector("#event-count"),
+  handTrackingState: document.querySelector("#hand-tracking-state"),
+  handTrackingPreview: document.querySelector("#hand-tracking-preview"),
+  handTrackingEmpty: document.querySelector("#hand-tracking-empty"),
+  handTrackingDetail: document.querySelector("#hand-tracking-detail"),
+  handInputFrame: document.querySelector("#hand-input-frame"),
+  handInferenceTime: document.querySelector("#hand-inference-time"),
+  handInferenceCount: document.querySelector("#hand-inference-count"),
+  handDroppedCount: document.querySelector("#hand-dropped-count"),
+  leftHandReadout: document.querySelector("#left-hand-readout"),
+  rightHandReadout: document.querySelector("#right-hand-readout"),
+  replaySession: document.querySelector("#replay-session"),
+  startReplayButton: document.querySelector("#start-replay-button"),
+  replayProgress: document.querySelector("#replay-progress"),
+  handReplayVideo: document.querySelector("#hand-replay-video"),
   imuCanvas: document.querySelector("#imu-scene-canvas"),
   imuStatusPill: document.querySelector("#imu-status-pill"),
   imuEmpty: document.querySelector("#imu-empty"),
@@ -93,12 +103,17 @@ const state = {
   collectionCommandInFlight: false,
   collectionPollError: null,
   collectionCommandError: null,
+  handTrackingPollTimer: null,
+  handTrackingPollInFlight: false,
+  handTrackingStatus: null,
+  handTrackingError: null,
+  latestHandPreviewFrame: null,
+  replayRequestInFlight: false,
   imuPollTimer: null,
   imuPollInFlight: false,
   imuConnected: false,
   imuOrientationReady: false,
   imuSceneError: null,
-  events: [],
 };
 
 const viewerSignalingEndpoint =
@@ -106,6 +121,7 @@ const viewerSignalingEndpoint =
 const streamControlEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/control";
 const streamControlCommandEndpoint = `${streamControlEndpoint}/commands`;
 const imuStatusEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/imu/status";
+const handTrackingEndpoint = "http://127.0.0.1:8770/api/v1/perception/hand-tracking";
 const streamControlStates = new Set([
   "unavailable",
   "ready",
@@ -133,7 +149,6 @@ const recordingStateLabels = {
   finalizing: "正在封装 MP4 文件",
   error: "录制服务异常",
 };
-const maxEventHistory = 50;
 let imuScene = null;
 
 if (window.location.search) {
@@ -169,6 +184,12 @@ function scheduleCollectionPoll(delayMs = 1500) {
   window.clearTimeout(state.collectionPollTimer);
   if (document.hidden) return;
   state.collectionPollTimer = window.setTimeout(pollCollectionLibrary, delayMs);
+}
+
+function scheduleHandTrackingPoll(delayMs = 400) {
+  window.clearTimeout(state.handTrackingPollTimer);
+  if (document.hidden) return;
+  state.handTrackingPollTimer = window.setTimeout(pollHandTrackingStatus, delayMs);
 }
 
 function readStreamControlStatus(payload) {
@@ -462,6 +483,7 @@ async function pollCollectionLibrary() {
   } finally {
     state.collectionPollInFlight = false;
     renderCollectionOverview();
+    renderReplaySessionOptions();
     scheduleCollectionPoll();
   }
 }
@@ -520,37 +542,155 @@ async function pollRecordingStatus() {
 }
 
 function addEvent(level, event, detail) {
-  state.events.unshift({
-    time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
-    level,
-    event,
-    detail,
-  });
-  state.events = state.events.slice(0, maxEventHistory);
-  renderEvents();
+  const writer = ["WARN", "ERROR"].includes(level) ? console.warn : console.info;
+  writer(`[${level}] ${event}: ${detail}`);
 }
 
-function renderEvents() {
-  elements.eventRows.replaceChildren();
-  state.events.forEach((entry) => {
-    const row = document.createElement("tr");
-    const time = document.createElement("td");
-    const level = document.createElement("td");
-    const message = document.createElement("td");
-    const eventTitle = document.createElement("strong");
-    const eventDetail = document.createElement("span");
-    time.textContent = entry.time;
-    level.textContent = entry.level;
-    level.className = `event-level ${entry.level.toLowerCase()}`;
-    message.className = "event-message";
-    eventTitle.textContent = entry.event;
-    eventDetail.textContent = entry.detail;
-    message.append(eventTitle, eventDetail);
-    row.append(time, level, message);
-    elements.eventRows.append(row);
-  });
-  elements.eventEmpty.hidden = state.events.length > 0;
-  elements.eventCount.textContent = `${state.events.length} 条`;
+function readHandTrackingStatus(payload) {
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    payload.schema_version !== "1.0" ||
+    typeof payload.state !== "string" ||
+    payload.replay === null ||
+    typeof payload.replay !== "object"
+  ) {
+    throw new Error("接收网关返回了无效的手部感知状态");
+  }
+  return payload;
+}
+
+function renderHandReadout(element, hand) {
+  const title = element.querySelector("strong");
+  const detail = element.querySelector("small");
+  if (!hand) {
+    title.textContent = "未检测";
+    detail.textContent = "--";
+    return;
+  }
+  title.textContent = `${Math.round(hand.confidence * 100)}% · ${hand.reconstruction_backend}`;
+  detail.textContent = `${hand.metric_depth_status} · ${hand.is_grasping ? "抓握" : "展开"}`;
+}
+
+function renderReplaySessionOptions() {
+  const selected = elements.replaySession.value;
+  const sessions = (state.collectionLibrary?.sessions || []).filter(
+    (session) => session.state !== "active" && session.clips.length > 0,
+  );
+  elements.replaySession.replaceChildren();
+  if (sessions.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "暂无可回放会话";
+    elements.replaySession.append(option);
+  } else {
+    sessions.forEach((session) => {
+      const option = document.createElement("option");
+      option.value = session.session_id;
+      option.textContent = getSessionDisplayName(session);
+      elements.replaySession.append(option);
+    });
+    if (sessions.some((session) => session.session_id === selected)) {
+      elements.replaySession.value = selected;
+    }
+  }
+  elements.startReplayButton.disabled = sessions.length === 0 || state.replayRequestInFlight;
+}
+
+function renderHandTrackingStatus() {
+  const status = state.handTrackingStatus;
+  const result = status?.latest_result || null;
+  const labels = {
+    disabled: "已禁用",
+    idle: "等待视频",
+    loading: "模型运行中",
+    ready: "识别在线",
+    error: "识别异常",
+  };
+  elements.handTrackingState.textContent = status ? labels[status.state] || status.state : "不可用";
+  elements.handTrackingState.dataset.status = status?.state || "error";
+  elements.handTrackingDetail.textContent = state.handTrackingError || status?.detail || "等待接收网关";
+  elements.handInputFrame.textContent = result ? result.frame_index.toLocaleString("zh-CN") : "--";
+  elements.handInferenceTime.textContent = result
+    ? `${(result.inference_duration_ns / 1_000_000).toFixed(0)} ms`
+    : "--";
+  elements.handInferenceCount.textContent = (status?.live_inferences || 0).toLocaleString("zh-CN");
+  elements.handDroppedCount.textContent = (status?.live_frames_dropped || 0).toLocaleString("zh-CN");
+  const hands = result?.hands || [];
+  renderHandReadout(elements.leftHandReadout, hands.find((hand) => hand.handedness === "left"));
+  renderHandReadout(elements.rightHandReadout, hands.find((hand) => hand.handedness === "right"));
+
+  if (status?.latest_preview_available && result && state.latestHandPreviewFrame !== result.frame_index) {
+    state.latestHandPreviewFrame = result.frame_index;
+    elements.handTrackingPreview.src = `${handTrackingEndpoint}/preview.jpg?frame=${result.frame_index}`;
+    elements.handTrackingPreview.hidden = false;
+    elements.handTrackingEmpty.hidden = true;
+  }
+
+  const replay = status?.replay;
+  if (replay?.state === "running") {
+    const percent = replay.frame_total > 0
+      ? Math.round((replay.frames_processed / replay.frame_total) * 100)
+      : 0;
+    elements.replayProgress.textContent = `${percent}% · ${replay.frames_processed}/${replay.frame_total}`;
+  } else {
+    elements.replayProgress.textContent = replay?.detail || "未运行";
+  }
+  const firstVideo = replay?.report?.videos?.[0];
+  if (firstVideo) {
+    const videoUrl = `${handTrackingEndpoint}/replays/${replay.report.session_id}/${replay.report.run_id}/${firstVideo.clip_id}`;
+    if (elements.handReplayVideo.dataset.source !== videoUrl) {
+      elements.handReplayVideo.dataset.source = videoUrl;
+      elements.handReplayVideo.src = videoUrl;
+      elements.handReplayVideo.hidden = false;
+    }
+  }
+  elements.startReplayButton.disabled =
+    !elements.replaySession.value || state.replayRequestInFlight || replay?.state === "running";
+}
+
+async function pollHandTrackingStatus() {
+  if (state.handTrackingPollInFlight || document.hidden) {
+    scheduleHandTrackingPoll();
+    return;
+  }
+  state.handTrackingPollInFlight = true;
+  try {
+    const response = await fetch(`${handTrackingEndpoint}/status`, { cache: "no-store" });
+    const payload = await readJsonResponse(response, `手部感知 HTTP ${response.status}`);
+    state.handTrackingStatus = readHandTrackingStatus(payload);
+    state.handTrackingError = null;
+  } catch (error) {
+    state.handTrackingStatus = null;
+    state.handTrackingError = error.message;
+  } finally {
+    state.handTrackingPollInFlight = false;
+    renderHandTrackingStatus();
+    scheduleHandTrackingPoll();
+  }
+}
+
+async function startHandTrackingReplay() {
+  const sessionId = elements.replaySession.value;
+  if (!sessionId || state.replayRequestInFlight) return;
+  state.replayRequestInFlight = true;
+  renderReplaySessionOptions();
+  try {
+    const response = await fetch(`${handTrackingEndpoint}/replays`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    await readJsonResponse(response, `离线回放 HTTP ${response.status}`);
+    scheduleHandTrackingPoll(0);
+  } catch (error) {
+    state.handTrackingError = error.message;
+  } finally {
+    state.replayRequestInFlight = false;
+    renderReplaySessionOptions();
+    renderHandTrackingStatus();
+  }
 }
 
 async function sendRecordingCommand(action) {
@@ -990,10 +1130,8 @@ elements.recordingToggleButton.addEventListener("click", () => {
 });
 elements.newSessionButton.addEventListener("click", requestNewCollectionSession);
 elements.resetImuButton.addEventListener("click", resetImuReference);
-elements.clearEventsButton.addEventListener("click", () => {
-  state.events = [];
-  renderEvents();
-});
+elements.startReplayButton.addEventListener("click", startHandTrackingReplay);
+elements.replaySession.addEventListener("change", renderHandTrackingStatus);
 document.addEventListener("fullscreenchange", () => {
   elements.fullscreenButton.textContent = document.fullscreenElement ? "退出全屏" : "全屏";
 });
@@ -1003,6 +1141,7 @@ document.addEventListener("visibilitychange", () => {
     scheduleControlPoll(0);
     scheduleRecordingPoll(0);
     scheduleCollectionPoll(0);
+    scheduleHandTrackingPoll(0);
     scheduleImuPoll(0);
   }
 });
@@ -1012,6 +1151,7 @@ window.addEventListener("beforeunload", () => {
   window.clearTimeout(state.recordingPollTimer);
   window.clearTimeout(state.recordingCountdownTimer);
   window.clearTimeout(state.collectionPollTimer);
+  window.clearTimeout(state.handTrackingPollTimer);
   window.clearTimeout(state.imuPollTimer);
   if (state.peer !== null) closeViewerPeer(state.peer);
   imuScene?.dispose();
@@ -1022,9 +1162,12 @@ renderVideoState();
 renderStreamControl();
 renderRecordingControl();
 renderCollectionOverview();
+renderReplaySessionOptions();
+renderHandTrackingStatus();
 setImuUnavailable("接收网关尚未收到姿态数据");
 connectLiveVideo();
 pollStreamControlStatus();
 pollRecordingStatus();
 pollCollectionLibrary();
+pollHandTrackingStatus();
 pollImuStatus();

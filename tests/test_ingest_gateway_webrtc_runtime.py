@@ -5,6 +5,7 @@ import json
 from fractions import Fraction
 
 import pytest
+from av import VideoFrame
 
 from ingest_gateway.adapters.webrtc import (
     DecodedVideoFrame,
@@ -98,6 +99,14 @@ class FakeImuChannel(WebRtcImuChannel):
     @property
     def is_open(self) -> bool:
         return self.open
+
+
+class FakePerceptionSink:
+    def __init__(self) -> None:
+        self.frames: list[dict[str, object]] = []
+
+    async def submit_gateway_frame(self, **frame: object) -> None:
+        self.frames.append(frame)
 
 
 def offer(device_session_id: str = "device-session-0001") -> WebRtcOffer:
@@ -600,5 +609,43 @@ def test_control_timeout_and_send_failure_leave_safe_error_status() -> None:
         failed_status = await runtime.control_status()
         assert failed_status.state is StreamControlState.ERROR
         assert failed_status.command_id == failed_command.command_id
+
+    asyncio.run(scenario())
+
+
+def test_decoded_video_frame_is_submitted_to_perception_without_pixel_copy() -> None:
+    peers: list[FakePeer] = []
+    sink = FakePerceptionSink()
+
+    def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
+        peer = FakePeer(callbacks)
+        peers.append(peer)
+        return peer
+
+    async def scenario() -> None:
+        runtime = WebRtcSessionRuntime(
+            TOKEN,
+            factory,
+            perf_clock=lambda: 123_000_000,
+            perception_live_frame_sink=sink,
+        )
+        await runtime.accept_offer(offer(), TOKEN)
+        source_frame = VideoFrame(8, 6, "yuv420p")
+        await peers[0].callbacks.on_video_frame(
+            DecodedVideoFrame(
+                width=8,
+                height=6,
+                pts=0,
+                time_base=Fraction(1, 30),
+                video_frame=source_frame,
+            )
+        )
+        await runtime.close()
+
+        assert len(sink.frames) == 1
+        assert sink.frames[0]["decoded_frame"] is source_frame
+        assert sink.frames[0]["frame_index"] == 0
+        assert sink.frames[0]["received_at_client_monotonic_ns"] == 123_000_000
+        assert sink.frames[0]["session_id"] == sink.frames[0]["connection_session_id"]
 
     asyncio.run(scenario())

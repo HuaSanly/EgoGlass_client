@@ -30,10 +30,12 @@ from .clock_mapping import (
     rtp_match_error_to_uncertainty_ns,
 )
 from .models import (
+    AlignmentStatus,
     ImuSensorType,
     MetadataMatchStatus,
     RawFrameRef,
     RawImuSample,
+    StoredAlignment,
     TimeEstimate,
     TimeObservation,
     TimestampSemantic,
@@ -636,9 +638,13 @@ class SensorPreprocessingPipeline:
     def _map_recorded_frame(self, frame: RawFrameRef) -> TimeEstimate:
         """优先使用相机回调时间；无匹配元数据时退回精确 MP4 PTS。"""
 
-        observation = frame_callback_observation(frame)
-        if observation is None:
-            estimate = self.clock_mapper.map(frame_presentation_observation(frame))
+        callback_observation = frame_callback_observation(frame)
+        observation = callback_observation or frame_presentation_observation(frame)
+        stored = _stored_time_estimate(observation, frame.stored_alignment)
+        if stored is not None:
+            return stored
+        if callback_observation is None:
+            estimate = self.clock_mapper.map(observation)
         else:
             assert frame.timestamp_match_error_90khz is not None
             association_status = (
@@ -657,7 +663,10 @@ class SensorPreprocessingPipeline:
         return estimate
 
     def _prepare_recorded_imu(self, sample: RawImuSample) -> PreparedImuSample:
-        estimate = self.clock_mapper.map(imu_sensor_event_observation(sample))
+        observation = imu_sensor_event_observation(sample)
+        estimate = _stored_time_estimate(observation, sample.stored_alignment)
+        if estimate is None:
+            estimate = self.clock_mapper.map(observation)
         self._require_resolved_time(estimate, f"IMU sample {sample.sample_id}")
         return self._prepared_imu(
             sample.sample_id,
@@ -815,3 +824,33 @@ class SensorPreprocessingPipeline:
     def _require_resolved_time(estimate: TimeEstimate, description: str) -> None:
         if estimate.status is TimeStatus.UNAVAILABLE:
             raise SensorPreprocessingError(f"{description} has no session-time mapping")
+
+
+def _stored_time_estimate(
+    observation: TimeObservation,
+    alignment: StoredAlignment,
+) -> TimeEstimate | None:
+    """Reuse capture-time alignment during replay instead of fitting clocks again."""
+
+    if not isinstance(alignment, StoredAlignment):
+        raise TypeError("stored alignment is invalid")
+    if alignment.status is AlignmentStatus.PENDING:
+        return None
+    if alignment.status is not AlignmentStatus.MAPPED:
+        raise SensorPreprocessingError("unsupported stored alignment status")
+    session_time_ns = alignment.session_time_ns
+    uncertainty_ns = alignment.uncertainty_ns
+    mapping_id = alignment.clock_mapping_segment_id
+    if session_time_ns is None or uncertainty_ns is None or mapping_id is None:
+        raise SensorPreprocessingError("mapped stored alignment is incomplete")
+    return TimeEstimate(
+        session_id=observation.session_id,
+        source_clock_id=observation.source_clock_id,
+        source_instance_id=observation.source_instance_id,
+        source_timestamp=observation.source_timestamp,
+        timestamp_semantic=observation.timestamp_semantic,
+        status=TimeStatus.ESTIMATED,
+        session_time_ns=session_time_ns,
+        uncertainty_ns=uncertainty_ns,
+        clock_mapping_id=mapping_id,
+    )

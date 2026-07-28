@@ -216,7 +216,7 @@ for bundle in pipeline.iter_recorded_session("recordings/session-id"):
 ## Verification
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_sensor_preprocessing_models.py tests\test_sensor_preprocessing_capture_reader.py tests\test_sensor_preprocessing_clock_mapping.py tests\test_sensor_preprocessing_pipeline.py
-.\.venv\Scripts\python.exe -m pytest -q evals\test_sensor_preprocessing_boundary.py evals\test_sensor_preprocessing_clock_mapping.py evals\test_sensor_preprocessing_pipeline.py
-.\.venv\Scripts\ruff.exe check src tests evals
+conda run -n egoglass python -m pytest -q tests\test_sensor_preprocessing_models.py tests\test_sensor_preprocessing_capture_reader.py tests\test_sensor_preprocessing_clock_mapping.py tests\test_sensor_preprocessing_pipeline.py
+conda run -n egoglass python -m pytest -q evals\test_sensor_preprocessing_boundary.py evals\test_sensor_preprocessing_clock_mapping.py evals\test_sensor_preprocessing_pipeline.py
+conda run -n egoglass ruff check src tests evals
 ```

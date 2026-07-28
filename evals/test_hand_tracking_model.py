@@ -28,7 +28,7 @@ from perception.spatial_perception.hand_tracking import (
 RUN_MODEL_EVAL = os.environ.get("EGOGLASS_RUN_HAND_MODEL_EVAL") == "1"
 pytestmark = pytest.mark.skipif(
     not RUN_MODEL_EVAL,
-    reason="set EGOGLASS_RUN_HAND_MODEL_EVAL=1 in the egoglass-hamer environment",
+    reason="set EGOGLASS_RUN_HAND_MODEL_EVAL=1 in the egoglass Conda environment",
 )
 
 REPOSITORY = Path(__file__).parents[1]

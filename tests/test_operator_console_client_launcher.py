@@ -17,7 +17,8 @@ def test_workspace_launcher_starts_ingest_and_native_desktop() -> None:
     assert "DataPort" not in script
     assert "8780" not in script
     assert "operator_console.desktop" in script
-    assert ".venv\\Scripts\\python.exe" in script
+    assert "conda info --base" in script
+    assert "envs\\$EnvironmentName\\python.exe" in script
     assert "services\\" not in script
     assert "-WindowStyle Hidden" in script
 

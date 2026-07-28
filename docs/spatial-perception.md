@@ -38,8 +38,7 @@ contract must be defined before algorithm implementation starts.
 ## Verification
 
 ```powershell
-uv sync --group dev
-uv run pytest
-uv run pytest -q evals
-uv run ruff check src tests evals
+conda run -n egoglass python -m pytest
+conda run -n egoglass python -m pytest -q evals
+conda run -n egoglass ruff check src tests evals
 ```

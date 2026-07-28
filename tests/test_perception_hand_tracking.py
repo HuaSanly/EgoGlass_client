@@ -54,7 +54,7 @@ def test_hand_tracking_runtime_does_not_reference_humanego_checkout() -> None:
     runtime_files.extend(
         (
             REPOSITORY / "scripts" / "download_hand_tracking_models.py",
-            REPOSITORY / "scripts" / "setup_hand_tracking.ps1",
+            REPOSITORY / "scripts" / "setup_client.ps1",
         )
     )
 

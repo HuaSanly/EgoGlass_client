@@ -60,11 +60,13 @@ finalize the active capture session before the Windows Job Object performs its
 port-cleanup fallback. A failed finalization is reported as a warning and the
 process tree is still terminated so ports are not leaked.
 
-The workspace below the live video contains a bounded client event history.
-It records real video, control, recording, and IMU state transitions and
-deduplicates repeated polling failures. Clearing the table affects only the
-in-memory event history; it does not send a device command or change recording
-state. The event table scrolls internally so the native window remains fixed.
+The workspace below the live video is the hand-tracking monitor. It shows the
+rectified algorithm image, left/right confidence and backend, grasp state,
+input frame, inference duration, processed frames, and dropped frames. The
+preview image is produced from the exact rectified frame used by HaMeR, so its
+keypoints are not drawn over a differently rotated raw WebRTC image. The same
+panel selects completed capture sessions, starts offline replay, reports frame
+progress, and plays the generated annotated MP4.
 
 The `/storage` page polls the loopback recording library and treats each capture
 session as one data folder. A folder remains visible when it has no video clips
@@ -97,8 +99,7 @@ the client repository root. It owns the ingest gateway and this desktop window.
 For operator-console-only development:
 
 ```powershell
-uv sync --group dev
-uv run egoglass-desktop
+conda run -n egoglass python -m operator_console.desktop
 ```
 
 The desktop launcher provides a native title bar, a minimum 1100x700 window,
@@ -109,7 +110,7 @@ server shutdown when the window closes.
 The browser development server remains available for UI development:
 
 ```powershell
-uv run egoglass-console
+conda run -n egoglass python -m operator_console.app
 ```
 
 The separate ingest gateway is the only service that binds to the LAN. The
@@ -121,7 +122,7 @@ desktop server and browser development server remain loopback-only.
 .\scripts\build-desktop.ps1
 ```
 
-The script synchronizes dependencies, builds the one-folder application with
+The script uses the configured Conda environment, builds the one-folder application with
 PyInstaller, verifies the installed WebView2 Runtime, and runs the packaged
 `--smoke-test`. Build output stays outside Git under `dist/EgoGlass/`.
 
@@ -139,6 +140,10 @@ The UI consumes these loopback-only ingest-gateway contracts:
 - `DELETE /api/v1/recordings/sessions/{session_id}`
 - `DELETE /api/v1/recordings/clips/{session_id}/{clip_id}`
 - `GET /api/v1/recordings/media/{session_id}/{clip_id}`
+- `GET /api/v1/perception/hand-tracking/status`
+- `GET /api/v1/perception/hand-tracking/preview.jpg`
+- `POST /api/v1/perception/hand-tracking/replays`
+- `GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}`
 
 The annotation page uses the operator console's same-origin API:
 
@@ -152,14 +157,14 @@ The annotation page uses the operator console's same-origin API:
 ## Verification
 
 ```powershell
-uv run pytest
-uv run pytest -q evals
-uv run ruff check src tests evals
+conda run -n egoglass python -m pytest
+conda run -n egoglass python -m pytest -q evals
+conda run -n egoglass ruff check src tests evals
 ```
 
 Gate tests cover desktop authentication, static application delivery, removed
 API behavior, real preview connection state, stream and recording state
-binding, bounded runtime event history, session-grouped playable media, strict
+binding, live hand-tracking status, offline replay, session-grouped playable media, strict
 recording payload validation, and the local Three.js/AHRS IMU visualization
 contract.
 The eval suite prevents placeholder data paths or independently invented

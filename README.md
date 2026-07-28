@@ -41,17 +41,14 @@ Detailed notes are available in [ingest gateway](docs/ingest-gateway.md),
 Run once from this directory:
 
 ```powershell
-uv sync --group dev
+.\scripts\setup_client.ps1
 ```
 
-This creates the only workspace environment at `.venv/`.
-
-HaMeR uses a separate native Windows Conda environment because its verified
-baseline is Python 3.11, PyTorch 2.5.1, and CUDA 12.1:
+This creates the only client environment: native Windows Conda environment
+`egoglass`, with Python 3.11, PyTorch 2.5.1, and CUDA 12.1.
 
 ```powershell
-.\scripts\setup_hand_tracking.ps1
-conda run -n egoglass-hamer python scripts\download_hand_tracking_models.py
+conda run -n egoglass python scripts\download_hand_tracking_models.py
 ```
 
 Neither command imports or executes `reference_code/HumanEgo`.
@@ -85,14 +82,14 @@ The ignored output is `dist/EgoGlass/EgoGlass.exe`.
 ## Verification
 
 ```powershell
-uv run pytest
-uv run pytest -q evals
-uv run ruff check src tests evals
+conda run -n egoglass python -m pytest
+conda run -n egoglass python -m pytest -q evals
+conda run -n egoglass ruff check src tests evals
 ```
 
-Run the CUDA model eval from the HaMeR environment:
+Run the CUDA model eval from the same client environment:
 
 ```powershell
 $env:EGOGLASS_RUN_HAND_MODEL_EVAL = "1"
-conda run -n egoglass-hamer python -m pytest -q -s evals\test_hand_tracking_model.py
+conda run -n egoglass python -m pytest -q -s evals\test_hand_tracking_model.py
 ```

@@ -232,12 +232,21 @@ class HandTrackingResult:
     frame_index: int
     session_time_ns: int
     timestamp_uncertainty_ns: int
+    image_width_px: int
+    image_height_px: int
+    source_rotation_degrees: int
     detector_backend: str
     requested_device: str
     execution_device: str
     hamer_loaded: bool
     inference_duration_ns: int
     hands: tuple[TrackedHand, ...]
+
+    def __post_init__(self) -> None:
+        if self.image_width_px < 1 or self.image_height_px < 1:
+            raise ValueError("result image dimensions must be positive")
+        if self.source_rotation_degrees not in {0, 90, 180, 270}:
+            raise ValueError("result source rotation must be valid")
 
     def to_json_dict(self) -> dict[str, object]:
         """Convert the immutable result to a JSON-compatible boundary payload."""
@@ -249,6 +258,9 @@ class HandTrackingResult:
             "frame_index": self.frame_index,
             "session_time_ns": self.session_time_ns,
             "timestamp_uncertainty_ns": self.timestamp_uncertainty_ns,
+            "image_width_px": self.image_width_px,
+            "image_height_px": self.image_height_px,
+            "source_rotation_degrees": self.source_rotation_degrees,
             "detector_backend": self.detector_backend,
             "requested_device": self.requested_device,
             "execution_device": self.execution_device,
