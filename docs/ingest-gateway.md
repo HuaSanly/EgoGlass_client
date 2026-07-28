@@ -23,7 +23,7 @@ For isolated signaling diagnostics only, start the gateway directly and pass
 the generated runtime values through Intent extras:
 
 ~~~powershell
-uv run egoglass-ingest-gateway --host 0.0.0.0 --port 8770
+conda run -n egoglass python -m ingest_gateway.app --host 0.0.0.0 --port 8770
 ~~~
 
 ~~~powershell
@@ -40,6 +40,12 @@ The gateway uses aiortc's `MediaRelay` to expose the active decoded track to
 one loopback WebRTC viewer. The viewer subscription is unbuffered so stale
 frames do not accumulate. It does not create JPEG snapshots or reduce the
 incoming frame size or cadence.
+
+The same decoded frame object is also submitted to the perception runtime.
+Submission only replaces a one-frame pending slot; CUDA inference runs on a
+dedicated worker and cannot block media reception. The operator's algorithm
+panel receives a separate rectified annotated JPEG from that worker. This does
+not alter the direct WebRTC viewer track.
 
 Decoded aiortc PTS starts from a receiver-relative RTP origin and therefore
 must not be anchored to the first Glass3 metadata message: the encoder can drop
@@ -104,7 +110,7 @@ Set the root with `--recordings-root` or `EGOGLASS_RECORDINGS_ROOT`. The CLI
 default is `local-data/recordings` relative to the launch directory:
 
 ~~~powershell
-uv run egoglass-ingest-gateway `
+conda run -n egoglass python -m ingest_gateway.app `
   --recordings-root F:\data\Project\EgoGlass\EgoGlass_client\local-data\recordings
 ~~~
 
@@ -138,7 +144,7 @@ Validate a real-device result by opening and decoding it with the same PyAV
 runtime used by the service:
 
 ~~~powershell
-uv run python scripts/inspect-recording.py F:\path\to\session\clip.mp4
+conda run -n egoglass python scripts/inspect-recording.py F:\path\to\session\clip.mp4
 ~~~
 
 The command exits nonzero unless the file is a finalized, playable MP4 with
@@ -179,8 +185,7 @@ This service uses PyAV, the maintained Python binding for FFmpeg, so a separate
 system ffmpeg.exe is not required.
 
 ~~~powershell
-uv sync --group dev
-uv run egoglass-ingest-gateway
+conda run -n egoglass python -m ingest_gateway.app
 ~~~
 
 The CLI binds to `0.0.0.0:8770` by default for Glass3 signaling. Viewer,
@@ -203,14 +208,19 @@ control, IMU, recording, and media-library APIs enforce loopback access.
 - DELETE /api/v1/recordings/sessions/{session_id} (loopback-only whole-session deletion)
 - DELETE /api/v1/recordings/clips/{session_id}/{clip_id} (loopback-only deletion)
 - GET /api/v1/recordings/media/{session_id}/{clip_id} (loopback-only MP4)
+- GET /api/v1/perception/hand-tracking/status (loopback-only live/replay state)
+- GET /api/v1/perception/hand-tracking/preview.jpg (loopback-only annotated image)
+- POST /api/v1/perception/hand-tracking/replays (loopback-only replay request)
+- GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}
+  (loopback-only generated replay MP4)
 - Interactive schema: http://127.0.0.1:8770/api/docs
 
 ## Verification
 
 ~~~powershell
-uv run ruff check src tests evals
-uv run pytest
-uv run pytest -q evals
+conda run -n egoglass ruff check src tests evals
+conda run -n egoglass python -m pytest
+conda run -n egoglass python -m pytest -q evals
 ~~~
 
 Gate tests use in-process WebRTC peers and synthetic frames and never access an

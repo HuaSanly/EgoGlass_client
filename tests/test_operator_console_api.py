@@ -68,14 +68,14 @@ def test_health_and_real_video_console_are_served() -> None:
         '<aside class="right-column"', maxsplit=1
     )[0]
     assert left_column.index('class="viewer-tool"') < left_column.index(
-        'class="event-tool"'
+        'class="algorithm-tool"'
     )
     assert right_column.index('class="signal-tool"') < right_column.index('class="imu-tool"')
-    assert 'class="event-tool"' not in right_column
+    assert 'class="algorithm-tool"' not in right_column
     assert "事件记录" not in right_column
-    assert parser.tags_by_id["event-rows"] == "tbody"
-    assert parser.tags_by_id["clear-events-button"] == "button"
-    assert parser.tags_by_id["event-empty"] == "div"
+    assert parser.tags_by_id["hand-tracking-preview"] == "img"
+    assert parser.tags_by_id["start-replay-button"] == "button"
+    assert parser.tags_by_id["replay-session"] == "select"
     assert parser.tags_by_id["imu-scene-canvas"] == "canvas"
     assert parser.tags_by_id["reset-imu-button"] == "button"
     assert "GLASS3 LIVE SOURCE" in page.text
@@ -97,8 +97,8 @@ def test_health_and_real_video_console_are_served() -> None:
     assert "127.0.0.1:8770/api/v1/webrtc/imu/status" in script.text
     assert "pollImuStatus" in script.text
     assert 'import { ImuSceneController } from "./imu-scene.js"' in script.text
-    assert "function addEvent(level, event, detail)" in script.text
-    assert "state.events = state.events.slice(0, maxEventHistory)" in script.text
+    assert "function pollHandTrackingStatus()" in script.text
+    assert "/api/v1/perception/hand-tracking" in script.text
     assert 'addEvent("OK", "Glass3 视频已连接"' in script.text
     assert 'addEvent("OK", "Glass3 IMU 已连接"' in script.text
     assert "new THREE.WebGLRenderer" in imu_scene.text
@@ -138,8 +138,9 @@ def test_runtime_contains_no_simulated_data_controls_or_transport() -> None:
         assert forbidden not in shipped_runtime
     assert "websocket" not in script.lower()
     assert 'id="imu-scene-canvas"' in page
-    assert 'class="event-tool"' in page
-    assert "state.events" in script
+    assert 'class="algorithm-tool"' in page
+    assert 'id="event-rows"' not in page
+    assert "state.events" not in script
 
 
 @pytest.mark.parametrize(

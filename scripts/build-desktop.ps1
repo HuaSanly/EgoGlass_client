@@ -1,27 +1,19 @@
 param(
-    [switch]$SkipSync
+    [string]$EnvironmentName = "egoglass"
 )
 
 $ErrorActionPreference = "Stop"
 $clientRoot = Split-Path -Parent $PSScriptRoot
-$pyinstaller = Join-Path $clientRoot ".venv\Scripts\pyinstaller.exe"
+if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
+    throw "conda is required and was not found on PATH"
+}
+$condaBase = (conda info --base).Trim()
+$pyinstaller = Join-Path $condaBase "envs\$EnvironmentName\Scripts\pyinstaller.exe"
 
 Push-Location $clientRoot
 try {
-    if (-not $SkipSync) {
-        $uv = Get-Command uv -ErrorAction SilentlyContinue
-        if ($null -eq $uv) {
-            throw "uv.exe was not found on PATH. Install uv, or use -SkipSync with an existing .venv."
-        }
-
-        & $uv.Source sync --group dev
-        if ($LASTEXITCODE -ne 0) {
-            throw "Dependency synchronization failed with exit code $LASTEXITCODE"
-        }
-    }
-
     if (-not (Test-Path -LiteralPath $pyinstaller -PathType Leaf)) {
-        throw "PyInstaller was not found at $pyinstaller. Run uv sync --group dev first."
+        throw "PyInstaller was not found at $pyinstaller. Run .\scripts\setup_client.ps1 -EnvironmentName $EnvironmentName first."
     }
 
     & $pyinstaller --noconfirm --clean packaging\egoglass-console.spec

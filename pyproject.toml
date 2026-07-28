@@ -7,13 +7,16 @@ name = "egoglass-client"
 version = "0.1.0"
 description = "EgoGlass Windows client and perception modules"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11,<3.13"
 license = { text = "Proprietary" }
 dependencies = [
   "aiortc>=1.15,<2",
   "av>=16,<17",
   "fastapi>=0.115,<1",
+  "numpy>=2,<3",
+  "opencv-python-headless>=4.10,<5",
   "pydantic>=2.10,<3",
+  "pyyaml>=6,<7",
   "pywebview>=6,<7",
   "uvicorn[standard]>=0.34,<1",
 ]
@@ -23,22 +26,26 @@ egoglass-ingest-gateway = "ingest_gateway.app:main"
 egoglass-console = "operator_console.app:main"
 egoglass-desktop = "operator_console.desktop:main"
 
-[dependency-groups]
-dev = [
-  "httpx2>=2,<3",
-  "pyinstaller>=6.12,<7",
-  "pytest>=8.3,<9",
-  "ruff>=0.9,<1",
-]
-
 [tool.hatch.build.targets.wheel]
 packages = [
   "src/ingest_gateway",
   "src/operator_console",
-  "src/spatial_perception",
-  "src/interaction_processing",
-  "src/dataset_builder",
+  "src/perception",
 ]
+
+[tool.hatch.build]
+exclude = [
+  "/build",
+  "/dist",
+  "/local-data",
+]
+
+[tool.egoglass.hand-tracking]
+# These packages require HumanEgo's --no-deps/special-patch install path.
+hamer_revision = "3a01849f4148352e9260b69bf28b65d1671a4905"
+wilor_mini_revision = "ebec42f94c389070cdd7dda6fd1bf0b4a659c960"
+chumpy_version = "0.70"
+setup_script = "scripts/setup_client.ps1"
 
 [tool.pytest.ini_options]
 addopts = "-q"
@@ -47,7 +54,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -53,14 +53,14 @@ def test_main_window_places_events_below_video_and_imu_in_right_column() -> None
     )[0]
 
     assert left_column.index('class="viewer-tool"') < left_column.index(
-        'class="event-tool"'
+        'class="algorithm-tool"'
     )
     assert right_column.index('class="signal-tool"') < right_column.index('class="imu-tool"')
-    assert 'class="event-tool"' not in right_column
+    assert 'class="algorithm-tool"' not in right_column
     assert "height: 100vh" in styles
     assert "overflow: hidden" in styles
-    assert "grid-template-rows: auto minmax(102px, 1fr)" in styles
-    assert ".event-table-wrap" in styles
+    assert "grid-template-rows: auto minmax(280px, 1fr)" in styles
+    assert ".algorithm-preview-stage" in styles
     assert "overflow-y: auto" in styles
     assert 'id="imu-scene-canvas"' in right_column
     assert 'id="reset-imu-button"' in right_column
@@ -69,25 +69,18 @@ def test_main_window_places_events_below_video_and_imu_in_right_column() -> None
     assert "grid-template-rows: auto minmax(0, 1fr) auto" in styles
 
 
-def test_event_history_tracks_real_runtime_transitions_and_can_be_cleared() -> None:
+def test_hand_tracking_panel_uses_live_status_and_offline_replay() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
-    assert 'id="event-rows"' in html
-    assert 'id="event-count"' in html
-    assert 'id="clear-events-button"' in html
-    assert "const maxEventHistory = 50" in script
-    assert "state.events = state.events.slice(0, maxEventHistory)" in script
-    assert 'addEvent("OK", "Glass3 视频已连接"' in script
-    assert 'addEvent("WARN", "Glass3 视频已断开"' in script
-    assert 'addEvent("OK", "眼镜端视频已启动"' in script
-    assert 'addEvent("INFO", "录制倒计时已开始"' in script
-    assert 'addEvent("OK", "视频录制已开始"' in script
-    assert 'addEvent("OK", "视频已保存"' in script
-    assert 'addEvent("OK", "Glass3 IMU 已连接"' in script
-    assert 'addEvent("WARN", "Glass3 IMU 已断开"' in script
-    assert "elements.eventRows.replaceChildren()" in script
-    assert "state.events = []" in script
+    assert 'id="event-rows"' not in html
+    assert 'id="hand-tracking-preview"' in html
+    assert 'id="replay-session"' in html
+    assert 'id="start-replay-button"' in html
+    assert "function pollHandTrackingStatus()" in script
+    assert "function startHandTrackingReplay()" in script
+    assert "/api/v1/perception/hand-tracking" in script
+    assert "state.events" not in script
     assert "innerHTML" not in script
 
 

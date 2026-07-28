@@ -12,9 +12,9 @@ service scaffolds.
 src/
   ingest_gateway/            # WebRTC ingress, recording, and raw sessions
   operator_console/          # Native UI, annotation, and annotation persistence
-  spatial_perception/        # Calibration, VIO, hands, and time association
-  interaction_processing/    # Phases, objects, keypoints, and trajectories
-  dataset_builder/           # Training samples, splits, and provenance
+  perception/                # Independently reusable perception core
+    sensor_preprocessing/    # Sensor time, calibration binding, and preparation
+    spatial_perception/      # HaMeR hands; planned VIO and coordinate fusion
 config/                      # Shared client configuration
 tests/                       # Fast tests, named with package prefixes
 evals/                       # Periodic evaluations and device evidence
@@ -23,11 +23,16 @@ packaging/                   # Windows executable packaging assets
 docs/                        # Component-specific operation notes
 ```
 
-The perception, interaction, and dataset packages are boundaries only. They
-contain no copied HumanEgo or other third-party algorithm code yet.
+The `perception` package isolates the research and runtime core from the ingest
+gateway and operator console. Hand tracking adapts HumanEgo's
+ViTPose/MediaPipe + HaMeR pipeline under its noncommercial license; source and
+license records live beside the adapted module.
 
 Detailed notes are available in [ingest gateway](docs/ingest-gateway.md),
-[operator console](docs/operator-console.md), [spatial perception](docs/spatial-perception.md),
+[operator console](docs/operator-console.md),
+[sensor preprocessing](docs/sensor-preprocessing.md),
+[hand tracking](docs/hand-tracking.md),
+[spatial perception](docs/spatial-perception.md),
 [interaction processing](docs/interaction-processing.md), and
 [dataset builder](docs/dataset-builder.md).
 
@@ -36,10 +41,17 @@ Detailed notes are available in [ingest gateway](docs/ingest-gateway.md),
 Run once from this directory:
 
 ```powershell
-uv sync --group dev
+.\scripts\setup_client.ps1
 ```
 
-This creates the only workspace environment at `.venv/`.
+This creates the only client environment: native Windows Conda environment
+`egoglass`, with Python 3.11, PyTorch 2.5.1, and CUDA 12.1.
+
+```powershell
+conda run -n egoglass python scripts\download_hand_tracking_models.py
+```
+
+Neither command imports or executes `reference_code/HumanEgo`.
 
 ## Windows Client
 
@@ -70,7 +82,14 @@ The ignored output is `dist/EgoGlass/EgoGlass.exe`.
 ## Verification
 
 ```powershell
-uv run pytest
-uv run pytest -q evals
-uv run ruff check src tests evals
+conda run -n egoglass python -m pytest
+conda run -n egoglass python -m pytest -q evals
+conda run -n egoglass ruff check src tests evals
+```
+
+Run the CUDA model eval from the same client environment:
+
+```powershell
+$env:EGOGLASS_RUN_HAND_MODEL_EVAL = "1"
+conda run -n egoglass python -m pytest -q -s evals\test_hand_tracking_model.py
 ```

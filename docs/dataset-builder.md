@@ -13,7 +13,7 @@ or other third-party source has been copied into the package.
 
 | Path | Purpose |
 | --- | --- |
-| `src/dataset_builder/` | Python package for dataset assembly. |
+| `src/perception/dataset_builder/` | Planned dataset-assembly package. |
 | `tests/` | Shared fast tests, identified by `test_dataset_builder_` filenames. |
 | `evals/` | Shared periodic evaluations, identified by `test_dataset_builder_` filenames. |
 | `config/` | Shared versioned client configuration. |
@@ -40,8 +40,7 @@ sessions and previously registered datasets remain read-only.
 ## Verification
 
 ```powershell
-uv sync --group dev
-uv run pytest
-uv run pytest -q evals
-uv run ruff check src tests evals
+conda run -n egoglass python -m pytest
+conda run -n egoglass python -m pytest -q evals
+conda run -n egoglass ruff check src tests evals
 ```

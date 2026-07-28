@@ -1,1 +1,0 @@
-"""Training-coordinate conversion boundary."""

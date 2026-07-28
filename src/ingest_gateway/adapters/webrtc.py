@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Protocol
 
+from av import VideoFrame
+
 from ..webrtc_models import WebRtcOffer, WebRtcViewerOffer
 
 
@@ -14,6 +16,7 @@ class DecodedVideoFrame:
     height: int
     pts: int | None
     time_base: Fraction | None
+    video_frame: VideoFrame | None = None
 
 
 @dataclass(frozen=True)

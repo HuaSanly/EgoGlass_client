@@ -13,7 +13,7 @@ HumanEgo or other third-party source has been copied into the package.
 
 | Path | Purpose |
 | --- | --- |
-| `src/interaction_processing/` | Python package for interaction processing. |
+| `src/perception/interaction_processing/` | Planned interaction-processing package. |
 | `tests/` | Shared fast tests, identified by `test_interaction_processing_` filenames. |
 | `evals/` | Shared periodic evaluations, identified by `test_interaction_processing_` filenames. |
 | `config/` | Shared versioned client configuration. |
@@ -46,8 +46,7 @@ commit and permission provenance when migration begins.
 ## Verification
 
 ```powershell
-uv sync --group dev
-uv run pytest
-uv run pytest -q evals
-uv run ruff check src tests evals
+conda run -n egoglass python -m pytest
+conda run -n egoglass python -m pytest -q evals
+conda run -n egoglass ruff check src tests evals
 ```

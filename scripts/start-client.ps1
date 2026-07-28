@@ -1,14 +1,19 @@
 [CmdletBinding()]
 param(
     [int]$IngestPort = 8770,
-    [int]$DiscoveryPort = 8771
+    [int]$DiscoveryPort = 8771,
+    [string]$EnvironmentName = "egoglass"
 )
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'client-process-lifecycle.ps1')
-$workspacePython = Join-Path $repositoryRoot '.venv\Scripts\python.exe'
-$desktopPython = Join-Path $repositoryRoot '.venv\Scripts\pythonw.exe'
+if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
+    throw 'conda is required and was not found on PATH'
+}
+$condaBase = (conda info --base).Trim()
+$workspacePython = Join-Path $condaBase "envs\$EnvironmentName\python.exe"
+$desktopPython = Join-Path $condaBase "envs\$EnvironmentName\pythonw.exe"
 $dataRoot = if ($env:LOCALAPPDATA) {
     Join-Path $env:LOCALAPPDATA 'EgoGlass'
 } else {
@@ -66,7 +71,7 @@ if ($env:OS -ne 'Windows_NT') {
 }
 foreach ($executable in @($workspacePython, $desktopPython)) {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-        throw "Missing client environment: $executable. Run uv sync --group dev from the client root."
+        throw "Missing client environment: $executable. Run .\scripts\setup_client.ps1 -EnvironmentName $EnvironmentName from the client root."
     }
 }
 if ($IngestPort -notin 1..65535 -or $DiscoveryPort -notin 1..65535) {

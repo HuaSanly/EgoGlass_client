@@ -158,6 +158,7 @@ class AiortcPeer:
                         height=int(frame.height),
                         pts=getattr(frame, "pts", None),
                         time_base=Fraction(time_base) if time_base is not None else None,
+                        video_frame=frame,
                     )
                 )
         except (MediaStreamError, asyncio.CancelledError):

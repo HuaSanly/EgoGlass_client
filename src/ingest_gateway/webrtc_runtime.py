@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from av import VideoFrame
 from pydantic import ValidationError
 
 from .adapters.webrtc import (
@@ -127,6 +128,20 @@ class CaptureTelemetrySink(Protocol):
     ) -> None: ...
 
 
+class PerceptionLiveFrameSink(Protocol):
+    """Receives decoded frames after ingest state has been updated."""
+
+    async def submit_gateway_frame(
+        self,
+        *,
+        session_id: str,
+        connection_session_id: str,
+        frame_index: int,
+        received_at_client_monotonic_ns: int,
+        decoded_frame: VideoFrame,
+    ) -> None: ...
+
+
 WebRtcPeerFactory = Callable[[WebRtcPeerCallbacks], WebRtcPeer]
 WebRtcViewerPeerFactory = Callable[[object], WebRtcViewerPeer]
 
@@ -158,6 +173,7 @@ class WebRtcSessionRuntime:
         max_pending_metadata: int = 256,
         control_command_timeout_seconds: float = 3.0,
         capture_telemetry_sink: CaptureTelemetrySink | None = None,
+        perception_live_frame_sink: PerceptionLiveFrameSink | None = None,
     ) -> None:
         if len(pairing_token) < 16:
             raise ValueError("pairing_token must contain at least 16 characters")
@@ -170,6 +186,7 @@ class WebRtcSessionRuntime:
             raise ValueError("control_command_timeout_seconds must be positive")
         self._control_command_timeout_seconds = control_command_timeout_seconds
         self._capture_telemetry_sink = capture_telemetry_sink
+        self._perception_live_frame_sink = perception_live_frame_sink
         self._session_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._control_command_lock = asyncio.Lock()
@@ -184,6 +201,11 @@ class WebRtcSessionRuntime:
 
     def set_capture_telemetry_sink(self, sink: CaptureTelemetrySink) -> None:
         self._capture_telemetry_sink = sink
+
+    def set_perception_live_frame_sink(self, sink: PerceptionLiveFrameSink) -> None:
+        """Attach an enqueue-only perception consumer for decoded source frames."""
+
+        self._perception_live_frame_sink = sink
 
     async def status(self) -> WebRtcStatus:
         async with self._state_lock:
@@ -547,6 +569,7 @@ class WebRtcSessionRuntime:
         async with self._state_lock:
             self._phase = WebRtcPhase.STREAMING
             self._frames_received += 1
+            frame_index = self._frames_received - 1
             self._width = frame.width
             self._height = frame.height
             self._last_frame_pts = frame.pts
@@ -563,7 +586,7 @@ class WebRtcSessionRuntime:
                     )
             first_match = self._matcher.add_frame(
                 frame.pts,
-                frame_index=self._frames_received - 1,
+                frame_index=frame_index,
                 time_base_num=(
                     frame.time_base.numerator if frame.time_base is not None else None
                 ),
@@ -583,6 +606,14 @@ class WebRtcSessionRuntime:
                     "on_frame_metadata_match",
                     session_id,
                     match,
+                )
+            if frame.video_frame is not None and self._perception_live_frame_sink is not None:
+                await self._perception_live_frame_sink.submit_gateway_frame(
+                    session_id=session_id,
+                    connection_session_id=session_id,
+                    frame_index=frame_index,
+                    received_at_client_monotonic_ns=now_ns,
+                    decoded_frame=frame.video_frame,
                 )
 
     async def _on_metadata(self, generation: int, payload: str | bytes) -> None:
