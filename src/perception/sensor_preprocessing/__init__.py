@@ -1,10 +1,25 @@
 """Public sensor-preprocessing models and pipeline interfaces."""
 
 from .capture_reader import CaptureSessionReader, CaptureSessionReadError
+from .clock_mapping import (
+    ClockMappingSegment,
+    SegmentedClockMapper,
+    TimestampOutOfRangeError,
+    client_perf_source_instance_id,
+    frame_callback_observation,
+    frame_presentation_observation,
+    frame_sdk_observation,
+    glasses_elapsed_source_instance_id,
+    imu_sensor_event_observation,
+    mp4_source_instance_id,
+    rokid_sdk_source_instance_id,
+    rtp_match_error_to_uncertainty_ns,
+)
 from .models import (
     AlignmentStatus,
     CaptureClipRef,
     CaptureSessionRef,
+    ClockId,
     ImuSensorType,
     MetadataMatchStatus,
     Mp4Timestamp,
@@ -12,6 +27,8 @@ from .models import (
     RawImuSample,
     StoredAlignment,
     TimeEstimate,
+    TimeObservation,
+    TimestampSemantic,
     TimeStatus,
 )
 
@@ -21,6 +38,8 @@ __all__ = [
     "CaptureSessionReadError",
     "CaptureSessionReader",
     "CaptureSessionRef",
+    "ClockId",
+    "ClockMappingSegment",
     "ImuSensorType",
     "MetadataMatchStatus",
     "Mp4Timestamp",
@@ -28,5 +47,18 @@ __all__ = [
     "RawImuSample",
     "StoredAlignment",
     "TimeEstimate",
+    "TimeObservation",
     "TimeStatus",
+    "TimestampOutOfRangeError",
+    "TimestampSemantic",
+    "SegmentedClockMapper",
+    "client_perf_source_instance_id",
+    "frame_callback_observation",
+    "frame_presentation_observation",
+    "frame_sdk_observation",
+    "glasses_elapsed_source_instance_id",
+    "imu_sensor_event_observation",
+    "mp4_source_instance_id",
+    "rokid_sdk_source_instance_id",
+    "rtp_match_error_to_uncertainty_ns",
 ]

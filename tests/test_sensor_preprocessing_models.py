@@ -6,6 +6,7 @@ import pytest
 
 from perception.sensor_preprocessing import (
     AlignmentStatus,
+    ClockId,
     ImuSensorType,
     MetadataMatchStatus,
     Mp4Timestamp,
@@ -13,6 +14,7 @@ from perception.sensor_preprocessing import (
     RawImuSample,
     StoredAlignment,
     TimeEstimate,
+    TimestampSemantic,
     TimeStatus,
 )
 
@@ -78,8 +80,11 @@ def test_mp4_timestamp_rejects_invalid_time_base(numerator: int, denominator: in
 
 def test_unavailable_time_preserves_only_source_timestamp() -> None:
     estimate = TimeEstimate(
-        source_clock_id="rokid_sdk_ms",
+        session_id="session-1",
+        source_clock_id=ClockId.ROKID_SDK_MS,
+        source_instance_id="camera-generation-1",
         source_timestamp=1_000,
+        timestamp_semantic=TimestampSemantic.CAMERA_SDK_TIMESTAMP,
         status=TimeStatus.UNAVAILABLE,
     )
 
@@ -91,8 +96,11 @@ def test_unavailable_time_preserves_only_source_timestamp() -> None:
 @pytest.mark.parametrize("status", [TimeStatus.VERIFIED, TimeStatus.ESTIMATED])
 def test_resolved_time_requires_complete_mapping_provenance(status: TimeStatus) -> None:
     estimate = TimeEstimate(
-        source_clock_id="sensor_event_monotonic_ns",
+        session_id="session-1",
+        source_clock_id=ClockId.GLASSES_ELAPSED_REALTIME_NS,
+        source_instance_id="device-boot-1",
         source_timestamp=1_000,
+        timestamp_semantic=TimestampSemantic.SENSOR_EVENT,
         status=status,
         session_time_ns=200,
         uncertainty_ns=10,
@@ -114,8 +122,11 @@ def test_resolved_time_rejects_incomplete_mapping_provenance(
 ) -> None:
     with pytest.raises(ValueError, match="requires"):
         TimeEstimate(
-            source_clock_id="sensor_event_monotonic_ns",
+            session_id="session-1",
+            source_clock_id=ClockId.GLASSES_ELAPSED_REALTIME_NS,
+            source_instance_id="device-boot-1",
             source_timestamp=1_000,
+            timestamp_semantic=TimestampSemantic.SENSOR_EVENT,
             status=TimeStatus.VERIFIED,
             session_time_ns=session_time_ns,
             uncertainty_ns=uncertainty_ns,
@@ -126,8 +137,11 @@ def test_resolved_time_rejects_incomplete_mapping_provenance(
 def test_unavailable_time_rejects_derived_values() -> None:
     with pytest.raises(ValueError, match="unavailable"):
         TimeEstimate(
-            source_clock_id="rokid_sdk_ms",
+            session_id="session-1",
+            source_clock_id=ClockId.ROKID_SDK_MS,
+            source_instance_id="camera-generation-1",
             source_timestamp=1_000,
+            timestamp_semantic=TimestampSemantic.CAMERA_SDK_TIMESTAMP,
             status=TimeStatus.UNAVAILABLE,
             session_time_ns=200,
         )
@@ -136,8 +150,9 @@ def test_unavailable_time_rejects_derived_values() -> None:
 @pytest.mark.parametrize(
     "overrides, message",
     [
-        ({"source_clock_id": ""}, "source_clock_id"),
-        ({"source_clock_id": "   "}, "source_clock_id"),
+        ({"session_id": ""}, "session_id"),
+        ({"source_instance_id": ""}, "source_instance_id"),
+        ({"source_instance_id": "   "}, "source_instance_id"),
         ({"source_timestamp": -1}, "source_timestamp"),
         ({"session_time_ns": -1}, "cannot be negative"),
         ({"uncertainty_ns": -1}, "cannot be negative"),
@@ -148,8 +163,11 @@ def test_time_estimate_rejects_invalid_values(
     message: str,
 ) -> None:
     values: dict[str, object] = {
-        "source_clock_id": "sensor_event_monotonic_ns",
+        "session_id": "session-1",
+        "source_clock_id": ClockId.GLASSES_ELAPSED_REALTIME_NS,
+        "source_instance_id": "device-boot-1",
         "source_timestamp": 1_000,
+        "timestamp_semantic": TimestampSemantic.SENSOR_EVENT,
         "status": TimeStatus.VERIFIED,
         "session_time_ns": 200,
         "uncertainty_ns": 10,
@@ -164,9 +182,24 @@ def test_time_estimate_rejects_invalid_values(
 def test_time_estimate_rejects_non_enum_status() -> None:
     with pytest.raises(TypeError, match="TimeStatus"):
         TimeEstimate(
-            source_clock_id="rokid_sdk_ms",
+            session_id="session-1",
+            source_clock_id=ClockId.ROKID_SDK_MS,
+            source_instance_id="camera-generation-1",
             source_timestamp=1_000,
+            timestamp_semantic=TimestampSemantic.CAMERA_SDK_TIMESTAMP,
             status="unavailable",  # type: ignore[arg-type]
+        )
+
+
+def test_time_estimate_rejects_non_enum_source_clock() -> None:
+    with pytest.raises(TypeError, match="ClockId"):
+        TimeEstimate(
+            session_id="session-1",
+            source_clock_id="rokid_sdk_ms",  # type: ignore[arg-type]
+            source_instance_id="camera-generation-1",
+            source_timestamp=1_000,
+            timestamp_semantic=TimestampSemantic.CAMERA_SDK_TIMESTAMP,
+            status=TimeStatus.UNAVAILABLE,
         )
 
 
@@ -174,8 +207,11 @@ def test_time_estimate_rejects_non_enum_status() -> None:
 def test_resolved_time_rejects_empty_mapping_id(clock_mapping_id: str) -> None:
     with pytest.raises(ValueError, match="clock_mapping_id"):
         TimeEstimate(
-            source_clock_id="sensor_event_monotonic_ns",
+            session_id="session-1",
+            source_clock_id=ClockId.GLASSES_ELAPSED_REALTIME_NS,
+            source_instance_id="device-boot-1",
             source_timestamp=1_000,
+            timestamp_semantic=TimestampSemantic.SENSOR_EVENT,
             status=TimeStatus.ESTIMATED,
             session_time_ns=200,
             uncertainty_ns=10,

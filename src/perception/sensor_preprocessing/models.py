@@ -10,6 +10,99 @@ from math import isfinite
 from pathlib import Path
 
 
+class ClockId(StrEnum):
+    """预处理阶段能够明确解释的时钟域。"""
+
+    GLASSES_ELAPSED_REALTIME_NS = "glasses_elapsed_realtime_ns"
+    ROKID_SDK_MS = "rokid_sdk_ms"
+    CLIENT_PERF_COUNTER_NS = "client_perf_counter_ns"
+    MP4_PRESENTATION_TICKS = "mp4_presentation_ticks"
+    SESSION_TIME_NS = "session_time_ns"
+
+
+class TimestampSemantic(StrEnum):
+    """时间戳表示的事件，避免把回调或到达时间误称为曝光时间。"""
+
+    SENSOR_EVENT = "sensor_event"
+    CAMERA_SDK_TIMESTAMP = "camera_sdk_timestamp"
+    CAMERA_EXPOSURE = "camera_exposure"
+    CAMERA_CALLBACK = "camera_callback"
+    MEDIA_PRESENTATION = "media_presentation"
+    CLIENT_RECEIPT = "client_receipt"
+    SESSION_TIME = "session_time"
+
+
+_CLOCK_SEMANTICS: dict[ClockId, frozenset[TimestampSemantic]] = {
+    ClockId.GLASSES_ELAPSED_REALTIME_NS: frozenset(
+        {
+            TimestampSemantic.SENSOR_EVENT,
+            TimestampSemantic.CAMERA_CALLBACK,
+        }
+    ),
+    ClockId.ROKID_SDK_MS: frozenset(
+        {
+            TimestampSemantic.CAMERA_SDK_TIMESTAMP,
+        }
+    ),
+    ClockId.CLIENT_PERF_COUNTER_NS: frozenset({TimestampSemantic.CLIENT_RECEIPT}),
+    ClockId.MP4_PRESENTATION_TICKS: frozenset(
+        {TimestampSemantic.MEDIA_PRESENTATION}
+    ),
+    ClockId.SESSION_TIME_NS: frozenset({TimestampSemantic.SESSION_TIME}),
+}
+
+
+def _validate_timestamp_source(
+    session_id: str,
+    source_clock_id: ClockId,
+    source_instance_id: str,
+    source_timestamp: int,
+    timestamp_semantic: TimestampSemantic,
+) -> None:
+    """验证一个原始时间观察值的时钟、实例、数值和事件语义。"""
+
+    if not isinstance(session_id, str):
+        raise TypeError("session_id must be a string")
+    if not session_id.strip():
+        raise ValueError("session_id cannot be empty")
+    if not isinstance(source_clock_id, ClockId):
+        raise TypeError("source_clock_id must be a ClockId")
+    if not isinstance(source_instance_id, str):
+        raise TypeError("source_instance_id must be a string")
+    if not source_instance_id.strip():
+        raise ValueError("source_instance_id cannot be empty")
+    if type(source_timestamp) is not int:
+        raise TypeError("source_timestamp must be an integer")
+    if source_timestamp < 0 and source_clock_id is not ClockId.MP4_PRESENTATION_TICKS:
+        raise ValueError("source_timestamp cannot be negative")
+    if not isinstance(timestamp_semantic, TimestampSemantic):
+        raise TypeError("timestamp_semantic must be a TimestampSemantic")
+    if timestamp_semantic not in _CLOCK_SEMANTICS[source_clock_id]:
+        raise ValueError("timestamp semantic is incompatible with source clock")
+
+
+@dataclass(frozen=True, slots=True)
+class TimeObservation:
+    """尚未映射到会话时间轴的原始时间观察值。"""
+
+    session_id: str
+    source_clock_id: ClockId
+    source_instance_id: str
+    source_timestamp: int
+    timestamp_semantic: TimestampSemantic
+
+    def __post_init__(self) -> None:
+        """检查时钟域、来源实例、原始数值和事件语义是否一致。"""
+
+        _validate_timestamp_source(
+            self.session_id,
+            self.source_clock_id,
+            self.source_instance_id,
+            self.source_timestamp,
+            self.timestamp_semantic,
+        )
+
+
 class TimeStatus(StrEnum):
     """时间戳换算结果的可信状态。
 
@@ -27,8 +120,11 @@ class TimeStatus(StrEnum):
 class TimeEstimate:
     """一个原始时间戳及其到会话时间轴的换算结果。
     Args:
-        source_clock_id: 原始时钟名称，名称中应体现时钟来源和单位。
+        session_id: 时间观察值所属的采集会话。
+        source_clock_id: 原始时钟域，枚举值中包含来源和单位。
+        source_instance_id: 时钟实例；相机重启或设备重连后必须使用新实例。
         source_timestamp: 原始时间戳整数，不在此处修改或覆盖。
+        timestamp_semantic: 该时间戳实际表示的事件。
         status: 本次时间换算的可信状态。
         session_time_ns: 换算后的会话单调时间，单位为纳秒；不可用时为 ``None``。
         uncertainty_ns: 换算误差的保守上界，单位为纳秒；不可用时为 ``None``。
@@ -36,8 +132,11 @@ class TimeEstimate:
     该对象不可变，保证后续阶段不能意外覆盖原始时间或换算结果。
     """
 
-    source_clock_id: str
+    session_id: str
+    source_clock_id: ClockId
+    source_instance_id: str
     source_timestamp: int
+    timestamp_semantic: TimestampSemantic
     status: TimeStatus
     session_time_ns: int | None = None
     uncertainty_ns: int | None = None
@@ -53,10 +152,13 @@ class TimeEstimate:
             ValueError: 原始时钟为空、时间为负数，或者状态与派生字段不匹配。
         """
 
-        if not self.source_clock_id.strip():
-            raise ValueError("source_clock_id cannot be empty")
-        if self.source_timestamp < 0:
-            raise ValueError("source_timestamp cannot be negative")
+        _validate_timestamp_source(
+            self.session_id,
+            self.source_clock_id,
+            self.source_instance_id,
+            self.source_timestamp,
+            self.timestamp_semantic,
+        )
         if not isinstance(self.status, TimeStatus):
             raise TypeError("status must be a TimeStatus")
 
@@ -76,6 +178,10 @@ class TimeEstimate:
             or self.clock_mapping_id is None
         ):
             raise ValueError("resolved time requires time, uncertainty, and mapping id")
+        if type(self.session_time_ns) is not int or type(self.uncertainty_ns) is not int:
+            raise TypeError("resolved time and uncertainty must be integers")
+        if not isinstance(self.clock_mapping_id, str):
+            raise TypeError("clock_mapping_id must be a string")
         if not self.clock_mapping_id.strip():
             raise ValueError("clock_mapping_id cannot be empty")
         if self.session_time_ns < 0 or self.uncertainty_ns < 0:
