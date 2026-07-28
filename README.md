@@ -12,9 +12,9 @@ service scaffolds.
 src/
   ingest_gateway/            # WebRTC ingress, recording, and raw sessions
   operator_console/          # Native UI, annotation, and annotation persistence
-  spatial_perception/        # Calibration, VIO, hands, and time association
-  interaction_processing/    # Phases, objects, keypoints, and trajectories
-  dataset_builder/           # Training samples, splits, and provenance
+  perception/                # Independently reusable perception core
+    sensor_preprocessing/    # Sensor time, calibration binding, and preparation
+    spatial_perception/      # Planned VIO, hands, and coordinate fusion
 config/                      # Shared client configuration
 tests/                       # Fast tests, named with package prefixes
 evals/                       # Periodic evaluations and device evidence
@@ -23,11 +23,14 @@ packaging/                   # Windows executable packaging assets
 docs/                        # Component-specific operation notes
 ```
 
-The perception, interaction, and dataset packages are boundaries only. They
-contain no copied HumanEgo or other third-party algorithm code yet.
+The `perception` package isolates the research and runtime core from the ingest
+gateway and operator console. It contains no copied HumanEgo or other
+third-party algorithm code yet.
 
 Detailed notes are available in [ingest gateway](docs/ingest-gateway.md),
-[operator console](docs/operator-console.md), [spatial perception](docs/spatial-perception.md),
+[operator console](docs/operator-console.md),
+[sensor preprocessing](docs/sensor-preprocessing.md),
+[spatial perception](docs/spatial-perception.md),
 [interaction processing](docs/interaction-processing.md), and
 [dataset builder](docs/dataset-builder.md).
 

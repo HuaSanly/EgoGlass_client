@@ -5,11 +5,9 @@ from pathlib import Path
 
 CLIENT_ROOT = Path(__file__).parents[1]
 EXPECTED_PACKAGES = {
-    "src/dataset_builder",
     "src/ingest_gateway",
-    "src/interaction_processing",
     "src/operator_console",
-    "src/spatial_perception",
+    "src/perception",
 }
 
 

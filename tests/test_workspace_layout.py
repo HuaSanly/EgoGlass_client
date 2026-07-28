@@ -2,11 +2,9 @@ from pathlib import Path
 
 CLIENT_ROOT = Path(__file__).parents[1]
 EXPECTED_PACKAGES = {
-    "dataset_builder",
     "ingest_gateway",
-    "interaction_processing",
     "operator_console",
-    "spatial_perception",
+    "perception",
 }
 
 
@@ -22,6 +20,14 @@ def test_client_uses_one_flat_python_workspace() -> None:
     assert packages == EXPECTED_PACKAGES
     assert not (CLIENT_ROOT / "src" / "data_platform" / "__init__.py").exists()
     assert not any(path.name.startswith("egoglass_") for path in (CLIENT_ROOT / "src").iterdir())
+
+
+def test_perception_owns_sensor_preprocessing_package() -> None:
+    perception = CLIENT_ROOT / "src" / "perception"
+
+    assert (perception / "__init__.py").is_file()
+    assert (perception / "sensor_preprocessing" / "__init__.py").is_file()
+    assert (perception / "sensor_preprocessing" / "models.py").is_file()
 
 
 def test_packages_do_not_restore_nested_project_scaffolds() -> None:

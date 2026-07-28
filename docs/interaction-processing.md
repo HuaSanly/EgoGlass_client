@@ -13,7 +13,7 @@ HumanEgo or other third-party source has been copied into the package.
 
 | Path | Purpose |
 | --- | --- |
-| `src/interaction_processing/` | Python package for interaction processing. |
+| `src/perception/interaction_processing/` | Planned interaction-processing package. |
 | `tests/` | Shared fast tests, identified by `test_interaction_processing_` filenames. |
 | `evals/` | Shared periodic evaluations, identified by `test_interaction_processing_` filenames. |
 | `config/` | Shared versioned client configuration. |

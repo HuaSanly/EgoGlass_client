@@ -35,9 +35,7 @@ dev = [
 packages = [
   "src/ingest_gateway",
   "src/operator_console",
-  "src/spatial_perception",
-  "src/interaction_processing",
-  "src/dataset_builder",
+  "src/perception",
 ]
 
 [tool.pytest.ini_options]
