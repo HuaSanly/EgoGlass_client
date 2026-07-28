@@ -1,4 +1,4 @@
-"""只读加载已完成的 capture-session-v1 会话。"""
+"""用于只读加载已完成的 capture-session-v1 会话。"""
 
 from __future__ import annotations
 
