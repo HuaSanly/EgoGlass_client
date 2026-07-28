@@ -6,6 +6,8 @@
 from dataclasses import dataclass
 from enum import StrEnum
 from fractions import Fraction
+from math import isfinite
+from pathlib import Path
 
 
 class TimeStatus(StrEnum):
@@ -120,3 +122,253 @@ class Mp4Timestamp:
             self.pts * self.time_base_numerator,
             self.time_base_denominator,
         )
+
+
+class MetadataMatchStatus(StrEnum):
+    """MP4 帧和眼镜端相机元数据之间的匹配结果。"""
+
+    EXACT = "exact"
+    WITHIN_TOLERANCE = "within_tolerance"
+    UNMATCHED = "unmatched"
+
+
+class ImuSensorType(StrEnum):
+    """当前预处理契约支持的 IMU 传感器类型。"""
+
+    ACCELEROMETER = "accelerometer"
+    GYROSCOPE = "gyroscope"
+
+
+class AlignmentStatus(StrEnum):
+    """采集数据库中时间对齐字段的状态。"""
+
+    PENDING = "pending"
+    MAPPED = "mapped"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredAlignment:
+    """采集数据库中已有的时间对齐结果，不在读取阶段重新计算。"""
+
+    status: AlignmentStatus
+    session_time_ns: int | None
+    uncertainty_ns: int | None
+    clock_mapping_segment_id: str | None
+
+    def __post_init__(self) -> None:
+        """检查原始对齐字段是全部缺失或全部存在，禁止部分结果。"""
+
+        if not isinstance(self.status, AlignmentStatus):
+            raise TypeError("status must be an AlignmentStatus")
+        derived = (
+            self.session_time_ns,
+            self.uncertainty_ns,
+            self.clock_mapping_segment_id,
+        )
+        if self.status is AlignmentStatus.PENDING and any(
+            value is not None for value in derived
+        ):
+            raise ValueError("pending alignment cannot contain mapped fields")
+        if self.status is AlignmentStatus.MAPPED and any(value is None for value in derived):
+            raise ValueError("mapped alignment requires all mapped fields")
+        if self.session_time_ns is not None and self.session_time_ns < 0:
+            raise ValueError("stored session time cannot be negative")
+        if self.uncertainty_ns is not None and self.uncertainty_ns < 0:
+            raise ValueError("stored timestamp uncertainty cannot be negative")
+        if (
+            self.clock_mapping_segment_id is not None
+            and not self.clock_mapping_segment_id.strip()
+        ):
+            raise ValueError("clock mapping segment id cannot be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class RawFrameRef:
+    """一个 MP4 帧及其原始相机元数据的不可变引用。"""
+
+    video_frame_row_id: int
+    session_id: str
+    clip_id: str
+    frame_index: int
+    media_path: Path
+    mp4_timestamp: Mp4Timestamp
+
+    metadata_match_status: MetadataMatchStatus
+    video_frame_metadata_id: str | None
+    frame_metadata_match_id: int | None
+    timestamp_match_error_90khz: int | None
+    connection_session_id: str | None
+    camera_start_generation: int | None
+    frame_id: int | None
+
+    captured_at_rokid_sdk_ms: int | None
+    received_at_elapsed_realtime_ns: int | None
+    video_at_monotonic_ns: int | None
+    rtp_timestamp_90khz: int | None
+
+    received_at_client_perf_counter_ns: int
+    metadata_received_at_client_perf_counter_ns: int | None
+    width: int | None
+    height: int | None
+    rotation_degrees: int | None
+    capture_config_id: str | None
+
+    source_frame_timestamp: Mp4Timestamp | None
+    stored_alignment: StoredAlignment
+
+    def __post_init__(self) -> None:
+        """验证帧索引、媒体路径以及 matched/unmatched 字段的一致性。"""
+
+        if self.video_frame_row_id < 1:
+            raise ValueError("video frame row id must be positive")
+        if not self.session_id.strip() or not self.clip_id.strip():
+            raise ValueError("session and clip ids cannot be empty")
+        if self.frame_index < 0:
+            raise ValueError("frame index cannot be negative")
+        if not self.media_path.is_absolute():
+            raise ValueError("media path must be absolute")
+        if self.received_at_client_perf_counter_ns < 0:
+            raise ValueError("client receipt time cannot be negative")
+        if not isinstance(self.metadata_match_status, MetadataMatchStatus):
+            raise TypeError("metadata_match_status must be a MetadataMatchStatus")
+
+        metadata_fields = (
+            self.video_frame_metadata_id,
+            self.frame_metadata_match_id,
+            self.timestamp_match_error_90khz,
+            self.connection_session_id,
+            self.camera_start_generation,
+            self.frame_id,
+            self.captured_at_rokid_sdk_ms,
+            self.received_at_elapsed_realtime_ns,
+            self.video_at_monotonic_ns,
+            self.rtp_timestamp_90khz,
+            self.metadata_received_at_client_perf_counter_ns,
+            self.width,
+            self.height,
+            self.rotation_degrees,
+            self.capture_config_id,
+        )
+        if self.metadata_match_status is MetadataMatchStatus.UNMATCHED:
+            if any(value is not None for value in metadata_fields):
+                raise ValueError("unmatched frame cannot contain camera metadata")
+            return
+        if any(value is None for value in metadata_fields):
+            raise ValueError("matched frame requires complete camera metadata")
+
+        assert self.video_frame_metadata_id is not None
+        assert self.frame_metadata_match_id is not None
+        assert self.timestamp_match_error_90khz is not None
+        assert self.connection_session_id is not None
+        assert self.camera_start_generation is not None
+        assert self.frame_id is not None
+        assert self.captured_at_rokid_sdk_ms is not None
+        assert self.received_at_elapsed_realtime_ns is not None
+        assert self.video_at_monotonic_ns is not None
+        assert self.rtp_timestamp_90khz is not None
+        assert self.metadata_received_at_client_perf_counter_ns is not None
+        assert self.width is not None
+        assert self.height is not None
+        assert self.rotation_degrees is not None
+        assert self.capture_config_id is not None
+        if not self.video_frame_metadata_id.strip() or not self.connection_session_id.strip():
+            raise ValueError("matched frame metadata ids cannot be empty")
+        if self.frame_metadata_match_id < 1:
+            raise ValueError("frame metadata match id must be positive")
+        if self.metadata_match_status is MetadataMatchStatus.EXACT:
+            if self.timestamp_match_error_90khz != 0:
+                raise ValueError("exact metadata match requires zero timestamp error")
+        elif self.timestamp_match_error_90khz <= 0:
+            raise ValueError("within-tolerance metadata match requires positive timestamp error")
+        if not self.capture_config_id.strip():
+            raise ValueError("capture config id cannot be empty")
+        if self.camera_start_generation < 1 or self.frame_id < 0:
+            raise ValueError("camera generation and frame id are invalid")
+        if min(
+            self.captured_at_rokid_sdk_ms,
+            self.received_at_elapsed_realtime_ns,
+            self.video_at_monotonic_ns,
+            self.metadata_received_at_client_perf_counter_ns,
+        ) < 0:
+            raise ValueError("camera timestamps cannot be negative")
+        if not 0 <= self.rtp_timestamp_90khz <= 0xFFFFFFFF:
+            raise ValueError("RTP timestamp is outside uint32 range")
+        if self.width < 1 or self.height < 1:
+            raise ValueError("frame dimensions must be positive")
+        if self.rotation_degrees not in {0, 90, 180, 270}:
+            raise ValueError("frame rotation must be 0, 90, 180, or 270 degrees")
+
+
+@dataclass(frozen=True, slots=True)
+class RawImuSample:
+    """一条保持原始数值、单位、顺序和时钟的 IMU 样本。"""
+
+    sample_id: int
+    session_id: str
+    connection_session_id: str
+    sensor_type: ImuSensorType
+    android_sensor_type: int
+    sequence_number: int
+
+    sensor_event_monotonic_ns: int
+    received_at_elapsed_realtime_ns: int
+    received_at_client_perf_counter_ns: int
+
+    accuracy: int
+    values: tuple[float, float, float]
+    unit: str
+    stored_alignment: StoredAlignment
+
+    def __post_init__(self) -> None:
+        """验证 IMU 类型、Android 类型、单位和三轴数值。"""
+
+        if self.sample_id < 1:
+            raise ValueError("sample id must be positive")
+        if not self.session_id.strip() or not self.connection_session_id.strip():
+            raise ValueError("session and connection ids cannot be empty")
+        if not isinstance(self.sensor_type, ImuSensorType):
+            raise TypeError("sensor_type must be an ImuSensorType")
+        if self.sequence_number < 0:
+            raise ValueError("sequence number cannot be negative")
+        if min(
+            self.sensor_event_monotonic_ns,
+            self.received_at_elapsed_realtime_ns,
+            self.received_at_client_perf_counter_ns,
+        ) < 0:
+            raise ValueError("IMU timestamps cannot be negative")
+        if not -1 <= self.accuracy <= 3:
+            raise ValueError("IMU accuracy must be between -1 and 3")
+        if not isinstance(self.values, tuple) or len(self.values) != 3:
+            raise TypeError("IMU values must be an immutable three-element tuple")
+        if not all(isfinite(value) for value in self.values):
+            raise ValueError("IMU values must be finite")
+
+        expected_android_type, expected_unit = {
+            ImuSensorType.ACCELEROMETER: (1, "m_s2"),
+            ImuSensorType.GYROSCOPE: (4, "rad_s"),
+        }[self.sensor_type]
+        if self.android_sensor_type != expected_android_type or self.unit != expected_unit:
+            raise ValueError("IMU sensor type, Android type, and unit do not match")
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureClipRef:
+    """一个经过 manifest 和文件校验的完整 MP4 clip。"""
+
+    clip_id: str
+    media_path: Path
+    frame_count: int
+    sha256: str
+    width: int
+    height: int
+    nominal_fps: float
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureSessionRef:
+    """预处理 reader 已验证的完整采集会话入口。"""
+
+    session_id: str
+    session_directory: Path
+    telemetry_database_path: Path
+    clips: tuple[CaptureClipRef, ...]
