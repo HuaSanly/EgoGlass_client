@@ -590,14 +590,34 @@ function readHandTrackingStatus(payload) {
 
 function renderHandReadout(element, hand) {
   const title = element.querySelector("strong");
-  const detail = element.querySelector("small");
+  const detail = element.querySelector(".hand-readout-meta");
+  const confidenceFields = element.querySelectorAll("[data-confidence-field]");
   if (!hand) {
     title.textContent = "未检测";
     detail.textContent = "--";
+    confidenceFields.forEach((field) => {
+      field.textContent = "--";
+    });
     return;
   }
-  title.textContent = `${Math.round(hand.confidence * 100)}% · ${hand.reconstruction_backend}`;
+  const finalConfidence = hand.final_confidence ?? hand.confidence;
+  const confidenceValues = {
+    detector_confidence: hand.detector_confidence,
+    reconstruction_quality: hand.reconstruction_quality,
+    depth_score: hand.depth_score,
+    coverage_score: hand.coverage_score,
+    compactness_score: hand.compactness_score,
+    final_confidence: finalConfidence,
+  };
+  title.textContent = `${formatConfidence(finalConfidence)} · ${hand.reconstruction_backend}`;
   detail.textContent = `${hand.metric_depth_status} · ${hand.is_grasping ? "抓握" : "展开"}`;
+  confidenceFields.forEach((field) => {
+    field.textContent = formatConfidence(confidenceValues[field.dataset.confidenceField]);
+  });
+}
+
+function formatConfidence(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "--";
 }
 
 const handBones = [
@@ -675,7 +695,8 @@ function drawHandTrackingOverlay(result) {
     const [x1, y1] = mapPoint(hand.source_bbox_xyxy_px.slice(0, 2));
     const [x2, y2] = mapPoint(hand.source_bbox_xyxy_px.slice(2, 4));
     context.strokeRect(x1, y1, x2 - x1, y2 - y1);
-    const label = `${hand.handedness.toUpperCase()} ${Math.round(hand.confidence * 100)}%${hand.is_grasping ? " · GRASP" : ""}`;
+    const finalConfidence = hand.final_confidence ?? hand.confidence;
+    const label = `${hand.handedness.toUpperCase()} ${Math.round(finalConfidence * 100)}%${hand.is_grasping ? " · GRASP" : ""}`;
     context.font = "700 11px Consolas, monospace";
     const labelWidth = context.measureText(label).width + 12;
     const labelTop = Math.max(4, y1 - 23);

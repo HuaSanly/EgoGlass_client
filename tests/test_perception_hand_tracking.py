@@ -210,6 +210,9 @@ def _reconstruction(depth: float = 0.6) -> HandReconstruction:
         keypoints_3d_m=readonly_float_array(_keypoints_3d(depth), (21, 3)),
         keypoints_2d_px=readonly_float_array(_keypoints_2d(), (21, 2)),
         confidence=0.8,
+        depth_score=1.0,
+        coverage_score=0.8 / 0.95,
+        compactness_score=1.0,
     )
 
 
@@ -249,6 +252,11 @@ def test_hamer_result_uses_humanego_joint_order_and_records_backend(tmp_path: Pa
     assert hand.reconstruction_backend is ReconstructionBackend.HAMER
     assert hand.metric_depth_status is MetricDepthStatus.MODEL_ESTIMATED
     assert hand.confidence == pytest.approx(0.72)
+    assert hand.detector_confidence == pytest.approx(0.9)
+    assert hand.reconstruction_quality == pytest.approx(0.8)
+    assert hand.depth_score == pytest.approx(1.0)
+    assert hand.coverage_score == pytest.approx(0.8 / 0.95)
+    assert hand.compactness_score == pytest.approx(1.0)
     np.testing.assert_allclose(hand.keypoints_3d_camera_m[0], _keypoints_3d()[4])
     np.testing.assert_allclose(hand.keypoints_3d_camera_m[5], _keypoints_3d()[0])
     assert hand.keypoints_3d_camera_m.flags.writeable is False
@@ -369,6 +377,9 @@ def test_hamer_adapter_collates_two_crops_into_one_model_forward(
     assert results[1] is not None and results[1].keypoints_3d_m[0, 2] == pytest.approx(0.8)
     assert results[0].keypoints_3d_m[1, 0] > 0
     assert results[1].keypoints_3d_m[1, 0] < 0
+    assert results[0].depth_score == pytest.approx(1.0)
+    assert 0.0 <= results[0].coverage_score <= 1.0
+    assert 0.0 <= results[0].compactness_score <= 1.0
 
 
 def test_invalid_hamer_depth_uses_humanego_physical_size_recovery(tmp_path: Path) -> None:
@@ -427,6 +438,11 @@ def test_mediapipe_3d_is_used_only_as_explicit_crop_fallback(tmp_path: Path) -> 
 
     assert hand.reconstruction_backend is ReconstructionBackend.MEDIAPIPE
     assert hand.metric_depth_status is MetricDepthStatus.PHYSICAL_SIZE_ESTIMATED
+    assert hand.detector_confidence == pytest.approx(0.9)
+    assert hand.reconstruction_quality is None
+    assert hand.depth_score is None
+    assert hand.coverage_score is None
+    assert hand.compactness_score is None
 
 
 def test_pipeline_rejects_missing_required_hamer(tmp_path: Path) -> None:
@@ -460,6 +476,15 @@ def test_result_payload_is_json_serializable_and_keeps_camera_frame_name(
     ]
     assert payload["hands"][0]["source_bbox_xyxy_px"] == payload["hands"][0][
         "bbox_xyxy_px"
+    ]
+    assert payload["hands"][0]["detector_confidence"] == pytest.approx(0.9)
+    assert payload["hands"][0]["reconstruction_quality"] == pytest.approx(0.8)
+    assert payload["hands"][0]["depth_score"] == pytest.approx(1.0)
+    assert payload["hands"][0]["coverage_score"] == pytest.approx(0.8 / 0.95)
+    assert payload["hands"][0]["compactness_score"] == pytest.approx(1.0)
+    assert payload["hands"][0]["final_confidence"] == pytest.approx(0.72)
+    assert payload["hands"][0]["confidence"] == payload["hands"][0][
+        "final_confidence"
     ]
     stage_total = sum(
         int(payload[field])

@@ -9,7 +9,10 @@ is used by recorded replay and live gateway paths.
 The output is `HandTrackingResult` contract version `1.0`. Each hand contains:
 
 - wearer-relative left/right handedness;
-- detector and reconstruction confidence;
+- detector confidence, HaMeR reconstruction quality, and the separate depth,
+  2D coverage, and 3D compactness quality components;
+- final confidence used by filtering, with legacy `confidence` retained as an
+  alias of `final_confidence`;
 - HumanEgo's Aria-compatible 21-joint order;
 - rectified-image pixel coordinates;
 - 3D points in the rectified camera coordinate system, in meters;
@@ -58,6 +61,14 @@ Each result reports preparation, detector, reconstruction, and postprocessing
 durations, reconstruction batch size, and whether AMP was active. This version
 does not interpolate missing detections, suppress short segments, or smooth
 results across frames.
+
+For HaMeR results with model-estimated depth, `final_confidence` is detector
+confidence multiplied by `reconstruction_quality`. The reconstruction quality
+is derived from `depth_score`, `coverage_score`, and `compactness_score`. When
+invalid HaMeR depth is replaced by the physical-size estimate, final confidence
+falls back to detector confidence while the original HaMeR quality components
+remain visible as diagnostics. A MediaPipe-only reconstruction reports those
+four HaMeR-specific values as `null` rather than inventing comparable scores.
 
 The operator console reads these loopback-only endpoints:
 

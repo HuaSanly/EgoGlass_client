@@ -68,6 +68,9 @@ decoded and perception receipt counts, left/right confidence and backend,
 grasp state, result frame, inference duration, processed frames, and inference
 skips. A single SSE connection receives each new inference or replay status as
 soon as the gateway publishes it; there is no periodic hand-result HTTP poll.
+Each left/right readout separates detector confidence, reconstruction quality,
+depth, coverage, compactness, and final confidence. HaMeR-specific values show
+as unavailable when the result came from the MediaPipe reconstruction fallback.
 The main viewer keeps the decoded preview as its bottom layer and draws
 HaMeR boxes and keypoints on a canvas above it. Model loading, slow inference,
 and no-hand results therefore do not stop the video. The same panel selects

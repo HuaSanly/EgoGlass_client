@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -39,6 +40,14 @@ LOGGER = logging.getLogger(__name__)
 
 class _ViTPosePostprocessor(Protocol):
     postprocess: Callable[..., object]
+
+
+@dataclass(frozen=True, slots=True)
+class _HaMeRQualityScores:
+    reconstruction_quality: float
+    depth_score: float
+    coverage_score: float
+    compactness_score: float
 
 
 class HumanEgoHaMeRModel:
@@ -187,7 +196,7 @@ class HumanEgoHaMeRModel:
                     + image_height / 2.0
                 )
 
-            confidence = _compute_hamer_confidence(
+            quality = _compute_hamer_quality_scores(
                 relative_3d,
                 joints_camera,
                 joints_2d,
@@ -196,7 +205,10 @@ class HumanEgoHaMeRModel:
             results[detection_index] = HandReconstruction(
                 keypoints_3d_m=readonly_float_array(joints_camera, (21, 3)),
                 keypoints_2d_px=readonly_float_array(joints_2d, (21, 2)),
-                confidence=confidence,
+                confidence=quality.reconstruction_quality,
+                depth_score=quality.depth_score,
+                coverage_score=quality.coverage_score,
+                compactness_score=quality.compactness_score,
             )
         return tuple(results)
 
@@ -436,16 +448,13 @@ def _install_vitpose_fp32_postprocess(model: _ViTPosePostprocessor) -> None:
     model.postprocess = fp32_postprocess
 
 
-def _compute_hamer_confidence(
+def _compute_hamer_quality_scores(
     relative_3d: NDArray[np.floating],
     joints_camera: NDArray[np.floating],
     joints_2d: NDArray[np.floating],
     bbox: NDArray[np.floating],
-) -> float:
+) -> _HaMeRQualityScores:
     wrist_depth = float(joints_camera[0, 2])
-    if wrist_depth < 0.05 or wrist_depth > 3.0:
-        return 0.15
-    depth_score = 0.5 if wrist_depth < 0.1 else 0.6 if wrist_depth > 2.0 else 1.0
     bbox_width = max(float(bbox[2] - bbox[0]), 1.0)
     bbox_height = max(float(bbox[3] - bbox[1]), 1.0)
     valid_2d = joints_2d[(joints_2d[:, 0] > 0) & (joints_2d[:, 1] > 0)]
@@ -459,7 +468,26 @@ def _compute_hamer_confidence(
         coverage_score = 0.3
     hand_span = float(np.linalg.norm(relative_3d.max(axis=0) - relative_3d.min(axis=0)))
     compactness_score = 0.3 if hand_span < 0.05 or hand_span > 0.5 else 1.0
-    return float(np.clip(0.95 * depth_score * coverage_score * compactness_score, 0.1, 0.99))
+    if wrist_depth < 0.05 or wrist_depth > 3.0:
+        depth_score = 0.15
+        reconstruction_quality = 0.15
+    else:
+        depth_score = (
+            0.5 if wrist_depth < 0.1 else 0.6 if wrist_depth > 2.0 else 1.0
+        )
+        reconstruction_quality = float(
+            np.clip(
+                0.95 * depth_score * coverage_score * compactness_score,
+                0.1,
+                0.99,
+            )
+        )
+    return _HaMeRQualityScores(
+        reconstruction_quality=reconstruction_quality,
+        depth_score=depth_score,
+        coverage_score=coverage_score,
+        compactness_score=compactness_score,
+    )
 
 
 def _deduplicate_handedness_candidates(

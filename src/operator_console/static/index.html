@@ -132,10 +132,32 @@
                 </dl>
                 <div class="hand-readouts" aria-label="左右手识别状态">
                   <div class="hand-readout" id="left-hand-readout">
-                    <span>LEFT</span><strong>未检测</strong><small>--</small>
+                    <div class="hand-readout-header">
+                      <span>LEFT</span><strong>未检测</strong>
+                    </div>
+                    <dl class="hand-confidence-grid">
+                      <div><dt title="detector_confidence">DET</dt><dd data-confidence-field="detector_confidence">--</dd></div>
+                      <div><dt title="reconstruction_quality">RECON</dt><dd data-confidence-field="reconstruction_quality">--</dd></div>
+                      <div><dt title="depth_score">DEPTH</dt><dd data-confidence-field="depth_score">--</dd></div>
+                      <div><dt title="coverage_score">COVER</dt><dd data-confidence-field="coverage_score">--</dd></div>
+                      <div><dt title="compactness_score">COMPACT</dt><dd data-confidence-field="compactness_score">--</dd></div>
+                      <div><dt title="final_confidence">FINAL</dt><dd data-confidence-field="final_confidence">--</dd></div>
+                    </dl>
+                    <small class="hand-readout-meta">--</small>
                   </div>
                   <div class="hand-readout" id="right-hand-readout">
-                    <span>RIGHT</span><strong>未检测</strong><small>--</small>
+                    <div class="hand-readout-header">
+                      <span>RIGHT</span><strong>未检测</strong>
+                    </div>
+                    <dl class="hand-confidence-grid">
+                      <div><dt title="detector_confidence">DET</dt><dd data-confidence-field="detector_confidence">--</dd></div>
+                      <div><dt title="reconstruction_quality">RECON</dt><dd data-confidence-field="reconstruction_quality">--</dd></div>
+                      <div><dt title="depth_score">DEPTH</dt><dd data-confidence-field="depth_score">--</dd></div>
+                      <div><dt title="coverage_score">COVER</dt><dd data-confidence-field="coverage_score">--</dd></div>
+                      <div><dt title="compactness_score">COMPACT</dt><dd data-confidence-field="compactness_score">--</dd></div>
+                      <div><dt title="final_confidence">FINAL</dt><dd data-confidence-field="final_confidence">--</dd></div>
+                    </dl>
+                    <small class="hand-readout-meta">--</small>
                   </div>
                 </div>
                 <section class="replay-control" aria-labelledby="replay-title">

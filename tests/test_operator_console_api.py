@@ -164,6 +164,29 @@ def test_home_uses_one_stage_for_live_tracking_and_replay() -> None:
     assert 'elements.viewerEmpty.hidden = showLiveVideo || showReplay' in script
 
 
+def test_home_displays_each_hand_confidence_component() -> None:
+    with make_client() as client:
+        page = client.get("/").text
+        script = client.get("/assets/app.js").text
+        styles = client.get("/assets/styles.css").text
+
+    confidence_fields = (
+        "detector_confidence",
+        "reconstruction_quality",
+        "depth_score",
+        "coverage_score",
+        "compactness_score",
+        "final_confidence",
+    )
+    for field in confidence_fields:
+        assert page.count(f'data-confidence-field="{field}"') == 2
+        assert field in script
+    assert "function formatConfidence(value)" in script
+    assert "hand.final_confidence ?? hand.confidence" in script
+    assert ".hand-confidence-grid" in styles
+    assert '[data-confidence-field="final_confidence"]' in styles
+
+
 def test_runtime_contains_no_simulated_data_controls_or_transport() -> None:
     with make_client() as client:
         page = client.get("/").text

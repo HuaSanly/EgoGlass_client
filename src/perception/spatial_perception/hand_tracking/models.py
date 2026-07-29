@@ -189,12 +189,22 @@ class HandReconstruction:
     keypoints_3d_m: FloatArray
     keypoints_2d_px: FloatArray
     confidence: float
+    depth_score: float
+    coverage_score: float
+    compactness_score: float
 
     def __post_init__(self) -> None:
         _validate_array(self.keypoints_3d_m, (21, 3), "reconstructed 3D keypoints")
         _validate_array(self.keypoints_2d_px, (21, 2), "reconstructed 2D keypoints")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("reconstruction confidence must be between zero and one")
+        for name, value in (
+            ("depth score", self.depth_score),
+            ("coverage score", self.coverage_score),
+            ("compactness score", self.compactness_score),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between zero and one")
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +213,11 @@ class TrackedHand:
 
     handedness: Handedness
     confidence: float
+    detector_confidence: float
+    reconstruction_quality: float | None
+    depth_score: float | None
+    coverage_score: float | None
+    compactness_score: float | None
     reconstruction_backend: ReconstructionBackend
     metric_depth_status: MetricDepthStatus
     bbox_xyxy_px: tuple[float, float, float, float]
@@ -217,6 +232,16 @@ class TrackedHand:
         _validate_array(self.keypoints_3d_camera_m, (21, 3), "tracked 3D keypoints")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("tracked hand confidence must be between zero and one")
+        if not 0.0 <= self.detector_confidence <= 1.0:
+            raise ValueError("detector confidence must be between zero and one")
+        for name, value in (
+            ("reconstruction quality", self.reconstruction_quality),
+            ("depth score", self.depth_score),
+            ("coverage score", self.coverage_score),
+            ("compactness score", self.compactness_score),
+        ):
+            if value is not None and not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between zero and one")
         if not np.isfinite(self.grasp_ratio) or self.grasp_ratio < 0.0:
             raise ValueError("grasp ratio must be finite and non-negative")
         if not all(np.isfinite(value) for value in self.joint_angles_degrees.values()):
@@ -291,6 +316,12 @@ class HandTrackingResult:
                 {
                     "handedness": hand.handedness.value,
                     "confidence": hand.confidence,
+                    "detector_confidence": hand.detector_confidence,
+                    "reconstruction_quality": hand.reconstruction_quality,
+                    "depth_score": hand.depth_score,
+                    "coverage_score": hand.coverage_score,
+                    "compactness_score": hand.compactness_score,
+                    "final_confidence": hand.confidence,
                     "reconstruction_backend": hand.reconstruction_backend.value,
                     "metric_depth_status": hand.metric_depth_status.value,
                     "bbox_xyxy_px": list(hand.bbox_xyxy_px),

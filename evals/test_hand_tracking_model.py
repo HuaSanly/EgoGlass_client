@@ -67,6 +67,17 @@ def test_public_hand_sample_runs_vitpose_and_cuda_hamer(
     teaser = _load_public_teaser()
     crop = teaser[0:980, 2480:3700]
     result = model_pipeline.process_frame(_bundle(crop, frame_index=0))
+    quality_breakdown = [
+        (
+            round(hand.detector_confidence, 4),
+            round(hand.reconstruction_quality or 0.0, 4),
+            round(hand.depth_score or 0.0, 4),
+            round(hand.coverage_score or 0.0, 4),
+            round(hand.compactness_score or 0.0, 4),
+            round(hand.confidence, 4),
+        )
+        for hand in result.hands
+    ]
 
     print(
         "hand_model_positive "
@@ -78,6 +89,7 @@ def test_public_hand_sample_runs_vitpose_and_cuda_hamer(
         f"batch_size={result.reconstruction_batch_size} "
         f"amp_enabled={result.amp_enabled} "
         f"peak_cuda_gib={torch.cuda.max_memory_allocated() / 1024**3:.3f} "
+        f"quality_breakdown={quality_breakdown} "
         f"confidences={[round(hand.confidence, 4) for hand in result.hands]}"
     )
 
@@ -101,6 +113,17 @@ def test_public_hand_sample_runs_vitpose_and_cuda_hamer(
         for hand in result.hands
     )
     assert all(0.0 <= hand.confidence <= 1.0 for hand in result.hands)
+    assert all(hand.reconstruction_quality is not None for hand in result.hands)
+    assert all(hand.depth_score is not None for hand in result.hands)
+    assert all(hand.coverage_score is not None for hand in result.hands)
+    assert all(hand.compactness_score is not None for hand in result.hands)
+    assert all(
+        hand.confidence
+        == pytest.approx(hand.detector_confidence * hand.reconstruction_quality)
+        for hand in result.hands
+        if hand.reconstruction_quality is not None
+        and hand.metric_depth_status.value == "model_estimated"
+    )
 
 
 def test_glass3_no_hand_recording_has_low_false_positive_rate(

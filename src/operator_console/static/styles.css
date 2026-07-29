@@ -1364,8 +1364,7 @@ a {
 .hand-readout {
   display: grid;
   min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 2px 8px;
+  gap: 5px;
   align-content: center;
   padding: 7px 8px;
 }
@@ -1374,30 +1373,78 @@ a {
   border-left: 1px solid var(--border-soft);
 }
 
-.hand-readout > span {
-  grid-row: 1 / span 2;
-  align-self: center;
+.hand-readout-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.hand-readout-header span {
   color: var(--text-muted);
   font-family: Consolas, monospace;
   font-size: 8px;
-  writing-mode: vertical-rl;
 }
 
-.hand-readout strong,
-.hand-readout small {
+.hand-readout-header strong,
+.hand-readout-meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.hand-readout strong {
+.hand-readout-header strong {
   color: var(--text-secondary);
+  font-family: Consolas, monospace;
   font-size: 10px;
 }
 
-.hand-readout small {
+.hand-confidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  column-gap: 8px;
+  margin: 0;
+}
+
+.hand-confidence-grid > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.hand-confidence-grid dt,
+.hand-confidence-grid dd {
+  min-width: 0;
+  margin: 0;
+  font-family: Consolas, monospace;
+  line-height: 1.25;
+}
+
+.hand-confidence-grid dt {
+  overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 7px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.hand-confidence-grid dd {
+  color: var(--text-secondary);
+  font-size: 8px;
+}
+
+.hand-confidence-grid dd[data-confidence-field="final_confidence"] {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.hand-readout-meta {
+  color: var(--text-muted);
+  font-size: 8px;
 }
 
 .replay-control {

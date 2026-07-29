@@ -99,6 +99,17 @@ def test_hand_tracking_panel_uses_live_status_and_offline_replay() -> None:
     assert "drawHandTrackingOverlay(result)" in script
     assert "source_keypoints_2d_px" in script
     assert "source_bbox_xyxy_px" in script
+    for confidence_field in (
+        "detector_confidence",
+        "reconstruction_quality",
+        "depth_score",
+        "coverage_score",
+        "compactness_score",
+        "final_confidence",
+    ):
+        assert html.count(f'data-confidence-field="{confidence_field}"') == 2
+        assert confidence_field in script
+    assert "hand.final_confidence ?? hand.confidence" in script
     assert "const showLiveVideo = liveMode && state.liveVideoReady" in script
     assert "replayMatchesSelectedSession()" in script
     assert "/api/v1/perception/hand-tracking" in script

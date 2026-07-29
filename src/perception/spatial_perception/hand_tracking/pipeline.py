@@ -223,10 +223,19 @@ class HumanEgoHandTrackingPipeline:
         detection: DetectedHand,
         reconstruction: HandReconstruction | None,
     ) -> TrackedHand | None:
+        detector_confidence = float(detection.confidence)
+        reconstruction_quality: float | None = None
+        depth_score: float | None = None
+        coverage_score: float | None = None
+        compactness_score: float | None = None
         if reconstruction is not None:
             keypoints_3d = reconstruction.keypoints_3d_m
             keypoints_2d = reconstruction.keypoints_2d_px
-            confidence = float(detection.confidence * reconstruction.confidence)
+            reconstruction_quality = float(reconstruction.confidence)
+            depth_score = float(reconstruction.depth_score)
+            coverage_score = float(reconstruction.coverage_score)
+            compactness_score = float(reconstruction.compactness_score)
+            confidence = float(detector_confidence * reconstruction_quality)
             depth_status = MetricDepthStatus.MODEL_ESTIMATED
             wrist_depth = float(keypoints_3d[0, 2])
             if not self.config.minimum_depth_m <= wrist_depth <= self.config.maximum_depth_m:
@@ -239,7 +248,7 @@ class HumanEgoHandTrackingPipeline:
                 if recovered is None:
                     return None
                 keypoints_3d = recovered
-                confidence = detection.confidence
+                confidence = detector_confidence
                 depth_status = MetricDepthStatus.PHYSICAL_SIZE_ESTIMATED
             backend = ReconstructionBackend.HAMER
         elif (
@@ -256,7 +265,7 @@ class HumanEgoHandTrackingPipeline:
                 return None
             keypoints_3d = recovered
             keypoints_2d = detection.keypoints_2d_px
-            confidence = detection.confidence
+            confidence = detector_confidence
             backend = ReconstructionBackend.MEDIAPIPE
             depth_status = MetricDepthStatus.PHYSICAL_SIZE_ESTIMATED
         else:
@@ -279,6 +288,11 @@ class HumanEgoHandTrackingPipeline:
         return TrackedHand(
             handedness=detection.handedness,
             confidence=float(np.clip(confidence, 0.0, 1.0)),
+            detector_confidence=detector_confidence,
+            reconstruction_quality=reconstruction_quality,
+            depth_score=depth_score,
+            coverage_score=coverage_score,
+            compactness_score=compactness_score,
             reconstruction_backend=backend,
             metric_depth_status=depth_status,
             bbox_xyxy_px=detection.bbox_xyxy_px,
