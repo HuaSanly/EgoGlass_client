@@ -5,9 +5,15 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+import av
+import numpy as np
 from av import VideoFrame
 
-from perception.runtime import HandTrackingRuntime, LiveHandTrackingFrame
+from perception.runtime import (
+    HandTrackingRuntime,
+    LiveHandTrackingFrame,
+    _H264ReplayWriter,
+)
 from perception.sensor_preprocessing import (
     ClockId,
     TimeObservation,
@@ -45,6 +51,24 @@ def _frame(index: int, received_at_ns: int) -> LiveHandTrackingFrame:
         received_at_client_monotonic_ns=received_at_ns,
         decoded_frame=VideoFrame(8, 6, "yuv420p"),
     )
+
+
+def test_replay_writer_creates_fast_start_h264_mp4(tmp_path: Path) -> None:
+    path = tmp_path / "annotated.mp4"
+    writer = _H264ReplayWriter(path, 30.0, 8, 6)
+    for value in (20, 120, 220):
+        writer.write(np.full((6, 8, 3), value, dtype=np.uint8))
+    writer.close()
+    writer.close()
+
+    with av.open(str(path), mode="r") as container:
+        stream = container.streams.video[0]
+        frames = list(container.decode(stream))
+
+    encoded = path.read_bytes()
+    assert stream.codec_context.name == "h264"
+    assert len(frames) == 3
+    assert encoded.index(b"moov") < encoded.index(b"mdat")
 
 
 def test_live_runtime_keeps_only_newest_pending_frame(tmp_path: Path) -> None:

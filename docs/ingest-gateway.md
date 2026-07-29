@@ -103,10 +103,12 @@ New sessions use the versioned `capture-session-v1` layout:
 gyroscope samples, capabilities, connection segments, every valid video
 metadata message, decoded-frame matches, every MP4 frame index, lifecycle
 events, and every source timestamp needed by later perception processing. New
-capture records remain alignment-pending and do not generate clock mappings. A
-bounded queue keeps SQLite work out of WebRTC callbacks and a single worker
-commits batches. Queue overflow is counted and makes the session ineligible for
-training instead of silently disappearing.
+capture records remain alignment-pending: the gateway saves the evidence but
+does not write estimated values back into raw telemetry. Strict offline
+perception derives a separate, versioned clock mapping under
+`derived/sensor-preprocessing/`. A bounded queue keeps SQLite work out of
+WebRTC callbacks and a single worker commits batches. Queue overflow is counted
+and makes the session ineligible for training instead of silently disappearing.
 
 Set the root with `--recordings-root` or `EGOGLASS_RECORDINGS_ROOT`. The CLI
 default is `local-data/recordings` relative to the launch directory:
@@ -168,12 +170,12 @@ the latest sample, while an active collection session persists every sample.
 
 The gateway does not fit video-to-IMU clock mappings. It preserves Rokid camera
 time, Android sensor time, callback elapsed-realtime, Windows receipt time, RTP
-time, and exact MP4 PTS/time bases. A later versioned perception pipeline uses
-those values with VIO output to associate frames, camera pose, IMU, and hands
-without rewriting raw capture records. Missing device, firmware, glasses
-application, or Git revision provenance still makes a session ineligible, and
-raw capture remains ineligible until perception processing emits its own
-quality decision.
+time, and exact MP4 PTS/time bases. The versioned perception pipeline derives
+an estimated mapping from those values, records its evidence hash and measured
+uncertainty beside the raw capture, and uses it to associate frames and IMU
+without rewriting raw records. Missing device, firmware, glasses application,
+or Git revision provenance still makes a session ineligible, and raw capture
+remains ineligible until perception processing emits its own quality decision.
 
 By default the gateway also listens for EgoGlass discovery v1 requests on UDP
 port 8771. It responds only to private or loopback IPv4 sources and returns the

@@ -46,6 +46,12 @@ from .pipeline import (
     SensorPreprocessingError,
     SensorPreprocessingPipeline,
 )
+from .recorded_alignment import (
+    RecordedAlignmentError,
+    RecordedClockMapping,
+    derive_recorded_clock_mapping,
+    persist_recorded_clock_mapping,
+)
 
 __all__ = [
     "AlignmentStatus",
@@ -69,6 +75,8 @@ __all__ = [
     "RecordedPreprocessingConfig",
     "RawFrameRef",
     "RawImuSample",
+    "RecordedAlignmentError",
+    "RecordedClockMapping",
     "StoredAlignment",
     "TimeEstimate",
     "TimeObservation",
@@ -81,12 +89,14 @@ __all__ = [
     "SensorPreprocessingError",
     "SensorPreprocessingPipeline",
     "client_perf_source_instance_id",
+    "derive_recorded_clock_mapping",
     "frame_callback_observation",
     "frame_presentation_observation",
     "frame_sdk_observation",
     "glasses_elapsed_source_instance_id",
     "imu_sensor_event_observation",
     "mp4_source_instance_id",
+    "persist_recorded_clock_mapping",
     "rokid_sdk_source_instance_id",
     "rtp_match_error_to_uncertainty_ns",
 ]

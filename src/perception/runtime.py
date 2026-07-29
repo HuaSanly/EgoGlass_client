@@ -10,11 +10,14 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from dataclasses import dataclass
 from enum import StrEnum
+from fractions import Fraction
 from pathlib import Path
 
-import cv2
+import av
+import numpy as np
 import yaml
 from av import VideoFrame
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -31,6 +34,8 @@ from perception.sensor_preprocessing import (
     TimestampSemantic,
     TimeStatus,
     client_perf_source_instance_id,
+    derive_recorded_clock_mapping,
+    persist_recorded_clock_mapping,
 )
 from perception.spatial_perception.hand_tracking import (
     HandTrackingResult,
@@ -112,6 +117,7 @@ class ReplayReport:
     session_id: str
     run_id: str
     output_directory: Path
+    clock_mapping_path: Path
     result_path: Path
     video_paths: tuple[Path, ...]
     input_frame_count: int
@@ -123,6 +129,9 @@ class ReplayReport:
             "session_id": self.session_id,
             "run_id": self.run_id,
             "output_relative_path": self.output_directory.relative_to(recordings_root).as_posix(),
+            "clock_mapping_relative_path": self.clock_mapping_path.relative_to(
+                recordings_root
+            ).as_posix(),
             "result_relative_path": self.result_path.relative_to(recordings_root).as_posix(),
             "videos": [
                 {
@@ -135,6 +144,60 @@ class ReplayReport:
             "inferred_frame_count": self.inferred_frame_count,
             "detected_hand_count": self.detected_hand_count,
         }
+
+
+class _H264ReplayWriter:
+    """Synchronous browser-compatible H.264 MP4 writer for annotated frames."""
+
+    def __init__(self, path: Path, fps: float, width: int, height: int) -> None:
+        rate = Fraction(str(fps)).limit_denominator(1001)
+        if rate <= 0:
+            raise ValueError("replay frame rate must be positive")
+        self._container = av.open(
+            str(path),
+            mode="w",
+            format="mp4",
+            options={"movflags": "+faststart"},
+        )
+        self._stream = self._container.add_stream(
+            "libx264",
+            rate=rate,
+            options={"crf": "18", "preset": "veryfast"},
+        )
+        self._stream.width = width
+        self._stream.height = height
+        self._stream.pix_fmt = "yuv420p"
+        self._time_base = Fraction(rate.denominator, rate.numerator)
+        self._width = width
+        self._height = height
+        self._frame_count = 0
+        self._closed = False
+
+    def write(self, image_bgr: np.ndarray) -> None:
+        """Encode one BGR frame with a deterministic CFR presentation timestamp."""
+
+        if self._closed:
+            raise RuntimeError("replay writer is closed")
+        if image_bgr.shape != (self._height, self._width, 3):
+            raise ValueError("replay frame dimensions changed during encoding")
+        frame = VideoFrame.from_ndarray(image_bgr, format="bgr24")
+        frame.pts = self._frame_count
+        frame.time_base = self._time_base
+        for packet in self._stream.encode(frame):
+            self._container.mux(packet)
+        self._frame_count += 1
+
+    def close(self) -> None:
+        """Flush delayed encoder packets and finalize the fast-start MP4."""
+
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            for packet in self._stream.encode(None):
+                self._container.mux(packet)
+        finally:
+            self._container.close()
 
 
 def render_recorded_hand_tracking_replay(
@@ -153,16 +216,27 @@ def render_recorded_hand_tracking_replay(
     session_path = Path(session_directory).resolve()
     output_path = Path(output_directory).resolve()
     reader = CaptureSessionReader.open(session_path)
-    empty_mapper = SegmentedClockMapper(reader.session.session_id, ())
+    frame_evidence = tuple(
+        frame
+        for clip in reader.session.clips
+        for frame in reader.iter_frames(clip.clip_id)
+    )
+    imu_evidence = tuple(reader.iter_imu_samples())
+    recorded_mapping = derive_recorded_clock_mapping(
+        reader.session.session_id,
+        frame_evidence,
+        imu_evidence,
+    )
+    clock_mapping_path = persist_recorded_clock_mapping(recorded_mapping, session_path)
     preprocessing = SensorPreprocessingPipeline.from_config_file(
         sensor_config_path,
-        empty_mapper,
+        recorded_mapping.mapper,
     )
     output_path.mkdir(parents=True, exist_ok=False)
     result_path = output_path / "results.jsonl"
     fps_by_clip = {clip.clip_id: clip.nominal_fps for clip in reader.session.clips}
     total_frames = sum(clip.frame_count for clip in reader.session.clips)
-    writers: dict[str, cv2.VideoWriter] = {}
+    writers: dict[str, _H264ReplayWriter] = {}
     videos: dict[str, Path] = {}
     latest_by_clip: dict[str, HandTrackingResult] = {}
     input_frame_count = 0
@@ -170,7 +244,10 @@ def render_recorded_hand_tracking_replay(
     detected_hand_count = 0
 
     try:
-        with result_path.open("x", encoding="utf-8") as result_stream:
+        with (
+            ExitStack() as writer_stack,
+            result_path.open("x", encoding="utf-8") as result_stream,
+        ):
             for bundle in preprocessing.iter_recorded_session(session_path):
                 input_frame_count += 1
                 clip_id = bundle.sequence_id
@@ -180,7 +257,12 @@ def render_recorded_hand_tracking_replay(
                     inferred_frame_count += 1
                     detected_hand_count += len(result.hands)
                     result_stream.write(
-                        json.dumps(result.to_json_dict(), ensure_ascii=False, sort_keys=True) + "\n"
+                        json.dumps(
+                            result.to_json_dict(),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        + "\n"
                     )
                 result = latest_by_clip.get(clip_id)
                 image = (
@@ -191,14 +273,13 @@ def render_recorded_hand_tracking_replay(
                 writer = writers.get(clip_id)
                 if writer is None:
                     video_path = output_path / f"hand-tracking-{clip_id}.mp4"
-                    writer = cv2.VideoWriter(
-                        str(video_path),
-                        cv2.VideoWriter_fourcc(*"mp4v"),
+                    writer = _H264ReplayWriter(
+                        video_path,
                         fps_by_clip[clip_id],
-                        (image.shape[1], image.shape[0]),
+                        image.shape[1],
+                        image.shape[0],
                     )
-                    if not writer.isOpened():
-                        raise PerceptionRuntimeError("failed to open hand-tracking replay writer")
+                    writer_stack.callback(writer.close)
                     writers[clip_id] = writer
                     videos[clip_id] = video_path
                 writer.write(image)
@@ -211,15 +292,15 @@ def render_recorded_hand_tracking_replay(
             LOGGER.exception("failed to remove incomplete replay output %s", output_path)
         if isinstance(exc, PerceptionRuntimeError):
             raise
-        raise PerceptionRuntimeError("failed to render hand-tracking replay") from exc
-    finally:
-        for writer in writers.values():
-            writer.release()
+        raise PerceptionRuntimeError(
+            f"failed to render hand-tracking replay: {exc}"
+        ) from exc
 
     return ReplayReport(
         session_id=reader.session.session_id,
         run_id=output_path.name,
         output_directory=output_path,
+        clock_mapping_path=clock_mapping_path,
         result_path=result_path,
         video_paths=tuple(videos.values()),
         input_frame_count=input_frame_count,

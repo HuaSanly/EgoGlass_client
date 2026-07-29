@@ -36,6 +36,8 @@ def test_storage_page_groups_real_playable_clips_by_session() -> None:
     assert 'document.createElement("video")' in script
     assert "video.controls = true" in script
     assert "video.src = clip.media_url" in script
+    assert "renderedLibraryRevision = JSON.stringify(library)" in script
+    assert "renderLibraryIfChanged(readRecordingLibrary(payload))" in script
     assert '["画面", `${clip.width} × ${clip.height}`]' in script
     assert "innerHTML" not in script
     assert "127.0.0.1:8770/api/v1/recordings/library" in api_script

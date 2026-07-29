@@ -65,6 +65,7 @@ let pendingDelete = null;
 let pendingRenameSessionId = null;
 let selectedSessionId = null;
 let librarySnapshot = null;
+let renderedLibraryRevision = null;
 
 if (window.location.search) {
   window.history.replaceState({}, "", window.location.pathname);
@@ -462,6 +463,7 @@ function setLibraryView(view) {
 
 function renderLibrary(library) {
   librarySnapshot = library;
+  renderedLibraryRevision = JSON.stringify(library);
   elements.sessionList.replaceChildren();
   if (library.sessions.length === 0) {
     selectedSessionId = null;
@@ -482,6 +484,13 @@ function renderLibrary(library) {
     renderFolderList(library);
   }
   setLibraryView("content");
+}
+
+function renderLibraryIfChanged(library) {
+  librarySnapshot = library;
+  const nextRevision = JSON.stringify(library);
+  if (nextRevision === renderedLibraryRevision) return;
+  renderLibrary(library);
 }
 
 function renderRecordingStatus(status) {
@@ -528,7 +537,7 @@ async function pollLibrary({ showLoading = false } = {}) {
   try {
     const response = await fetch(recordingLibraryEndpoint, { cache: "no-store" });
     const payload = await readJsonResponse(response, `媒体库 HTTP ${response.status}`);
-    renderLibrary(readRecordingLibrary(payload));
+    renderLibraryIfChanged(readRecordingLibrary(payload));
   } catch (error) {
     elements.summary.textContent = "媒体库不可用";
     elements.errorDetail.textContent = error.message;

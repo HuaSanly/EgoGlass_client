@@ -1,17 +1,29 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 from av import VideoFrame
 
 from perception.runtime import HandTrackingRuntime, LiveHandTrackingFrame
 from perception.sensor_preprocessing import (
+    CaptureSessionReader,
     ClockId,
     TimeObservation,
     TimestampSemantic,
     client_perf_source_instance_id,
+    derive_recorded_clock_mapping,
+    frame_callback_observation,
+    frame_presentation_observation,
+    imu_sensor_event_observation,
 )
 
 REPOSITORY = Path(__file__).parents[1]
+LOCAL_REPLAY_SESSION = (
+    REPOSITORY
+    / "local-data"
+    / "recordings"
+    / "ddee13a63311467d95dc91fcf9784e4b"
+)
 
 
 def _observation(frame: LiveHandTrackingFrame) -> TimeObservation:
@@ -57,3 +69,46 @@ def test_each_live_connection_starts_a_nonnegative_session_timeline(tmp_path: Pa
         assert reconnected_pipeline.clock_mapper.map(_observation(reconnected)).session_time_ns == 0
     finally:
         asyncio.run(runtime.close())
+
+
+def test_local_recording_derives_one_strict_timeline_for_video_and_imu() -> None:
+    if not LOCAL_REPLAY_SESSION.is_dir():
+        pytest.skip("local Glass3 replay recording is unavailable")
+    reader = CaptureSessionReader.open(LOCAL_REPLAY_SESSION)
+    frames = tuple(
+        frame
+        for clip in reader.session.clips
+        for frame in reader.iter_frames(clip.clip_id)
+    )
+    imu_samples = tuple(reader.iter_imu_samples())
+
+    mapping = derive_recorded_clock_mapping(
+        reader.session.session_id,
+        frames,
+        imu_samples,
+    )
+    frame_times = [
+        mapping.mapper.map(
+            frame_callback_observation(frame)
+            or frame_presentation_observation(frame)
+        ).session_time_ns
+        for frame in frames
+    ]
+    imu_times = [
+        mapping.mapper.map(imu_sensor_event_observation(sample)).session_time_ns
+        for sample in imu_samples
+    ]
+
+    print(
+        "recorded_clock_mapping "
+        f"frames={len(frame_times)} imu={len(imu_times)} "
+        f"segments={len(mapping.mapper.segments)} "
+        f"max_uncertainty_ms="
+        f"{max(segment.uncertainty_ns for segment in mapping.mapper.segments) / 1e6:.3f}"
+    )
+    assert all(value is not None for value in frame_times)
+    assert all(value is not None for value in imu_times)
+    assert all(
+        current > previous
+        for previous, current in zip(frame_times, frame_times[1:], strict=False)
+    )

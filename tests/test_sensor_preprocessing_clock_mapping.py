@@ -1,4 +1,5 @@
-from dataclasses import FrozenInstanceError
+import json
+from dataclasses import FrozenInstanceError, replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from perception.sensor_preprocessing import (
     Mp4Timestamp,
     RawFrameRef,
     RawImuSample,
+    RecordedAlignmentError,
     SegmentedClockMapper,
     StoredAlignment,
     TimeObservation,
@@ -20,12 +22,14 @@ from perception.sensor_preprocessing import (
     TimestampSemantic,
     TimeStatus,
     client_perf_source_instance_id,
+    derive_recorded_clock_mapping,
     frame_callback_observation,
     frame_presentation_observation,
     frame_sdk_observation,
     glasses_elapsed_source_instance_id,
     imu_sensor_event_observation,
     mp4_source_instance_id,
+    persist_recorded_clock_mapping,
     rokid_sdk_source_instance_id,
     rtp_match_error_to_uncertainty_ns,
 )
@@ -134,6 +138,97 @@ def _raw_frame(tmp_path: Path, *, pts: int = 0) -> RawFrameRef:
         source_frame_timestamp=Mp4Timestamp(pts, 1, 90_000),
         stored_alignment=_pending_alignment(),
     )
+
+
+def test_recorded_evidence_derives_device_and_mp4_segments(tmp_path: Path) -> None:
+    frames = tuple(
+        replace(
+            _raw_frame(tmp_path, pts=index),
+            video_frame_row_id=index + 1,
+            frame_index=index,
+            frame_id=index,
+            video_at_monotonic_ns=1_100_000_000 + index * 33_333_333,
+            received_at_elapsed_realtime_ns=(
+                1_100_100_000 + index * 33_333_333
+            ),
+            received_at_client_perf_counter_ns=(
+                5_000_000_000 + index * 33_333_333
+            ),
+            metadata_received_at_client_perf_counter_ns=(
+                5_000_100_000 + index * 33_333_333
+            ),
+            source_frame_timestamp=Mp4Timestamp(index, 1, 30),
+        )
+        for index in range(3)
+    )
+    first_imu = replace(
+        _raw_imu_sample(),
+        sensor_event_monotonic_ns=1_050_000_000,
+        received_at_client_perf_counter_ns=4_950_200_000,
+    )
+    second_imu = replace(
+        _raw_imu_sample(),
+        sample_id=2,
+        sequence_number=1,
+        sensor_event_monotonic_ns=1_200_000_000,
+        received_at_elapsed_realtime_ns=1_200_100_000,
+        received_at_client_perf_counter_ns=5_100_300_000,
+    )
+
+    first = derive_recorded_clock_mapping(
+        SESSION_ID,
+        frames,
+        (first_imu, second_imu),
+    )
+    replay = derive_recorded_clock_mapping(
+        SESSION_ID,
+        frames,
+        (first_imu, second_imu),
+    )
+
+    assert first == replay
+    assert len(first.mapper.segments) == 2
+    assert {segment.source_clock_id for segment in first.mapper.segments} == {
+        ClockId.GLASSES_ELAPSED_REALTIME_NS,
+        ClockId.MP4_PRESENTATION_TICKS,
+    }
+    callback_time = first.mapper.map(frame_callback_observation(frames[1]))
+    presentation_time = first.mapper.map(frame_presentation_observation(frames[1]))
+    imu_time = first.mapper.map(imu_sensor_event_observation(second_imu))
+    assert callback_time.status is TimeStatus.ESTIMATED
+    assert presentation_time.status is TimeStatus.ESTIMATED
+    assert abs(callback_time.session_time_ns - presentation_time.session_time_ns) <= 1
+    assert imu_time.session_time_ns > callback_time.session_time_ns
+
+    session_directory = tmp_path / SESSION_ID
+    session_directory.mkdir()
+    artifact_path = persist_recorded_clock_mapping(first, session_directory)
+    first_bytes = artifact_path.read_bytes()
+    assert persist_recorded_clock_mapping(first, session_directory) == artifact_path
+    assert artifact_path.read_bytes() == first_bytes
+    payload = json.loads(first_bytes)
+    assert payload["contract_id"] == "sensor-clock-mapping-v1"
+    assert payload["evidence_sha256"] == first.evidence_sha256
+    assert len(payload["segments"]) == 2
+    assert all(segment["status"] == "estimated" for segment in payload["segments"])
+
+
+def test_recorded_alignment_rejects_missing_strict_evidence(tmp_path: Path) -> None:
+    frame = _raw_frame(tmp_path)
+
+    with pytest.raises(RecordedAlignmentError, match="requires IMU samples"):
+        derive_recorded_clock_mapping(SESSION_ID, (frame,), ())
+    with pytest.raises(RecordedAlignmentError, match="fewer than two"):
+        derive_recorded_clock_mapping(
+            SESSION_ID,
+            (frame,),
+            (
+                replace(
+                    _raw_imu_sample(),
+                    sensor_event_monotonic_ns=1_050_000_000,
+                ),
+            ),
+        )
 
 
 def test_identity_mapping_subtracts_session_origin_without_float_math() -> None:

@@ -86,6 +86,13 @@ under `<session>/perception/hand-tracking/<run-id>/`. It never overwrites raw
 recordings or earlier runs. By default every fifth frame runs inference and
 intermediate frames reuse the latest same-clip skeleton.
 
+Before inference, replay strictly derives one video/IMU session timeline from
+the recording's immutable timing evidence and persists it as
+`<session>/derived/sensor-preprocessing/clock-mapping-v1.json`. Missing timing
+evidence fails the run; replay has no video-only or unchecked-clock mode. The
+annotated output uses H.264 with fast-start metadata so the browser can play it
+while preserving the original capture files.
+
 The equivalent command-line replay is:
 
 ```powershell

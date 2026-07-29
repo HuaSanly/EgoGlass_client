@@ -118,6 +118,9 @@ def test_storage_library_builds_safe_playable_media_without_document_scroll() ->
     assert "video.controls = true" in script
     assert 'video.preload = "metadata"' in script
     assert "video.src = clip.media_url" in script
+    assert "function renderLibraryIfChanged(library)" in script
+    assert "if (nextRevision === renderedLibraryRevision) return" in script
+    assert "renderLibraryIfChanged(readRecordingLibrary(payload))" in script
     assert "readRecordingLibrary(payload)" in script
     assert "renderSessionFolder(session)" in script
     assert "renderSessionDetail(selectedSession)" in script

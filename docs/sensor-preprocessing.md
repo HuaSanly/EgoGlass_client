@@ -10,9 +10,11 @@ or claim that a camera callback timestamp is an exposure timestamp.
 
 ## Clock mapping
 
-`clock_mapping.py` applies versioned, externally supplied clock mappings. It
-does not fit a clock model from capture data and does not infer camera exposure
-time. Every `TimeObservation` identifies four independent facts:
+`clock_mapping.py` applies versioned clock mappings and does not infer camera
+exposure time. `recorded_alignment.py` derives an estimated mapping from the
+immutable device timestamps, client receipt timestamps, camera-to-frame
+matches, and exact MP4 PTS preserved by a completed recording. Every
+`TimeObservation` identifies four independent facts:
 
 - `source_clock_id`: the clock and its unit;
 - `source_instance_id`: the boot, connection, camera generation, or clip that
@@ -72,11 +74,20 @@ Raw Rokid SDK and callback timestamps cannot carry `CAMERA_EXPOSURE` semantics.
 That semantic belongs to a later calibrated frame-timing result with explicit
 provenance and uncertainty.
 
-This module is an in-memory application contract. It neither reads nor writes
-the ingest database's legacy floating-point `clock_mapping_segments` rows.
-Future persistence must use a separate versioned derived artifact containing
-the integer anchors and scale numerator/denominator; completed raw telemetry is
-never updated by preprocessing.
+The mapping contract neither reads nor writes the ingest database's legacy
+floating-point `clock_mapping_segments` rows. `derive_recorded_clock_mapping()`
+fits each device connection to the client receipt clock using the observed
+minimum-delay anchor, then fits each clip's exact MP4 ticks to the mapped camera
+callbacks. It uses integer and rational arithmetic and records the conservative
+observed receipt-jitter and fit-residual bounds. These mappings are
+`ESTIMATED`, not hardware-verified exposure timestamps.
+
+`persist_recorded_clock_mapping()` atomically writes the versioned result to
+`<session>/derived/sensor-preprocessing/clock-mapping-v1.json`, including the
+SHA256 identity of all timing evidence. Completed raw telemetry remains
+unchanged. Repeating derivation from identical evidence produces identical
+bytes; missing IMU, missing device-clock span, or fewer than two camera-to-MP4
+matches fails instead of creating a permissive timeline.
 
 ## Unified pipeline
 
@@ -95,6 +106,12 @@ The two input paths share all preparation after frame acquisition:
 - `iter_recorded_session()` verifies the completed capture, decodes each MP4
   frame once, checks decoded PTS against the stored exact frame index, and feeds
   the same image preparation and output contract.
+
+Live hand tracking can run from decoded frames and a connection-local receipt
+timeline because it does not consume IMU. That does not prove a recording is
+ready for strict video/IMU replay. Offline replay first derives and persists the
+recorded clock mapping, then requires every used video frame and IMU sample to
+resolve through that one mapper. There is no video-only fallback.
 
 The pipeline does not persist decoded RGB frames. Long-term capture remains
 compressed MP4 plus immutable metadata and IMU; the same decoded frame can be
@@ -213,6 +230,28 @@ pipeline = SensorPreprocessingPipeline.from_config_file(
 
 for bundle in pipeline.iter_recorded_session("recordings/session-id"):
     spatial_perception.process(bundle)
+```
+
+The hand-tracking replay runtime performs the strict derivation before creating
+the preprocessing pipeline. Callers using the pipeline directly must supply the
+same mapper explicitly:
+
+```python
+from perception.sensor_preprocessing import (
+    CaptureSessionReader,
+    derive_recorded_clock_mapping,
+    persist_recorded_clock_mapping,
+)
+
+reader = CaptureSessionReader.open(session_directory)
+frames = tuple(
+    frame
+    for clip in reader.session.clips
+    for frame in reader.iter_frames(clip.clip_id)
+)
+imu_samples = tuple(reader.iter_imu_samples())
+mapping = derive_recorded_clock_mapping(reader.session.session_id, frames, imu_samples)
+persist_recorded_clock_mapping(mapping, session_directory)
 ```
 
 ## Verification
