@@ -99,10 +99,41 @@ class HumanEgoHandTrackingPipeline:
             bundle.calibration.rectified_camera_matrix,
             dtype=np.float32,
         )
-        detections = self.detector.detect(image_rgb)
+        prepared_ns = time.perf_counter_ns()
+        detections = tuple(self.detector.detect(image_rgb))
+        detected_ns = time.perf_counter_ns()
+        reconstructions: tuple[HandReconstruction | None, ...] = tuple(
+            None for _ in detections
+        )
+        reconstruction_batch_size = 0
+        if self.reconstructor is not None and self.reconstructor.is_available and detections:
+            reconstruction_batch_size = len(detections)
+            try:
+                predicted = tuple(
+                    self.reconstructor.predict_batch(image_rgb, detections)
+                )
+                if len(predicted) != len(detections):
+                    raise HandTrackingError(
+                        "HaMeR batch result count does not match detector input"
+                    )
+                reconstructions = predicted
+            except Exception:
+                LOGGER.exception(
+                    "hand_tracking_batch_failed backend=hamer batch_size=%d",
+                    len(detections),
+                )
+        reconstructed_ns = time.perf_counter_ns()
         best_by_side: dict[Handedness, TrackedHand] = {}
-        for detection in detections:
-            tracked = self._reconstruct_detection(image_rgb, camera_matrix, detection)
+        for detection, reconstruction in zip(
+            detections,
+            reconstructions,
+            strict=True,
+        ):
+            tracked = self._reconstruct_detection(
+                camera_matrix,
+                detection,
+                reconstruction,
+            )
             if tracked is None or tracked.confidence < self.config.minimum_hand_confidence:
                 continue
             previous = best_by_side.get(tracked.handedness)
@@ -114,7 +145,12 @@ class HumanEgoHandTrackingPipeline:
             for side in (Handedness.LEFT, Handedness.RIGHT)
             if side in best_by_side
         )
-        duration_ns = time.perf_counter_ns() - started_ns
+        postprocessed_ns = time.perf_counter_ns()
+        frame_preparation_duration_ns = prepared_ns - started_ns
+        detector_duration_ns = detected_ns - prepared_ns
+        reconstruction_duration_ns = reconstructed_ns - detected_ns
+        postprocessing_duration_ns = postprocessed_ns - reconstructed_ns
+        duration_ns = postprocessed_ns - started_ns
         execution_device = (
             self.reconstructor.execution_device
             if self.reconstructor is not None
@@ -123,18 +159,29 @@ class HumanEgoHandTrackingPipeline:
         hamer_loaded = bool(
             self.reconstructor is not None and self.reconstructor.is_available
         )
+        amp_enabled = bool(
+            self.reconstructor is not None and self.reconstructor.amp_enabled
+        )
         hamer_hand_count = sum(
             hand.reconstruction_backend is ReconstructionBackend.HAMER for hand in hands
         )
         LOGGER.info(
             "hand_tracking_frame session_id=%s frame_index=%d detector=%s "
-            "hamer_loaded=%s hamer_hands=%d fallback_hands=%d duration_ms=%.3f",
+            "hamer_loaded=%s amp_enabled=%s batch_size=%d hamer_hands=%d "
+            "fallback_hands=%d prepare_ms=%.3f detector_ms=%.3f "
+            "reconstruction_ms=%.3f postprocess_ms=%.3f duration_ms=%.3f",
             bundle.session_id,
             bundle.frame_index,
             self.detector.name,
             hamer_loaded,
+            amp_enabled,
+            reconstruction_batch_size,
             hamer_hand_count,
             len(hands) - hamer_hand_count,
+            frame_preparation_duration_ns / 1_000_000,
+            detector_duration_ns / 1_000_000,
+            reconstruction_duration_ns / 1_000_000,
+            postprocessing_duration_ns / 1_000_000,
             duration_ns / 1_000_000,
         )
         return HandTrackingResult(
@@ -153,6 +200,12 @@ class HumanEgoHandTrackingPipeline:
             hamer_loaded=hamer_loaded,
             inference_duration_ns=duration_ns,
             hands=hands,
+            frame_preparation_duration_ns=frame_preparation_duration_ns,
+            detector_duration_ns=detector_duration_ns,
+            reconstruction_duration_ns=reconstruction_duration_ns,
+            postprocessing_duration_ns=postprocessing_duration_ns,
+            reconstruction_batch_size=reconstruction_batch_size,
+            amp_enabled=amp_enabled,
         )
 
     def process_frames(
@@ -166,23 +219,10 @@ class HumanEgoHandTrackingPipeline:
 
     def _reconstruct_detection(
         self,
-        image_rgb: np.ndarray,
         camera_matrix: np.ndarray,
         detection: DetectedHand,
+        reconstruction: HandReconstruction | None,
     ) -> TrackedHand | None:
-        reconstruction: HandReconstruction | None = None
-        if self.reconstructor is not None and self.reconstructor.is_available:
-            try:
-                reconstruction = self.reconstructor.predict_from_crop(
-                    image_rgb,
-                    detection,
-                )
-            except Exception:
-                LOGGER.exception(
-                    "hand_tracking_crop_failed backend=hamer handedness=%s",
-                    detection.handedness.value,
-                )
-
         if reconstruction is not None:
             keypoints_3d = reconstruction.keypoints_3d_m
             keypoints_2d = reconstruction.keypoints_2d_px

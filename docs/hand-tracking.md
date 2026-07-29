@@ -51,9 +51,18 @@ holds only the newest frame, so HaMeR latency cannot delay the WebRTC receive
 loop. Live receipt time is explicitly reported as estimated until device clock
 alignment is available.
 
+ViTPose and HaMeR run under PyTorch inference mode. CUDA uses FP16 autocast when
+`enable_cuda_amp` is true; CPU always stays in full precision. All detector
+crops from one frame are collated into one HaMeR batch and one model forward.
+Each result reports preparation, detector, reconstruction, and postprocessing
+durations, reconstruction batch size, and whether AMP was active. This version
+does not interpolate missing detections, suppress short segments, or smooth
+results across frames.
+
 The operator console reads these loopback-only endpoints:
 
 - `GET /api/v1/perception/hand-tracking/status`
+- `GET /api/v1/perception/hand-tracking/events` (SSE status push)
 - `POST /api/v1/perception/hand-tracking/replays`
 - `GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}`
 
@@ -88,8 +97,9 @@ for bundle in sensor_pipeline.iter_recorded_session(session_directory):
 ```
 
 Startup fails when `require_cuda` or `require_hamer` is true and the requested
-backend cannot load. Per-frame logs include detector name, `hamer_loaded`, HaMeR
-and fallback hand counts, and inference duration.
+backend cannot load. Per-frame logs include detector name, `hamer_loaded`, AMP
+state, HaMeR batch size, HaMeR and fallback hand counts, and all four stage
+durations.
 
 ## Verification
 

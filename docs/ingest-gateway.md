@@ -212,6 +212,7 @@ control, IMU, recording, and media-library APIs enforce loopback access.
 - DELETE /api/v1/recordings/clips/{session_id}/{clip_id} (loopback-only deletion)
 - GET /api/v1/recordings/media/{session_id}/{clip_id} (loopback-only MP4)
 - GET /api/v1/perception/hand-tracking/status (loopback-only live/replay state)
+- GET /api/v1/perception/hand-tracking/events (loopback-only SSE status push)
 - POST /api/v1/perception/hand-tracking/replays (loopback-only replay request)
 - GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}
   (loopback-only generated replay MP4)

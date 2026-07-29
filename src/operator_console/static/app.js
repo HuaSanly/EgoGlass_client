@@ -107,8 +107,7 @@ const state = {
   collectionCommandInFlight: false,
   collectionPollError: null,
   collectionCommandError: null,
-  handTrackingPollTimer: null,
-  handTrackingPollInFlight: false,
+  handTrackingEventSource: null,
   handTrackingStatus: null,
   handTrackingError: null,
   replayRequestInFlight: false,
@@ -189,10 +188,36 @@ function scheduleCollectionPoll(delayMs = 1500) {
   state.collectionPollTimer = window.setTimeout(pollCollectionLibrary, delayMs);
 }
 
-function scheduleHandTrackingPoll(delayMs = 400) {
-  window.clearTimeout(state.handTrackingPollTimer);
-  if (document.hidden) return;
-  state.handTrackingPollTimer = window.setTimeout(pollHandTrackingStatus, delayMs);
+function closeHandTrackingEvents() {
+  const eventSource = state.handTrackingEventSource;
+  state.handTrackingEventSource = null;
+  eventSource?.close();
+}
+
+function connectHandTrackingEvents() {
+  if (document.hidden || state.handTrackingEventSource !== null) return;
+  const eventSource = new EventSource(`${handTrackingEndpoint}/events`);
+  state.handTrackingEventSource = eventSource;
+  eventSource.addEventListener("status", (event) => {
+    if (state.handTrackingEventSource !== eventSource) return;
+    try {
+      state.handTrackingStatus = readHandTrackingStatus(JSON.parse(event.data));
+      state.handTrackingError = null;
+    } catch (error) {
+      state.handTrackingError = error.message;
+    }
+    renderHandTrackingStatus();
+  });
+  eventSource.onopen = () => {
+    if (state.handTrackingEventSource !== eventSource) return;
+    state.handTrackingError = null;
+    renderHandTrackingStatus();
+  };
+  eventSource.onerror = () => {
+    if (state.handTrackingEventSource !== eventSource || document.hidden) return;
+    state.handTrackingError = "手部感知推送连接中断，正在重连";
+    renderHandTrackingStatus();
+  };
 }
 
 function readStreamControlStatus(payload) {
@@ -806,27 +831,6 @@ function renderHandTrackingStatus() {
   renderViewerMedia();
 }
 
-async function pollHandTrackingStatus() {
-  if (state.handTrackingPollInFlight || document.hidden) {
-    scheduleHandTrackingPoll();
-    return;
-  }
-  state.handTrackingPollInFlight = true;
-  try {
-    const response = await fetch(`${handTrackingEndpoint}/status`, { cache: "no-store" });
-    const payload = await readJsonResponse(response, `手部感知 HTTP ${response.status}`);
-    state.handTrackingStatus = readHandTrackingStatus(payload);
-    state.handTrackingError = null;
-  } catch (error) {
-    state.handTrackingStatus = null;
-    state.handTrackingError = error.message;
-  } finally {
-    state.handTrackingPollInFlight = false;
-    renderHandTrackingStatus();
-    scheduleHandTrackingPoll();
-  }
-}
-
 async function startHandTrackingReplay() {
   const sessionId = elements.replaySession.value;
   if (!sessionId || state.replayRequestInFlight) return;
@@ -842,7 +846,6 @@ async function startHandTrackingReplay() {
       body: JSON.stringify({ session_id: sessionId }),
     });
     await readJsonResponse(response, `离线回放 HTTP ${response.status}`);
-    scheduleHandTrackingPoll(0);
   } catch (error) {
     state.handTrackingError = error.message;
   } finally {
@@ -1195,8 +1198,10 @@ document.addEventListener("visibilitychange", () => {
     scheduleControlPoll(0);
     scheduleRecordingPoll(0);
     scheduleCollectionPoll(0);
-    scheduleHandTrackingPoll(0);
+    connectHandTrackingEvents();
     scheduleImuPoll(0);
+  } else {
+    closeHandTrackingEvents();
   }
 });
 window.addEventListener("beforeunload", () => {
@@ -1206,8 +1211,8 @@ window.addEventListener("beforeunload", () => {
   window.clearTimeout(state.recordingPollTimer);
   window.clearTimeout(state.recordingCountdownTimer);
   window.clearTimeout(state.collectionPollTimer);
-  window.clearTimeout(state.handTrackingPollTimer);
   window.clearTimeout(state.imuPollTimer);
+  closeHandTrackingEvents();
   viewerResizeObserver.disconnect();
   imuScene?.dispose();
 });
@@ -1230,5 +1235,5 @@ pollDecodedPreviewStatus();
 pollStreamControlStatus();
 pollRecordingStatus();
 pollCollectionLibrary();
-pollHandTrackingStatus();
+connectHandTrackingEvents();
 pollImuStatus();

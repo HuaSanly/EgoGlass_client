@@ -110,6 +110,7 @@ class HandTrackingConfig(BaseModel):
     model_directory: Path
     device: Literal["cuda", "cpu"] = "cuda"
     require_cuda: bool = True
+    enable_cuda_amp: bool = True
     require_hamer: bool = True
     download_models: bool = True
     detector: Literal["vitpose", "mediapipe"] = "vitpose"
@@ -241,12 +242,28 @@ class HandTrackingResult:
     hamer_loaded: bool
     inference_duration_ns: int
     hands: tuple[TrackedHand, ...]
+    frame_preparation_duration_ns: int = 0
+    detector_duration_ns: int = 0
+    reconstruction_duration_ns: int = 0
+    postprocessing_duration_ns: int = 0
+    reconstruction_batch_size: int = 0
+    amp_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.image_width_px < 1 or self.image_height_px < 1:
             raise ValueError("result image dimensions must be positive")
         if self.source_rotation_degrees not in {0, 90, 180, 270}:
             raise ValueError("result source rotation must be valid")
+        stage_duration_ns = (
+            self.frame_preparation_duration_ns
+            + self.detector_duration_ns
+            + self.reconstruction_duration_ns
+            + self.postprocessing_duration_ns
+        )
+        if stage_duration_ns != self.inference_duration_ns:
+            raise ValueError("stage durations must sum to inference duration")
+        if self.reconstruction_batch_size < 0:
+            raise ValueError("reconstruction batch size cannot be negative")
 
     def to_json_dict(self) -> dict[str, object]:
         """Convert the immutable result to a JSON-compatible boundary payload."""
@@ -303,6 +320,12 @@ class HandTrackingResult:
             "execution_device": self.execution_device,
             "hamer_loaded": self.hamer_loaded,
             "inference_duration_ns": self.inference_duration_ns,
+            "frame_preparation_duration_ns": self.frame_preparation_duration_ns,
+            "detector_duration_ns": self.detector_duration_ns,
+            "reconstruction_duration_ns": self.reconstruction_duration_ns,
+            "postprocessing_duration_ns": self.postprocessing_duration_ns,
+            "reconstruction_batch_size": self.reconstruction_batch_size,
+            "amp_enabled": self.amp_enabled,
             "joint_order": list(HUMANEGO_ARIA_JOINT_NAMES),
             "hands": hands_payload,
         }
@@ -410,11 +433,14 @@ class HandReconstructor(Protocol):
     @property
     def is_available(self) -> bool: ...
 
-    def predict_from_crop(
+    @property
+    def amp_enabled(self) -> bool: ...
+
+    def predict_batch(
         self,
         image_rgb: NDArray[np.uint8],
-        detection: DetectedHand,
-    ) -> HandReconstruction | None: ...
+        detections: Sequence[DetectedHand],
+    ) -> Sequence[HandReconstruction | None]: ...
 
 
 def readonly_float_array(values: object, shape: tuple[int, ...]) -> FloatArray:

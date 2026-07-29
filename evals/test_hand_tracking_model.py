@@ -10,6 +10,7 @@ import av
 import cv2
 import numpy as np
 import pytest
+import torch
 
 from perception.sensor_preprocessing import (
     CalibrationProvenance,
@@ -71,12 +72,28 @@ def test_public_hand_sample_runs_vitpose_and_cuda_hamer(
         "hand_model_positive "
         f"hands={len(result.hands)} "
         f"latency_ms={result.inference_duration_ns / 1_000_000:.3f} "
+        f"detector_ms={result.detector_duration_ns / 1_000_000:.3f} "
+        f"reconstruction_ms={result.reconstruction_duration_ns / 1_000_000:.3f} "
+        f"postprocess_ms={result.postprocessing_duration_ns / 1_000_000:.3f} "
+        f"batch_size={result.reconstruction_batch_size} "
+        f"amp_enabled={result.amp_enabled} "
+        f"peak_cuda_gib={torch.cuda.max_memory_allocated() / 1024**3:.3f} "
         f"confidences={[round(hand.confidence, 4) for hand in result.hands]}"
     )
 
     assert result.hamer_loaded is True
     assert result.execution_device.startswith("cuda")
-    assert result.detector_backend == "vitpose-h+yolov8s"
+    assert result.detector_backend == (
+        f"vitpose-{model_pipeline.config.vitpose_variant}+yolov8s"
+    )
+    assert result.amp_enabled is True
+    assert result.reconstruction_batch_size >= len(result.hands)
+    assert result.inference_duration_ns == (
+        result.frame_preparation_duration_ns
+        + result.detector_duration_ns
+        + result.reconstruction_duration_ns
+        + result.postprocessing_duration_ns
+    )
     assert result.inference_duration_ns < 30_000_000_000
     assert result.hands
     assert all(

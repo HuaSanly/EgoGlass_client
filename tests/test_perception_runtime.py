@@ -87,6 +87,42 @@ def test_live_runtime_keeps_only_newest_pending_frame(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_status_events_push_initial_snapshot_and_completed_inference(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = HandTrackingRuntime(
+            recordings_root=tmp_path / "recordings",
+            runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
+        )
+        runtime._process_live_frame = (  # type: ignore[method-assign]
+            lambda frame: FakeResult(frame.frame_index)
+        )
+        events = runtime.status_events(heartbeat_seconds=0.05)
+        try:
+            initial = await anext(events)
+            assert initial is not None
+            assert initial["status_revision"] == 0
+            assert initial["latest_result"] is None
+
+            await runtime.submit_live_frame(_frame(9, 0))
+            pushed = await asyncio.wait_for(anext(events), timeout=1)
+            while pushed is None or pushed["latest_result"] is None:
+                pushed = await asyncio.wait_for(anext(events), timeout=1)
+
+            assert pushed["status_revision"] > initial["status_revision"]
+            assert pushed["live_inferences"] == 1
+            assert pushed["latest_result"] == {
+                "schema_version": "1.0",
+                "frame_index": 9,
+                "hands": [],
+            }
+            assert await asyncio.wait_for(anext(events), timeout=0.2) is None
+        finally:
+            await events.aclose()
+            await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_live_preprocessing_anchors_session_time_at_first_received_frame(tmp_path: Path) -> None:
     repository = Path(__file__).parents[1]
     runtime = HandTrackingRuntime(

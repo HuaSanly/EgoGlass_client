@@ -64,6 +64,10 @@ class HandTrackingApiRuntime:
     async def start_replay(self, session_id: str) -> None:
         self.replay_requests.append(session_id)
 
+    async def status_events(self):
+        yield await self.status()
+        yield None
+
     async def replay_video_path(
         self,
         _session_id: str,
@@ -610,6 +614,10 @@ def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> No
 
     with TestClient(app) as client:
         status = client.get("/api/v1/perception/hand-tracking/status")
+        events = client.get(
+            "/api/v1/perception/hand-tracking/events",
+            headers={"Origin": "http://127.0.0.1:8765"},
+        )
         replay = client.post(
             "/api/v1/perception/hand-tracking/replays",
             json={"session_id": session_id},
@@ -620,6 +628,16 @@ def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> No
 
     assert status.status_code == 200
     assert status.json()["live_inferences"] == 2
+    assert events.status_code == 200
+    assert events.headers["content-type"].startswith("text/event-stream")
+    assert events.headers["cache-control"] == (
+        "no-store, no-cache, must-revalidate, max-age=0"
+    )
+    assert events.headers["x-accel-buffering"] == "no"
+    assert events.headers["access-control-allow-origin"] == "http://127.0.0.1:8765"
+    assert "event: status\ndata: " in events.text
+    assert '"live_inferences":2' in events.text
+    assert events.text.endswith(": heartbeat\n\n")
     assert replay.status_code == 202
     assert runtime.replay_requests == [session_id]
     assert media.content == b"mp4-data"
@@ -628,3 +646,4 @@ def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> No
     remote_app = create_app(perception_runtime=HandTrackingApiRuntime(video))  # type: ignore[arg-type]
     with TestClient(remote_app) as client:
         assert client.get("/api/v1/perception/hand-tracking/status").status_code == 403
+        assert client.get("/api/v1/perception/hand-tracking/events").status_code == 403

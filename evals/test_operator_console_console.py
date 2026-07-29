@@ -89,7 +89,10 @@ def test_hand_tracking_panel_uses_live_status_and_offline_replay() -> None:
     assert 'id="viewer-mode-replay"' in html
     assert 'id="replay-session"' in html
     assert 'id="start-replay-button"' in html
-    assert "function pollHandTrackingStatus()" in script
+    assert "function connectHandTrackingEvents()" in script
+    assert 'new EventSource(`${handTrackingEndpoint}/events`)' in script
+    assert 'eventSource.addEventListener("status"' in script
+    assert "function pollHandTrackingStatus()" not in script
     assert "function startHandTrackingReplay()" in script
     assert 'viewerMode: "live"' in script
     assert 'setViewerMode("replay")' in script

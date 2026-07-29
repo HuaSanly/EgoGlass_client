@@ -8,7 +8,7 @@ import logging
 import shutil
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
@@ -245,6 +245,8 @@ class HandTrackingRuntime:
         self.hand_tracking_config_path = Path(hand_tracking_config_path).resolve()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hand-tracking")
         self._lock = asyncio.Lock()
+        self._status_condition = asyncio.Condition(self._lock)
+        self._status_revision = 0
         self._pending_live_frame: LiveHandTrackingFrame | None = None
         self._live_worker: asyncio.Task[None] | None = None
         self._state = (
@@ -313,32 +315,43 @@ class HandTrackingRuntime:
         )
 
     async def status(self) -> dict[str, object]:
-        """Return JSON-ready state consumed by the operator console polling loop."""
+        """Return the latest JSON-ready state snapshot."""
 
         async with self._lock:
-            return {
-                "schema_version": "1.0",
-                "state": self._state.value,
-                "detail": self._detail,
-                "live_frames_received": self._live_frames_received,
-                "live_frames_dropped": self._live_frames_dropped,
-                "live_inferences": self._live_inferences,
-                "latest_result": (
-                    self._latest_result.to_json_dict() if self._latest_result is not None else None
-                ),
-                "last_error": self._last_error,
-                "replay": {
-                    "state": self._replay_state.value,
-                    "detail": self._replay_detail,
-                    "frames_processed": self._replay_progress[0],
-                    "frame_total": self._replay_progress[1],
-                    "report": (
-                        self._latest_replay.to_json_dict(self.recordings_root)
-                        if self._latest_replay is not None
-                        else None
-                    ),
-                },
-            }
+            return self._status_payload_locked()
+
+    async def status_events(
+        self,
+        *,
+        heartbeat_seconds: float = 15.0,
+    ) -> AsyncIterator[dict[str, object] | None]:
+        """Push changed status snapshots and yield ``None`` for SSE heartbeats."""
+
+        if heartbeat_seconds <= 0:
+            raise ValueError("heartbeat interval must be positive")
+        last_revision = -1
+        while True:
+            heartbeat = False
+            async with self._status_condition:
+                if self._status_revision == last_revision:
+                    expected_revision = last_revision
+                    try:
+                        await asyncio.wait_for(
+                            self._status_condition.wait_for(
+                                lambda revision=expected_revision: (
+                                    self._status_revision != revision
+                                )
+                            ),
+                            timeout=heartbeat_seconds,
+                        )
+                    except TimeoutError:
+                        heartbeat = True
+                if heartbeat:
+                    payload = None
+                else:
+                    last_revision = self._status_revision
+                    payload = self._status_payload_locked()
+            yield payload
 
     async def start_replay(self, session_id: str) -> None:
         """Start one stored-session replay and reject concurrent GPU replay requests."""
@@ -352,6 +365,7 @@ class HandTrackingRuntime:
             self._replay_progress = (0, 0)
             self._latest_replay = None
             self._replay_task = asyncio.create_task(self._run_replay(session_path))
+            self._publish_status_locked()
 
     async def replay_video_path(self, session_id: str, run_id: str, clip_id: str) -> Path:
         """Resolve one generated replay MP4 beneath its owning recording directory."""
@@ -392,6 +406,7 @@ class HandTrackingRuntime:
                     return
                 self._state = HandTrackingRuntimeState.LOADING
                 self._detail = "loading HaMeR" if self._tracker is None else "running HaMeR"
+                self._publish_status_locked()
             try:
                 result = await asyncio.get_running_loop().run_in_executor(
                     self._executor,
@@ -404,6 +419,7 @@ class HandTrackingRuntime:
                     self._state = HandTrackingRuntimeState.ERROR
                     self._detail = "latest frame failed"
                     self._last_error = str(exc)
+                    self._publish_status_locked()
                 continue
             async with self._lock:
                 self._state = HandTrackingRuntimeState.READY
@@ -411,27 +427,32 @@ class HandTrackingRuntime:
                 self._last_error = None
                 self._latest_result = result
                 self._live_inferences += 1
+                self._publish_status_locked()
 
     async def _run_replay(self, session_path: Path) -> None:
         run_id = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:8]}"
         output_path = session_path / "perception" / "hand-tracking" / run_id
+        loop = asyncio.get_running_loop()
         try:
-            report = await asyncio.get_running_loop().run_in_executor(
+            report = await loop.run_in_executor(
                 self._executor,
                 self._process_replay,
                 session_path,
                 output_path,
+                loop,
             )
         except Exception as exc:
             LOGGER.exception("hand-tracking replay failed")
             async with self._lock:
                 self._replay_state = ReplayState.ERROR
                 self._replay_detail = str(exc)
+                self._publish_status_locked()
             return
         async with self._lock:
             self._replay_state = ReplayState.COMPLETE
             self._replay_detail = "annotated replay is ready"
             self._latest_replay = report
+            self._publish_status_locked()
 
     def _process_live_frame(
         self,
@@ -463,12 +484,25 @@ class HandTrackingRuntime:
         tracker = self._tracker_for_current_thread()
         return tracker.process_frame(bundle)
 
-    def _process_replay(self, session_path: Path, output_path: Path) -> ReplayReport:
+    def _process_replay(
+        self,
+        session_path: Path,
+        output_path: Path,
+        loop: asyncio.AbstractEventLoop,
+    ) -> ReplayReport:
         tracker = self._tracker_for_current_thread()
+        last_progress_reported_ns = 0
 
         def update_progress(current: int, total: int) -> None:
-            self._replay_progress = (current, total)
-            self._replay_detail = f"processing {current}/{total} frames"
+            nonlocal last_progress_reported_ns
+            now_ns = time.perf_counter_ns()
+            if current != total and now_ns - last_progress_reported_ns < 250_000_000:
+                return
+            last_progress_reported_ns = now_ns
+            loop.call_soon_threadsafe(
+                asyncio.create_task,
+                self._set_replay_progress(current, total),
+            )
 
         return render_recorded_hand_tracking_replay(
             session_path,
@@ -478,6 +512,46 @@ class HandTrackingRuntime:
             inference_stride_frames=self.config.replay.inference_stride_frames,
             progress=update_progress,
         )
+
+    async def _set_replay_progress(self, current: int, total: int) -> None:
+        async with self._lock:
+            if self._replay_state is not ReplayState.RUNNING:
+                return
+            self._replay_progress = (current, total)
+            self._replay_detail = f"processing {current}/{total} frames"
+            self._publish_status_locked()
+
+    def _status_payload_locked(self) -> dict[str, object]:
+        return {
+            "schema_version": "1.0",
+            "status_revision": self._status_revision,
+            "state": self._state.value,
+            "detail": self._detail,
+            "live_frames_received": self._live_frames_received,
+            "live_frames_dropped": self._live_frames_dropped,
+            "live_inferences": self._live_inferences,
+            "latest_result": (
+                self._latest_result.to_json_dict()
+                if self._latest_result is not None
+                else None
+            ),
+            "last_error": self._last_error,
+            "replay": {
+                "state": self._replay_state.value,
+                "detail": self._replay_detail,
+                "frames_processed": self._replay_progress[0],
+                "frame_total": self._replay_progress[1],
+                "report": (
+                    self._latest_replay.to_json_dict(self.recordings_root)
+                    if self._latest_replay is not None
+                    else None
+                ),
+            },
+        }
+
+    def _publish_status_locked(self) -> None:
+        self._status_revision += 1
+        self._status_condition.notify_all()
 
     def _tracker_for_current_thread(self) -> HumanEgoHandTrackingPipeline:
         if self._tracker is None:

@@ -101,7 +101,10 @@ def test_health_and_real_video_console_are_served() -> None:
     assert "127.0.0.1:8770/api/v1/webrtc/imu/status" in script.text
     assert "pollImuStatus" in script.text
     assert 'import { ImuSceneController } from "./imu-scene.js"' in script.text
-    assert "function pollHandTrackingStatus()" in script.text
+    assert "function connectHandTrackingEvents()" in script.text
+    assert 'new EventSource(`${handTrackingEndpoint}/events`)' in script.text
+    assert 'eventSource.addEventListener("status"' in script.text
+    assert "function pollHandTrackingStatus()" not in script.text
     assert "/api/v1/perception/hand-tracking" in script.text
     assert "source_keypoints_2d_px" in script.text
     assert "source_bbox_xyxy_px" in script.text

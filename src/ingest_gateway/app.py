@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -142,6 +143,29 @@ def create_app(
     async def hand_tracking_status(request: Request) -> dict[str, object]:
         _require_loopback(request, viewer_allowed_hosts, "hand tracking")
         return await active_perception_runtime.status()
+
+    @app.get("/api/v1/perception/hand-tracking/events")
+    async def hand_tracking_events(request: Request) -> StreamingResponse:
+        _require_loopback(request, viewer_allowed_hosts, "hand tracking")
+
+        async def event_stream():
+            async for payload in active_perception_runtime.status_events():
+                if await request.is_disconnected():
+                    return
+                if payload is None:
+                    yield ": heartbeat\n\n"
+                    continue
+                data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                yield f"event: status\ndata: {data}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get(
         "/api/v1/webrtc/decoded-preview/status",

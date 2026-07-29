@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 
 from perception.sensor_preprocessing import (
     CalibrationProvenance,
@@ -73,16 +77,24 @@ class FakeReconstructor:
     name = "hamer"
     execution_device = "cuda:0"
     is_available = True
+    amp_enabled = True
 
-    def __init__(self, reconstruction: HandReconstruction | None) -> None:
+    def __init__(
+        self,
+        reconstruction: HandReconstruction | None | tuple[HandReconstruction | None, ...],
+    ) -> None:
         self._reconstruction = reconstruction
+        self.batch_calls: list[tuple[Handedness, ...]] = []
 
-    def predict_from_crop(
+    def predict_batch(
         self,
         image_rgb: np.ndarray,
-        detection: DetectedHand,
-    ) -> HandReconstruction | None:
-        return self._reconstruction
+        detections: tuple[DetectedHand, ...],
+    ) -> tuple[HandReconstruction | None, ...]:
+        self.batch_calls.append(tuple(detection.handedness for detection in detections))
+        if isinstance(self._reconstruction, tuple):
+            return self._reconstruction
+        return tuple(self._reconstruction for _ in detections)
 
 
 def _config(tmp_path: Path, **updates: object) -> HandTrackingConfig:
@@ -175,6 +187,7 @@ def _keypoints_3d(depth: float = 0.6) -> np.ndarray:
 
 def _detection(
     *,
+    handedness: Handedness = Handedness.RIGHT,
     with_relative_3d: bool = False,
     confidence: float = 0.9,
     egocentric_fallback: bool = False,
@@ -182,7 +195,7 @@ def _detection(
     relative = _keypoints_3d(0.0) if with_relative_3d else None
     return DetectedHand(
         bbox_xyxy_px=(8.0, 6.0, 56.0, 42.0),
-        handedness=Handedness.RIGHT,
+        handedness=handedness,
         confidence=confidence,
         keypoints_2d_px=readonly_float_array(_keypoints_2d(), (21, 2)),
         relative_keypoints_3d_m=(
@@ -216,10 +229,11 @@ def test_repository_config_is_pinned_and_resolves_local_model_directory() -> Non
 
 
 def test_hamer_result_uses_humanego_joint_order_and_records_backend(tmp_path: Path) -> None:
+    reconstructor = FakeReconstructor(_reconstruction())
     pipeline = HumanEgoHandTrackingPipeline(
         _config(tmp_path),
         FakeDetector((_detection(),)),
-        FakeReconstructor(_reconstruction()),
+        reconstructor,
     )
 
     result = pipeline.process_frame(_bundle())
@@ -227,6 +241,9 @@ def test_hamer_result_uses_humanego_joint_order_and_records_backend(tmp_path: Pa
     assert result.hamer_loaded is True
     assert result.execution_device == "cuda:0"
     assert result.detector_backend == "fake-vitpose"
+    assert result.reconstruction_batch_size == 1
+    assert result.amp_enabled is True
+    assert reconstructor.batch_calls == [(Handedness.RIGHT,)]
     assert len(result.hands) == 1
     hand = result.hands[0]
     assert hand.reconstruction_backend is ReconstructionBackend.HAMER
@@ -236,6 +253,122 @@ def test_hamer_result_uses_humanego_joint_order_and_records_backend(tmp_path: Pa
     np.testing.assert_allclose(hand.keypoints_3d_camera_m[5], _keypoints_3d()[0])
     assert hand.keypoints_3d_camera_m.flags.writeable is False
     assert len(hand.joint_angles_degrees) == 20
+
+
+def test_two_hands_share_one_hamer_batch_and_keep_detection_mapping(tmp_path: Path) -> None:
+    right_reconstruction = _reconstruction(depth=0.6)
+    left_reconstruction = _reconstruction(depth=0.8)
+    reconstructor = FakeReconstructor((right_reconstruction, left_reconstruction))
+    pipeline = HumanEgoHandTrackingPipeline(
+        _config(tmp_path),
+        FakeDetector(
+            (
+                _detection(handedness=Handedness.RIGHT),
+                _detection(handedness=Handedness.LEFT),
+            )
+        ),
+        reconstructor,
+    )
+
+    result = pipeline.process_frame(_bundle())
+
+    assert reconstructor.batch_calls == [(Handedness.RIGHT, Handedness.LEFT)]
+    assert result.reconstruction_batch_size == 2
+    assert [hand.handedness for hand in result.hands] == [
+        Handedness.LEFT,
+        Handedness.RIGHT,
+    ]
+    assert result.hands[0].keypoints_3d_camera_m[5, 2] == pytest.approx(0.8)
+    assert result.hands[1].keypoints_3d_camera_m[5, 2] == pytest.approx(0.6)
+
+
+def test_hamer_adapter_collates_two_crops_into_one_model_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from perception.spatial_perception.hand_tracking.humanego_hamer import (
+        HumanEgoHaMeRModel,
+    )
+
+    class FakeDataset:
+        def __init__(self, _cfg, *, img_cv2, boxes, right) -> None:
+            assert img_cv2.shape == (48, 64, 3)
+            self.boxes = boxes
+            self.right = right
+
+        def __len__(self) -> int:
+            return len(self.boxes)
+
+        def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+            box = self.boxes[index]
+            return {
+                "right": torch.tensor(self.right[index]),
+                "box_center": torch.tensor(
+                    [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]
+                ),
+                "box_size": torch.tensor(max(box[2] - box[0], box[3] - box[1])),
+                "img_size": torch.tensor([64.0, 48.0]),
+            }
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.batch_size = 0
+
+        def __call__(self, batch):
+            self.calls += 1
+            self.batch_size = len(batch["right"])
+            keypoints = torch.zeros((self.batch_size, 21, 3), dtype=torch.float32)
+            keypoints[:, :, 0] = torch.arange(21, dtype=torch.float32) * 0.004
+            return {
+                "pred_cam": torch.zeros((self.batch_size, 3), dtype=torch.float32),
+                "pred_keypoints_3d": keypoints,
+            }
+
+    vitdet_module = types.ModuleType("hamer.datasets.vitdet_dataset")
+    vitdet_module.ViTDetDataset = FakeDataset  # type: ignore[attr-defined]
+    utils_module = types.ModuleType("hamer.utils")
+    utils_module.recursive_to = (  # type: ignore[attr-defined]
+        lambda batch, device: {
+            key: value.to(device) if isinstance(value, torch.Tensor) else value
+            for key, value in batch.items()
+        }
+    )
+    renderer_module = types.ModuleType("hamer.utils.renderer")
+    renderer_module.cam_crop_to_full = (  # type: ignore[attr-defined]
+        lambda pred_cam, _center, _size, _image_size, _focal: torch.tensor(
+            [[0.0, 0.0, 0.6], [0.0, 0.0, 0.8]],
+            device=pred_cam.device,
+        )
+    )
+    monkeypatch.setitem(sys.modules, "hamer.datasets.vitdet_dataset", vitdet_module)
+    monkeypatch.setitem(sys.modules, "hamer.utils", utils_module)
+    monkeypatch.setitem(sys.modules, "hamer.utils.renderer", renderer_module)
+
+    adapter = object.__new__(HumanEgoHaMeRModel)
+    adapter._device = torch.device("cpu")
+    adapter._amp_enabled = False
+    adapter._cfg = SimpleNamespace(
+        EXTRA=SimpleNamespace(FOCAL_LENGTH=500.0),
+        MODEL=SimpleNamespace(IMAGE_SIZE=256),
+    )
+    adapter._model = FakeModel()
+    image_rgb = np.zeros((48, 64, 3), dtype=np.uint8)
+
+    results = adapter.predict_batch(
+        image_rgb,
+        (
+            _detection(handedness=Handedness.RIGHT),
+            _detection(handedness=Handedness.LEFT),
+        ),
+    )
+
+    assert adapter._model.calls == 1
+    assert adapter._model.batch_size == 2
+    assert len(results) == 2
+    assert results[0] is not None and results[0].keypoints_3d_m[0, 2] == pytest.approx(0.6)
+    assert results[1] is not None and results[1].keypoints_3d_m[0, 2] == pytest.approx(0.8)
+    assert results[0].keypoints_3d_m[1, 0] > 0
+    assert results[1].keypoints_3d_m[1, 0] < 0
 
 
 def test_invalid_hamer_depth_uses_humanego_physical_size_recovery(tmp_path: Path) -> None:
@@ -328,6 +461,65 @@ def test_result_payload_is_json_serializable_and_keeps_camera_frame_name(
     assert payload["hands"][0]["source_bbox_xyxy_px"] == payload["hands"][0][
         "bbox_xyxy_px"
     ]
+    stage_total = sum(
+        int(payload[field])
+        for field in (
+            "frame_preparation_duration_ns",
+            "detector_duration_ns",
+            "reconstruction_duration_ns",
+            "postprocessing_duration_ns",
+        )
+    )
+    assert stage_total == payload["inference_duration_ns"]
+    assert payload["reconstruction_batch_size"] == 1
+    assert payload["amp_enabled"] is True
+
+
+def test_amp_is_never_enabled_for_cpu_inference(tmp_path: Path) -> None:
+    from perception.spatial_perception.hand_tracking.humanego_hamer import (
+        _cuda_amp_enabled,
+    )
+
+    config = _config(
+        tmp_path,
+        device="cpu",
+        require_cuda=False,
+        enable_cuda_amp=True,
+    )
+
+    assert _cuda_amp_enabled(config, torch.device("cpu")) is False
+
+
+def test_vitpose_amp_heatmaps_return_to_fp32_before_opencv_postprocess() -> None:
+    from perception.spatial_perception.hand_tracking.humanego_hamer import (
+        _install_vitpose_fp32_postprocess,
+    )
+
+    class FakeViTPose:
+        def __init__(self) -> None:
+            self.received_dtypes: list[object] = []
+
+        def postprocess(self, heatmaps, _width: int, _height: int):
+            self.received_dtypes.append(heatmaps.dtype)
+            return heatmaps
+
+    model = FakeViTPose()
+    _install_vitpose_fp32_postprocess(model)
+
+    tensor_result = model.postprocess(
+        torch.zeros((1, 1, 2, 2), dtype=torch.float16),
+        2,
+        2,
+    )
+    array_result = model.postprocess(
+        np.zeros((1, 1, 2, 2), dtype=np.float16),
+        2,
+        2,
+    )
+
+    assert tensor_result.dtype is torch.float32
+    assert array_result.dtype == np.float32
+    assert model.received_dtypes == [torch.float32, np.dtype(np.float32)]
 
 
 @pytest.mark.parametrize(
