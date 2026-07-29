@@ -221,8 +221,11 @@ def test_repository_config_selects_sample_calibration() -> None:
         config_directory / "sensor-calibration.sample.json"
     ).resolve()
     assert calibration.profile_name == "rokid-glass3-720p30-sample"
-    assert calibration.calibrated_width == 720
-    assert calibration.calibrated_height == 1280
+    assert calibration.rotation_degrees == 0
+    assert calibration.calibrated_width == 1280
+    assert calibration.calibrated_height == 720
+    assert calibration.camera_matrix[0][2] == 640.0
+    assert calibration.camera_matrix[1][2] == 360.0
     assert calibration.calibration_profile_id.startswith("sensor-calibration-v1-")
 
 

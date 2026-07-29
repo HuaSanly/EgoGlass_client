@@ -9,11 +9,12 @@ contracts and supported parameters are defined.
 It selects the calibration JSON and controls the common recorded, image, and
 live-path settings. Relative file paths are resolved from the YAML directory.
 
-`sensor-calibration.sample.json` exercises the calibration interface. Its zero
-distortion, guessed intrinsics, IMU noise values, and identity Camera-to-IMU
-transform are not measured Glass3 calibration. The pipeline loads whichever
-calibration file `sensor-preprocessing.yaml` selects, without a separate
-classification or opt-in flag.
+`sensor-calibration.sample.json` exercises the calibration interface and assumes
+the decoded 1280x720 frame is already upright, so it applies zero image
+rotation. Its zero distortion, guessed intrinsics, IMU noise values, and identity
+Camera-to-IMU transform are not measured Glass3 calibration. The pipeline loads
+whichever calibration file `sensor-preprocessing.yaml` selects, without a
+separate classification or opt-in flag.
 
 `hand-tracking.yaml` selects the native Windows CUDA device, detector fallback,
 confidence/geometry thresholds, ignored model directory, and exact upstream
