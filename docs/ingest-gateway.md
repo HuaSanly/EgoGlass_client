@@ -1,7 +1,7 @@
 # Ingest Gateway
 
-The ingest gateway terminates the direct Glass3 WebRTC stream, relays its live
-track to the loopback operator console, receives IMU telemetry, and records
+The ingest gateway terminates and decodes the direct Glass3 WebRTC stream,
+publishes decoded-frame preview data to the loopback operator console, receives IMU telemetry, and records
 operator-selected clips. It is an isolated client package and does not depend
 on the operator console.
 
@@ -36,16 +36,18 @@ WebRTC video is encrypted with DTLS-SRTP. The HTTP signaling exchange is
 cleartext in v1 and must stay on a trusted LAN; the pairing token is never
 returned by status or error APIs.
 
-The gateway uses aiortc's `MediaRelay` to expose the active decoded track to
-one loopback WebRTC viewer. The viewer subscription is unbuffered so stale
-frames do not accumulate. It does not create JPEG snapshots or reduce the
-incoming frame size or cadence.
+aiortc is the only component that terminates Glass3 WebRTC and decodes H.264.
+Each decoded `av.VideoFrame` is submitted to the preview and perception sinks.
+Both submissions are enqueue-only and retain at most the newest pending frame,
+so JPEG encoding or CUDA inference cannot block media reception.
 
-The same decoded frame object is also submitted to the perception runtime.
-Submission only replaces a one-frame pending slot; CUDA inference runs on a
-dedicated worker and cannot block media reception. The operator's algorithm
-panel receives a separate rectified annotated JPEG from that worker. This does
-not alter the direct WebRTC viewer track.
+The preview sink converts the decoded frame to BGR and encodes it once as JPEG.
+All local UI clients share that encoded frame through one MJPEG endpoint. Slow
+clients do not create extra Glass3 peers or extra H.264 encoders. If source
+frames pause, the MJPEG connection and latest encoded frame remain available.
+HaMeR returns structured boxes and keypoints; the operator console draws those
+results on a canvas over the continuous preview instead of replacing it with a
+low-rate annotated image.
 
 Decoded aiortc PTS starts from a receiver-relative RTP origin and therefore
 must not be anchored to the first Glass3 metadata message: the encoder can drop
@@ -188,7 +190,7 @@ system ffmpeg.exe is not required.
 conda run -n egoglass python -m ingest_gateway.app
 ~~~
 
-The CLI binds to `0.0.0.0:8770` by default for Glass3 signaling. Viewer,
+The CLI binds to `0.0.0.0:8770` by default for Glass3 signaling. Preview,
 control, IMU, recording, and media-library APIs enforce loopback access.
 
 ## API
@@ -197,7 +199,8 @@ control, IMU, recording, and media-library APIs enforce loopback access.
 - GET /api/v1/webrtc/status
 - GET /api/v1/webrtc/imu/status (loopback-only experimental IMU evidence)
 - POST /api/v1/webrtc/sessions
-- POST /api/v1/webrtc/viewer/sessions (loopback-only WebRTC preview)
+- GET /api/v1/webrtc/decoded-preview.mjpg (loopback-only decoded MJPEG preview)
+- GET /api/v1/webrtc/decoded-preview/status (loopback-only preview metrics)
 - GET /api/v1/webrtc/control (loopback-only capture state)
 - POST /api/v1/webrtc/control/commands (loopback-only `{ "action": "start|stop" }`)
 - GET /api/v1/recordings/status (loopback-only recording state)
@@ -209,7 +212,6 @@ control, IMU, recording, and media-library APIs enforce loopback access.
 - DELETE /api/v1/recordings/clips/{session_id}/{clip_id} (loopback-only deletion)
 - GET /api/v1/recordings/media/{session_id}/{clip_id} (loopback-only MP4)
 - GET /api/v1/perception/hand-tracking/status (loopback-only live/replay state)
-- GET /api/v1/perception/hand-tracking/preview.jpg (loopback-only annotated image)
 - POST /api/v1/perception/hand-tracking/replays (loopback-only replay request)
 - GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}
   (loopback-only generated replay MP4)

@@ -8,15 +8,13 @@ from aiortc import (
     RTCBundlePolicy,
     RTCConfiguration,
     RTCPeerConnection,
-    RTCRtpCodecCapability,
-    RTCRtpSender,
     RTCSessionDescription,
 )
 from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import MediaStreamError
 from aiortc.sdp import SessionDescription
 
-from ..webrtc_models import WebRtcOffer, WebRtcViewerOffer
+from ..webrtc_models import WebRtcOffer
 from .webrtc import (
     DecodedVideoFrame,
     WebRtcControlChannel,
@@ -46,15 +44,6 @@ def negotiated_video_codec_from_sdp(sdp: str) -> str | None:
             if codec.mimeType.startswith("video/"):
                 return codec.mimeType.removeprefix("video/").upper()
     return None
-
-
-def h264_video_codecs() -> list[RTCRtpCodecCapability]:
-    capabilities = RTCRtpSender.getCapabilities("video")
-    return [
-        codec
-        for codec in capabilities.codecs
-        if codec.mimeType.casefold() == "video/h264"
-    ]
 
 
 class AiortcVideoSource(WebRtcVideoSource):
@@ -230,28 +219,3 @@ class AiortcPeer:
         task = asyncio.create_task(awaitable)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-
-
-class AiortcViewerPeer:
-    """One loopback peer that forwards the live Glass3 track to WebView2."""
-
-    def __init__(self, video_track: object) -> None:
-        self._peer = RTCPeerConnection(configuration=lan_rtc_configuration())
-        transceiver = self._peer.addTransceiver(video_track, direction="sendonly")
-        codecs = h264_video_codecs()
-        if not codecs:
-            raise RuntimeError("aiortc has no H.264 video encoder")
-        transceiver.setCodecPreferences(codecs)
-
-    async def accept_offer(self, offer: WebRtcViewerOffer) -> str:
-        await self._peer.setRemoteDescription(
-            RTCSessionDescription(sdp=offer.sdp, type=offer.type)
-        )
-        answer = await self._peer.createAnswer()
-        await self._peer.setLocalDescription(answer)
-        if self._peer.localDescription is None:
-            raise RuntimeError("aiortc produced no local viewer description")
-        return self._peer.localDescription.sdp
-
-    async def close(self) -> None:
-        await self._peer.close()

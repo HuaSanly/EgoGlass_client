@@ -29,7 +29,6 @@ def _runtime_config(path: Path) -> Path:
         """schema_version: \"1.0\"
 enabled: true
 max_live_inference_fps: 60.0
-preview_jpeg_quality: 85
 replay:
   inference_stride_frames: 5
 """,
@@ -59,12 +58,12 @@ def test_live_runtime_keeps_only_newest_pending_frame(tmp_path: Path) -> None:
             runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
         )
 
-        def process(frame: LiveHandTrackingFrame) -> tuple[FakeResult, bytes]:
+        def process(frame: LiveHandTrackingFrame) -> FakeResult:
             processed.append(frame.frame_index)
             if frame.frame_index == 0:
                 started.set()
                 assert release.wait(timeout=2)
-            return FakeResult(frame.frame_index), f"preview-{frame.frame_index}".encode()
+            return FakeResult(frame.frame_index)
 
         runtime._process_live_frame = process  # type: ignore[method-assign]
         await runtime.submit_live_frame(_frame(0, 0))
@@ -84,7 +83,6 @@ def test_live_runtime_keeps_only_newest_pending_frame(tmp_path: Path) -> None:
             "frame_index": 2,
             "hands": [],
         }
-        assert await runtime.latest_preview() == b"preview-2"
 
     asyncio.run(scenario())
 

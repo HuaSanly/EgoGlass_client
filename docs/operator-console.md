@@ -1,13 +1,16 @@
 # Operator Console
 
 The operator console is a self-contained FastAPI service for Windows. It serves
-an authenticated local UI that displays the live Glass3 WebRTC preview from the
+an authenticated local UI that displays the gateway-decoded Glass3 preview from the
 ingest gateway. It does not create placeholder media, trajectories, or session
 state.
 
-WebView2 receives a real WebRTC video track from the gateway and measures the
-displayed cadence from rendered frames. There is no JPEG polling path. The UI
-keeps the negotiated frame dimensions and cadence unchanged.
+WebView2 opens the gateway's MJPEG preview endpoint. It never creates a second
+WebRTC peer. The gateway encodes each decoded source frame once and shares the
+newest output with all preview clients. A separate status endpoint reports
+decoded-frame counts, output cadence, dimensions, drops, and last-frame age.
+Source pauses retain the last frame instead of destroying and rebuilding the
+viewer.
 
 When the Glass3 control DataChannel is online, the signal panel shows its real
 capture state and enables start/stop commands. The console polls
@@ -60,13 +63,20 @@ finalize the active capture session before the Windows Job Object performs its
 port-cleanup fallback. A failed finalization is reported as a warning and the
 process tree is still terminated so ports are not leaked.
 
-The workspace below the live video is the hand-tracking monitor. It shows the
-rectified algorithm image, left/right confidence and backend, grasp state,
-input frame, inference duration, processed frames, and dropped frames. The
-preview image is produced from the exact rectified frame used by HaMeR, so its
-keypoints are not drawn over a differently rotated raw WebRTC image. The same
-panel selects completed capture sessions, starts offline replay, reports frame
-progress, and plays the generated annotated MP4.
+The workspace below the live video is the hand-tracking monitor. It shows
+decoded and perception receipt counts, left/right confidence and backend,
+grasp state, result frame, inference duration, processed frames, and inference
+skips. The main viewer keeps the decoded preview as its bottom layer and draws
+HaMeR boxes and keypoints on a canvas above it. Model loading, slow inference,
+and no-hand results therefore do not stop the video. The same panel selects
+completed capture sessions, starts offline replay, reports frame progress, and
+plays the generated annotated MP4 in that one viewer stage.
+
+Hand-tracking results keep rectified algorithm coordinates and also expose
+`source_keypoints_2d_px` and `source_bbox_xyxy_px`. Those source coordinates
+undo the configured camera rotation before the browser maps them onto the raw
+decoded preview, so portrait HaMeR inputs remain aligned with the landscape
+viewer.
 
 The `/storage` page polls the loopback recording library and treats each capture
 session as one data folder. A folder remains visible when it has no video clips
@@ -140,8 +150,9 @@ The UI consumes these loopback-only ingest-gateway contracts:
 - `DELETE /api/v1/recordings/sessions/{session_id}`
 - `DELETE /api/v1/recordings/clips/{session_id}/{clip_id}`
 - `GET /api/v1/recordings/media/{session_id}/{clip_id}`
+- `GET /api/v1/webrtc/decoded-preview.mjpg`
+- `GET /api/v1/webrtc/decoded-preview/status`
 - `GET /api/v1/perception/hand-tracking/status`
-- `GET /api/v1/perception/hand-tracking/preview.jpg`
 - `POST /api/v1/perception/hand-tracking/replays`
 - `GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}`
 

@@ -35,7 +35,6 @@ from perception.sensor_preprocessing import (
 from perception.spatial_perception.hand_tracking import (
     HandTrackingResult,
     HumanEgoHandTrackingPipeline,
-    encode_hand_tracking_preview,
     render_hand_tracking_overlay,
 )
 
@@ -82,7 +81,6 @@ class HandTrackingRuntimeConfig(BaseModel):
     schema_version: str = "1.0"
     enabled: bool = True
     max_live_inference_fps: float = Field(default=6.0, gt=0.0, le=60.0)
-    preview_jpeg_quality: int = Field(default=85, ge=1, le=100)
     replay: ReplayConfig = Field(default_factory=ReplayConfig)
 
     @classmethod
@@ -257,7 +255,6 @@ class HandTrackingRuntime:
         self._detail = "waiting for the first decoded frame" if self.config.enabled else "disabled"
         self._last_live_submission_ns: int | None = None
         self._latest_result: HandTrackingResult | None = None
-        self._latest_preview: bytes | None = None
         self._last_error: str | None = None
         self._live_frames_received = 0
         self._live_frames_dropped = 0
@@ -326,7 +323,6 @@ class HandTrackingRuntime:
                 "live_frames_received": self._live_frames_received,
                 "live_frames_dropped": self._live_frames_dropped,
                 "live_inferences": self._live_inferences,
-                "latest_preview_available": self._latest_preview is not None,
                 "latest_result": (
                     self._latest_result.to_json_dict() if self._latest_result is not None else None
                 ),
@@ -343,12 +339,6 @@ class HandTrackingRuntime:
                     ),
                 },
             }
-
-    async def latest_preview(self) -> bytes | None:
-        """Return the latest encoded rectified inference image without touching disk."""
-
-        async with self._lock:
-            return self._latest_preview
 
     async def start_replay(self, session_id: str) -> None:
         """Start one stored-session replay and reject concurrent GPU replay requests."""
@@ -403,7 +393,7 @@ class HandTrackingRuntime:
                 self._state = HandTrackingRuntimeState.LOADING
                 self._detail = "loading HaMeR" if self._tracker is None else "running HaMeR"
             try:
-                result, preview = await asyncio.get_running_loop().run_in_executor(
+                result = await asyncio.get_running_loop().run_in_executor(
                     self._executor,
                     self._process_live_frame,
                     frame,
@@ -420,7 +410,6 @@ class HandTrackingRuntime:
                 self._detail = "latest result is ready"
                 self._last_error = None
                 self._latest_result = result
-                self._latest_preview = preview
                 self._live_inferences += 1
 
     async def _run_replay(self, session_path: Path) -> None:
@@ -447,7 +436,7 @@ class HandTrackingRuntime:
     def _process_live_frame(
         self,
         frame: LiveHandTrackingFrame,
-    ) -> tuple[HandTrackingResult, bytes]:
+    ) -> HandTrackingResult:
         preprocessing = self._live_preprocessing_for(frame)
         bundle = preprocessing.process_live_frame(
             frame.decoded_frame,
@@ -472,13 +461,7 @@ class HandTrackingRuntime:
             ),
         )
         tracker = self._tracker_for_current_thread()
-        result = tracker.process_frame(bundle)
-        preview = encode_hand_tracking_preview(
-            bundle.image_bgr,
-            result,
-            jpeg_quality=self.config.preview_jpeg_quality,
-        )
-        return result, preview
+        return tracker.process_frame(bundle)
 
     def _process_replay(self, session_path: Path, output_path: Path) -> ReplayReport:
         tracker = self._tracker_for_current_thread()

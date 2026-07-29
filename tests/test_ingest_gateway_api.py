@@ -25,8 +25,6 @@ from ingest_gateway.webrtc_models import (
     StreamControlState,
     StreamControlStatus,
     WebRtcOffer,
-    WebRtcViewerAnswer,
-    WebRtcViewerOffer,
 )
 from ingest_gateway.webrtc_runtime import (
     StreamControlCommandError,
@@ -52,7 +50,6 @@ class HandTrackingApiRuntime:
             "live_frames_received": 3,
             "live_frames_dropped": 1,
             "live_inferences": 2,
-            "latest_preview_available": True,
             "latest_result": None,
             "last_error": None,
             "replay": {
@@ -63,9 +60,6 @@ class HandTrackingApiRuntime:
                 "report": None,
             },
         }
-
-    async def latest_preview(self) -> bytes:
-        return b"jpeg-preview"
 
     async def start_replay(self, session_id: str) -> None:
         self.replay_requests.append(session_id)
@@ -80,15 +74,6 @@ class HandTrackingApiRuntime:
 
     async def close(self) -> None:
         self.closed = True
-
-
-class ViewerRuntime:
-    async def accept_viewer_offer(self, offer: WebRtcViewerOffer) -> WebRtcViewerAnswer:
-        assert "viewer-offer" in offer.sdp
-        return WebRtcViewerAnswer(sdp="v=0\r\nviewer-answer-description")
-
-    async def close(self) -> None:
-        return None
 
 
 class ControlRuntime:
@@ -300,50 +285,6 @@ def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:
     assert accepted.json()["type"] == "answer"
     assert status.json()["phase"] == "negotiating"
     assert status.json()["device_session_id"] == "device-session-0002"
-
-
-def test_viewer_offer_is_loopback_only_and_allows_desktop_origin() -> None:
-    payload = {
-        "schema_version": "1.0",
-        "type": "offer",
-        "sdp": "v=0\r\nviewer-offer-description",
-    }
-    app = create_app(
-        webrtc_runtime=ViewerRuntime(),  # type: ignore[arg-type]
-        viewer_allowed_hosts=frozenset({"testclient"}),
-    )
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/webrtc/viewer/sessions",
-            json=payload,
-            headers={"Origin": "http://127.0.0.1:8765"},
-        )
-
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:8765"
-    assert response.json()["type"] == "answer"
-
-    with TestClient(
-        create_app(webrtc_runtime=ViewerRuntime())  # type: ignore[arg-type]
-    ) as client:
-        forbidden = client.post("/api/v1/webrtc/viewer/sessions", json=payload)
-    assert forbidden.status_code == 403
-
-
-def test_viewer_offer_reports_unavailable_until_glass3_track_arrives() -> None:
-    runtime = WebRtcSessionRuntime(PAIRING_TOKEN)
-    payload = {
-        "schema_version": "1.0",
-        "type": "offer",
-        "sdp": "v=0\r\nviewer-offer-description",
-    }
-    with TestClient(
-        create_app(webrtc_runtime=runtime, viewer_allowed_hosts=frozenset({"testclient"}))
-    ) as client:
-        response = client.post("/api/v1/webrtc/viewer/sessions", json=payload)
-
-    assert response.status_code == 503
-    assert response.json()["detail"] == "Glass3 video is not ready"
 
 
 def test_stream_control_api_is_loopback_only_and_supports_get_post_cors() -> None:
@@ -655,7 +596,7 @@ def test_cli_disables_high_frequency_preview_access_logs(monkeypatch, capsys) ->
     assert captured["app"].state.discovery_service is not None
 
 
-def test_hand_tracking_status_preview_and_replay_are_loopback_only(tmp_path: Path) -> None:
+def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> None:
     video = tmp_path / "replay.mp4"
     video.write_bytes(b"mp4-data")
     runtime = HandTrackingApiRuntime(video)
@@ -669,7 +610,6 @@ def test_hand_tracking_status_preview_and_replay_are_loopback_only(tmp_path: Pat
 
     with TestClient(app) as client:
         status = client.get("/api/v1/perception/hand-tracking/status")
-        preview = client.get("/api/v1/perception/hand-tracking/preview.jpg")
         replay = client.post(
             "/api/v1/perception/hand-tracking/replays",
             json={"session_id": session_id},
@@ -680,9 +620,6 @@ def test_hand_tracking_status_preview_and_replay_are_loopback_only(tmp_path: Pat
 
     assert status.status_code == 200
     assert status.json()["live_inferences"] == 2
-    assert preview.status_code == 200
-    assert preview.headers["content-type"] == "image/jpeg"
-    assert preview.content == b"jpeg-preview"
     assert replay.status_code == 202
     assert runtime.replay_requests == [session_id]
     assert media.content == b"mp4-data"

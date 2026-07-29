@@ -24,6 +24,9 @@ from perception.spatial_perception.hand_tracking import (
     MetricDepthStatus,
     ReconstructionBackend,
     remap_hamer_to_humanego_aria,
+    rotated_image_bbox_to_source,
+    rotated_image_points_to_source,
+    source_image_dimensions,
 )
 from perception.spatial_perception.hand_tracking.models import (
     detector_bbox_has_valid_geometry,
@@ -317,6 +320,49 @@ def test_result_payload_is_json_serializable_and_keeps_camera_frame_name(
     assert "keypoints_3d_camera_m" in encoded
     assert "keypoints_3d_world" not in encoded
     assert payload["joint_order"][5] == "wrist"
+    assert payload["source_image_width_px"] == 64
+    assert payload["source_image_height_px"] == 48
+    assert payload["hands"][0]["source_keypoints_2d_px"] == payload["hands"][0][
+        "keypoints_2d_px"
+    ]
+    assert payload["hands"][0]["source_bbox_xyxy_px"] == payload["hands"][0][
+        "bbox_xyxy_px"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("rotation", "point", "expected_point", "expected_bbox"),
+    [
+        (0, (1.0, 1.0), (1.0, 1.0), (0.25, 0.5, 2.25, 2.0)),
+        (90, (1.0, 2.0), (2.0, 1.0), (0.5, 0.75, 2.0, 2.75)),
+        (180, (1.0, 1.0), (2.0, 1.0), (1.75, 1.0, 3.75, 2.5)),
+        (270, (1.0, 2.0), (1.0, 1.0), (2.0, 0.25, 3.5, 2.25)),
+    ],
+)
+def test_rotated_result_coordinates_map_back_to_decoded_preview(
+    rotation: int,
+    point: tuple[float, float],
+    expected_point: tuple[float, float],
+    expected_bbox: tuple[float, float, float, float],
+) -> None:
+    image_width, image_height = (3, 4) if rotation in {90, 270} else (4, 3)
+
+    mapped = rotated_image_points_to_source(
+        np.asarray([point], dtype=np.float32),
+        image_width_px=image_width,
+        image_height_px=image_height,
+        rotation_degrees=rotation,
+    )
+    bbox = rotated_image_bbox_to_source(
+        (0.25, 0.5, 2.25, 2.0),
+        image_width_px=image_width,
+        image_height_px=image_height,
+        rotation_degrees=rotation,
+    )
+
+    assert source_image_dimensions(image_width, image_height, rotation) == (4, 3)
+    np.testing.assert_allclose(mapped[0], expected_point)
+    assert bbox == pytest.approx(expected_bbox)
 
 
 def test_remap_rejects_non_21_joint_inputs() -> None:

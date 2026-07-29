@@ -12,9 +12,12 @@ from .models import (
     ReconstructionBackend,
     TrackedHand,
     remap_hamer_to_humanego_aria,
+    rotated_image_bbox_to_source,
+    rotated_image_points_to_source,
+    source_image_dimensions,
 )
 from .pipeline import HumanEgoHandTrackingPipeline
-from .visualization import encode_hand_tracking_preview, render_hand_tracking_overlay
+from .visualization import render_hand_tracking_overlay
 
 __all__ = [
     "HUMANEGO_ARIA_JOINT_NAMES",
@@ -29,6 +32,8 @@ __all__ = [
     "ReconstructionBackend",
     "TrackedHand",
     "remap_hamer_to_humanego_aria",
-    "encode_hand_tracking_preview",
     "render_hand_tracking_overlay",
+    "rotated_image_bbox_to_source",
+    "rotated_image_points_to_source",
+    "source_image_dimensions",
 ]

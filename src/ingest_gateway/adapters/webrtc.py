@@ -7,7 +7,7 @@ from typing import Protocol
 
 from av import VideoFrame
 
-from ..webrtc_models import WebRtcOffer, WebRtcViewerOffer
+from ..webrtc_models import WebRtcOffer
 
 
 @dataclass(frozen=True)
@@ -69,19 +69,7 @@ class WebRtcPeer(Protocol):
     async def close(self) -> None: ...
 
 
-class WebRtcViewerPeer(Protocol):
-    async def accept_offer(self, offer: WebRtcViewerOffer) -> str: ...
-
-    async def close(self) -> None: ...
-
-
 def create_aiortc_peer(callbacks: WebRtcPeerCallbacks) -> WebRtcPeer:
     from .aiortc_peer import AiortcPeer
 
     return AiortcPeer(callbacks)
-
-
-def create_aiortc_viewer_peer(video_track: object) -> WebRtcViewerPeer:
-    from .aiortc_peer import AiortcViewerPeer
-
-    return AiortcViewerPeer(video_track)

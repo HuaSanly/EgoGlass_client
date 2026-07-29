@@ -11,11 +11,12 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi import Path as ApiPath
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from perception.runtime import HandTrackingRuntime, PerceptionRuntimeError
 
+from .decoded_preview import MJPEG_BOUNDARY, DecodedPreviewRuntime, DecodedPreviewStatus
 from .discovery import DISCOVERY_PORT, LanDiscoveryService
 from .recording import (
     RecordingClipNotFoundError,
@@ -42,8 +43,6 @@ from .webrtc_models import (
     WebRtcAnswer,
     WebRtcOffer,
     WebRtcStatus,
-    WebRtcViewerAnswer,
-    WebRtcViewerOffer,
 )
 from .webrtc_runtime import (
     PairingTokenError,
@@ -52,8 +51,6 @@ from .webrtc_runtime import (
     StreamControlUnavailableError,
     WebRtcSessionError,
     WebRtcSessionRuntime,
-    WebRtcViewerSessionError,
-    WebRtcViewerUnavailableError,
 )
 
 
@@ -70,6 +67,7 @@ def create_app(
     discovery_service: LanDiscoveryService | None = None,
     recording_runtime: RecordingRuntime | None = None,
     perception_runtime: HandTrackingRuntime | None = None,
+    decoded_preview_runtime: DecodedPreviewRuntime | None = None,
     *,
     recordings_root: Path | None = None,
     viewer_allowed_hosts: frozenset[str] = frozenset({"127.0.0.1", "::1"}),
@@ -83,12 +81,16 @@ def create_app(
     active_perception_runtime = perception_runtime or HandTrackingRuntime(
         recordings_root=active_recordings_root,
     )
+    active_decoded_preview_runtime = decoded_preview_runtime or DecodedPreviewRuntime()
     set_capture_sink = getattr(active_webrtc_runtime, "set_capture_telemetry_sink", None)
     if set_capture_sink is not None:
         set_capture_sink(active_recording_runtime)
     set_perception_sink = getattr(active_webrtc_runtime, "set_perception_live_frame_sink", None)
     if set_perception_sink is not None:
         set_perception_sink(active_perception_runtime)
+    set_preview_sink = getattr(active_webrtc_runtime, "set_decoded_preview_frame_sink", None)
+    if set_preview_sink is not None:
+        set_preview_sink(active_decoded_preview_runtime)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -101,6 +103,7 @@ def create_app(
                 await discovery_service.close()
             await active_webrtc_runtime.close()
             await active_perception_runtime.close()
+            await active_decoded_preview_runtime.close()
             await active_recording_runtime.close()
 
     app = FastAPI(
@@ -113,6 +116,7 @@ def create_app(
     app.state.webrtc_runtime = active_webrtc_runtime
     app.state.recording_runtime = active_recording_runtime
     app.state.perception_runtime = active_perception_runtime
+    app.state.decoded_preview_runtime = active_decoded_preview_runtime
     app.state.discovery_service = discovery_service
     app.add_middleware(
         CORSMiddleware,
@@ -139,13 +143,26 @@ def create_app(
         _require_loopback(request, viewer_allowed_hosts, "hand tracking")
         return await active_perception_runtime.status()
 
-    @app.get("/api/v1/perception/hand-tracking/preview.jpg")
-    async def hand_tracking_preview(request: Request) -> Response:
-        _require_loopback(request, viewer_allowed_hosts, "hand tracking")
-        preview = await active_perception_runtime.latest_preview()
-        if preview is None:
-            raise HTTPException(status_code=404, detail="hand-tracking preview is unavailable")
-        return Response(content=preview, media_type="image/jpeg")
+    @app.get(
+        "/api/v1/webrtc/decoded-preview/status",
+        response_model=DecodedPreviewStatus,
+    )
+    async def decoded_preview_status(request: Request) -> DecodedPreviewStatus:
+        _require_loopback(request, viewer_allowed_hosts, "decoded preview")
+        return await active_decoded_preview_runtime.status()
+
+    @app.get("/api/v1/webrtc/decoded-preview.mjpg")
+    async def decoded_preview_stream(request: Request) -> StreamingResponse:
+        _require_loopback(request, viewer_allowed_hosts, "decoded preview")
+        return StreamingResponse(
+            active_decoded_preview_runtime.stream(),
+            media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.post("/api/v1/perception/hand-tracking/replays", status_code=202)
     async def start_hand_tracking_replay(
@@ -180,19 +197,6 @@ def create_app(
         except (FileNotFoundError, PerceptionRuntimeError) as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         return FileResponse(video_path, media_type="video/mp4")
-
-    @app.post("/api/v1/webrtc/viewer/sessions", response_model=WebRtcViewerAnswer)
-    async def create_webrtc_viewer_session(
-        offer: WebRtcViewerOffer,
-        request: Request,
-    ) -> WebRtcViewerAnswer:
-        _require_loopback(request, viewer_allowed_hosts, "viewer")
-        try:
-            return await active_webrtc_runtime.accept_viewer_offer(offer)
-        except WebRtcViewerUnavailableError as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except WebRtcViewerSessionError as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
 
     @app.get("/api/v1/webrtc/control", response_model=StreamControlStatus)
     async def get_stream_control_status(request: Request) -> StreamControlStatus:

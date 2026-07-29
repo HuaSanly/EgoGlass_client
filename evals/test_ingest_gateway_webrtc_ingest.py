@@ -5,12 +5,8 @@ import inspect
 import json
 from fractions import Fraction
 
-from aiortc import RTCPeerConnection, VideoStreamTrack
-
 from ingest_gateway.adapters.aiortc_peer import (
-    AiortcViewerPeer,
     lan_rtc_configuration,
-    negotiated_video_codec_from_sdp,
 )
 from ingest_gateway.adapters.webrtc import (
     DecodedVideoFrame,
@@ -25,7 +21,6 @@ from ingest_gateway.webrtc_models import (
     StreamControlState,
     WebRtcOffer,
     WebRtcPhase,
-    WebRtcViewerOffer,
 )
 from ingest_gateway.webrtc_runtime import (
     RECORDING_FRAME_MAX_AGE_NS,
@@ -39,32 +34,9 @@ def test_gateway_disables_per_frame_access_logs() -> None:
     assert "access_log=False" in inspect.getsource(main)
 
 
-def test_viewer_peer_negotiates_h264_with_a_browser_offer() -> None:
-    async def scenario() -> None:
-        browser = RTCPeerConnection(configuration=lan_rtc_configuration())
-        viewer = AiortcViewerPeer(VideoStreamTrack())
-        browser.addTransceiver("video", direction="recvonly")
-        try:
-            offer = await browser.createOffer()
-            await browser.setLocalDescription(offer)
-            local_offer = browser.localDescription
-            assert local_offer is not None
-            answer_sdp = await viewer.accept_offer(WebRtcViewerOffer(sdp=local_offer.sdp))
-            assert negotiated_video_codec_from_sdp(answer_sdp) == "H264"
-            await browser.setRemoteDescription(
-                type(local_offer)(sdp=answer_sdp, type="answer")
-            )
-        finally:
-            await viewer.close()
-            await browser.close()
-
-    asyncio.run(scenario())
-
-
 def test_reordered_metadata_and_authenticated_replacement_stay_bounded() -> None:
     assert lan_rtc_configuration().iceServers == []
     peers: list[Peer] = []
-    viewer_tracks: list[object] = []
 
     class Peer:
         def __init__(self, callbacks: WebRtcPeerCallbacks) -> None:
@@ -81,23 +53,6 @@ def test_reordered_metadata_and_authenticated_replacement_stay_bounded() -> None
 
         async def close(self) -> None:
             self.closed = True
-
-    class VideoSource:
-        def subscribe(self, *, buffered: bool) -> object:
-            assert not buffered
-            track = object()
-            viewer_tracks.append(track)
-            return track
-
-    class ViewerPeer:
-        def __init__(self, track: object) -> None:
-            assert track is viewer_tracks[-1]
-
-        async def accept_offer(self, _offer: WebRtcViewerOffer) -> str:
-            return "v=0\r\nviewer-answer-description"
-
-        async def close(self) -> None:
-            return None
 
     def payload(frame_id: int, timestamp: int, sdk_timestamp: int) -> str:
         return json.dumps(
@@ -120,20 +75,13 @@ def test_reordered_metadata_and_authenticated_replacement_stay_bounded() -> None
 
     async def scenario() -> None:
         token = "eval-pairing-token-123456"
-        runtime = WebRtcSessionRuntime(token, Peer, ViewerPeer, max_pending_metadata=2)
+        runtime = WebRtcSessionRuntime(token, Peer, max_pending_metadata=2)
         offer = WebRtcOffer(
             device_session_id="device-session-eval01",
             sdp="v=0\r\noffer-session-description",
         )
         await runtime.accept_offer(offer, token)
         await peers[0].callbacks.on_connection_state("connected")
-        await peers[0].callbacks.on_video_source(VideoSource())
-        viewer_answer = await runtime.accept_viewer_offer(
-            WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
-        )
-        assert viewer_answer.type == "answer"
-        assert len(viewer_tracks) == 1
-
         await peers[0].callbacks.on_video_frame(
             DecodedVideoFrame(1280, 720, 0, Fraction(1, 90_000))
         )

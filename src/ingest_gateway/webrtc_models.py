@@ -81,22 +81,6 @@ class WebRtcAnswer(BaseModel):
     sdp: str = Field(min_length=16, max_length=1_048_576)
 
 
-class WebRtcViewerOffer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["1.0"] = "1.0"
-    type: Literal["offer"] = "offer"
-    sdp: str = Field(min_length=16, max_length=1_048_576)
-
-
-class WebRtcViewerAnswer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["1.0"] = "1.0"
-    type: Literal["answer"] = "answer"
-    sdp: str = Field(min_length=16, max_length=1_048_576)
-
-
 class VideoFrameMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

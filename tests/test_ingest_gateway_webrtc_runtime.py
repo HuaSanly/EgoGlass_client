@@ -20,7 +20,6 @@ from ingest_gateway.webrtc_models import (
     StreamControlState,
     WebRtcOffer,
     WebRtcPhase,
-    WebRtcViewerOffer,
 )
 from ingest_gateway.webrtc_runtime import (
     IMU_MAX_PAYLOAD_BYTES,
@@ -30,7 +29,6 @@ from ingest_gateway.webrtc_runtime import (
     StreamControlCommandTimeoutError,
     StreamControlUnavailableError,
     WebRtcSessionRuntime,
-    WebRtcViewerUnavailableError,
 )
 
 TOKEN = "test-pairing-token-123456"
@@ -61,19 +59,6 @@ class FakeVideoSource:
         track = object()
         self.subscriptions.append((track, buffered))
         return track
-
-
-class FakeViewerPeer:
-    def __init__(self, track: object) -> None:
-        self.track = track
-        self.closed = False
-
-    async def accept_offer(self, offer: WebRtcViewerOffer) -> str:
-        assert offer.type == "offer"
-        return "v=0\r\nviewer-answer-description"
-
-    async def close(self) -> None:
-        self.closed = True
 
 
 class FakeControlChannel(WebRtcControlChannel):
@@ -199,7 +184,6 @@ def imu_sample_json(
 
 def test_authenticated_session_receives_and_matches_video_metadata() -> None:
     peers: list[FakePeer] = []
-    viewers: list[FakeViewerPeer] = []
     now_ns = 1_000_000_000
 
     def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
@@ -207,17 +191,11 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
         peers.append(peer)
         return peer
 
-    def viewer_factory(track: object) -> FakeViewerPeer:
-        viewer = FakeViewerPeer(track)
-        viewers.append(viewer)
-        return viewer
-
     async def scenario() -> None:
         nonlocal now_ns
         runtime = WebRtcSessionRuntime(
             TOKEN,
             factory,
-            viewer_factory,
             perf_clock=lambda: now_ns,
         )
         answer = await runtime.accept_offer(offer(), TOKEN)
@@ -239,9 +217,6 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
                     Fraction(1, 90_000),
                 )
             )
-        viewer_answer = await runtime.accept_viewer_offer(
-            WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
-        )
         status = await runtime.status()
 
         assert status.phase is WebRtcPhase.STREAMING
@@ -252,8 +227,7 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
         assert status.metadata_calibrated
         assert status.metadata_calibration_support == 60
         assert status.video_codec == "H264"
-        assert viewer_answer.type == "answer"
-        assert source.subscriptions == [(viewers[0].track, False)]
+        assert source.subscriptions == []
         assert status.first_frame_latency_ms == 120.0
         assert (status.width, status.height) == (1280, 720)
 
@@ -398,24 +372,14 @@ def test_imu_telemetry_tracks_rates_gaps_clocks_and_malformed_messages() -> None
 
 def test_authenticated_offer_replaces_active_peer_and_ignores_stale_callbacks() -> None:
     peers: list[FakePeer] = []
-    viewers: list[FakeViewerPeer] = []
 
     def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
         peer = FakePeer(callbacks)
         peers.append(peer)
         return peer
 
-    def viewer_factory(track: object) -> FakeViewerPeer:
-        viewer = FakeViewerPeer(track)
-        viewers.append(viewer)
-        return viewer
-
     async def scenario() -> None:
-        runtime = WebRtcSessionRuntime(TOKEN, factory, viewer_factory)
-        with pytest.raises(WebRtcViewerUnavailableError):
-            await runtime.accept_viewer_offer(
-                WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
-            )
+        runtime = WebRtcSessionRuntime(TOKEN, factory)
         with pytest.raises(PairingTokenError):
             await runtime.accept_offer(offer(), "wrong-pairing-token")
 
@@ -423,9 +387,6 @@ def test_authenticated_offer_replaces_active_peer_and_ignores_stale_callbacks() 
         source = FakeVideoSource()
         await peers[0].callbacks.on_connection_state("connected")
         await peers[0].callbacks.on_video_source(source)
-        await runtime.accept_viewer_offer(
-            WebRtcViewerOffer(sdp="v=0\r\nviewer-offer-description")
-        )
         await peers[0].callbacks.on_metadata("not-json")
         old_imu_channel = FakeImuChannel()
         await peers[0].callbacks.on_imu_channel_ready(old_imu_channel)
@@ -444,7 +405,6 @@ def test_authenticated_offer_replaces_active_peer_and_ignores_stale_callbacks() 
         imu_status = await runtime.imu_status()
 
         assert peers[0].closed
-        assert viewers[0].closed
         assert replacement.type == "answer"
         assert replacement.session_id != first_answer.session_id
         assert status.phase is WebRtcPhase.NEGOTIATING
@@ -613,9 +573,10 @@ def test_control_timeout_and_send_failure_leave_safe_error_status() -> None:
     asyncio.run(scenario())
 
 
-def test_decoded_video_frame_is_submitted_to_perception_without_pixel_copy() -> None:
+def test_one_decoded_video_frame_is_fanned_out_without_pixel_copy() -> None:
     peers: list[FakePeer] = []
-    sink = FakePerceptionSink()
+    preview_sink = FakePerceptionSink()
+    perception_sink = FakePerceptionSink()
 
     def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
         peer = FakePeer(callbacks)
@@ -627,7 +588,8 @@ def test_decoded_video_frame_is_submitted_to_perception_without_pixel_copy() -> 
             TOKEN,
             factory,
             perf_clock=lambda: 123_000_000,
-            perception_live_frame_sink=sink,
+            perception_live_frame_sink=perception_sink,
+            decoded_preview_frame_sink=preview_sink,
         )
         await runtime.accept_offer(offer(), TOKEN)
         source_frame = VideoFrame(8, 6, "yuv420p")
@@ -642,10 +604,11 @@ def test_decoded_video_frame_is_submitted_to_perception_without_pixel_copy() -> 
         )
         await runtime.close()
 
-        assert len(sink.frames) == 1
-        assert sink.frames[0]["decoded_frame"] is source_frame
-        assert sink.frames[0]["frame_index"] == 0
-        assert sink.frames[0]["received_at_client_monotonic_ns"] == 123_000_000
-        assert sink.frames[0]["session_id"] == sink.frames[0]["connection_session_id"]
+        assert len(preview_sink.frames) == len(perception_sink.frames) == 1
+        for submitted in (preview_sink.frames[0], perception_sink.frames[0]):
+            assert submitted["decoded_frame"] is source_frame
+            assert submitted["frame_index"] == 0
+            assert submitted["received_at_client_monotonic_ns"] == 123_000_000
+            assert submitted["session_id"] == submitted["connection_session_id"]
 
     asyncio.run(scenario())

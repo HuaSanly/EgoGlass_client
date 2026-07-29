@@ -21,9 +21,7 @@ from .adapters.webrtc import (
     WebRtcPeerCallbacks,
     WebRtcVideoRecordingSource,
     WebRtcVideoSource,
-    WebRtcViewerPeer,
     create_aiortc_peer,
-    create_aiortc_viewer_peer,
 )
 from .webrtc_matcher import (
     DuplicateMetadataError,
@@ -46,8 +44,6 @@ from .webrtc_models import (
     WebRtcOffer,
     WebRtcPhase,
     WebRtcStatus,
-    WebRtcViewerAnswer,
-    WebRtcViewerOffer,
 )
 
 IMU_MAX_PAYLOAD_BYTES = 16_384
@@ -61,14 +57,6 @@ class PairingTokenError(RuntimeError):
 
 class WebRtcSessionError(RuntimeError):
     """A safe signaling failure that never contains SDP or credentials."""
-
-
-class WebRtcViewerUnavailableError(RuntimeError):
-    """Raised when no Glass3 video track is available for local preview."""
-
-
-class WebRtcViewerSessionError(RuntimeError):
-    """A safe local viewer signaling failure."""
 
 
 class StreamControlUnavailableError(RuntimeError):
@@ -128,7 +116,7 @@ class CaptureTelemetrySink(Protocol):
     ) -> None: ...
 
 
-class PerceptionLiveFrameSink(Protocol):
+class DecodedFrameSink(Protocol):
     """Receives decoded frames after ingest state has been updated."""
 
     async def submit_gateway_frame(
@@ -143,7 +131,6 @@ class PerceptionLiveFrameSink(Protocol):
 
 
 WebRtcPeerFactory = Callable[[WebRtcPeerCallbacks], WebRtcPeer]
-WebRtcViewerPeerFactory = Callable[[object], WebRtcViewerPeer]
 
 
 @dataclass
@@ -167,19 +154,18 @@ class WebRtcSessionRuntime:
         self,
         pairing_token: str,
         peer_factory: WebRtcPeerFactory = create_aiortc_peer,
-        viewer_peer_factory: WebRtcViewerPeerFactory = create_aiortc_viewer_peer,
         *,
         perf_clock: Callable[[], int] = time.perf_counter_ns,
         max_pending_metadata: int = 256,
         control_command_timeout_seconds: float = 3.0,
         capture_telemetry_sink: CaptureTelemetrySink | None = None,
-        perception_live_frame_sink: PerceptionLiveFrameSink | None = None,
+        perception_live_frame_sink: DecodedFrameSink | None = None,
+        decoded_preview_frame_sink: DecodedFrameSink | None = None,
     ) -> None:
         if len(pairing_token) < 16:
             raise ValueError("pairing_token must contain at least 16 characters")
         self._pairing_token = pairing_token
         self._peer_factory = peer_factory
-        self._viewer_peer_factory = viewer_peer_factory
         self._perf_clock = perf_clock
         self._max_pending_metadata = max_pending_metadata
         if control_command_timeout_seconds <= 0:
@@ -187,11 +173,11 @@ class WebRtcSessionRuntime:
         self._control_command_timeout_seconds = control_command_timeout_seconds
         self._capture_telemetry_sink = capture_telemetry_sink
         self._perception_live_frame_sink = perception_live_frame_sink
+        self._decoded_preview_frame_sink = decoded_preview_frame_sink
         self._session_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._control_command_lock = asyncio.Lock()
         self._peer: WebRtcPeer | None = None
-        self._viewer_peer: WebRtcViewerPeer | None = None
         self._video_source: WebRtcVideoSource | None = None
         self._pending_control_commands: dict[
             str, asyncio.Future[StreamControlStatus]
@@ -202,10 +188,15 @@ class WebRtcSessionRuntime:
     def set_capture_telemetry_sink(self, sink: CaptureTelemetrySink) -> None:
         self._capture_telemetry_sink = sink
 
-    def set_perception_live_frame_sink(self, sink: PerceptionLiveFrameSink) -> None:
+    def set_perception_live_frame_sink(self, sink: DecodedFrameSink) -> None:
         """Attach an enqueue-only perception consumer for decoded source frames."""
 
         self._perception_live_frame_sink = sink
+
+    def set_decoded_preview_frame_sink(self, sink: DecodedFrameSink) -> None:
+        """Attach the enqueue-only UI preview consumer to the decoded frame fan-out."""
+
+        self._decoded_preview_frame_sink = sink
 
     async def status(self) -> WebRtcStatus:
         async with self._state_lock:
@@ -393,10 +384,7 @@ class WebRtcSessionRuntime:
                     self._perf_clock(),
                 )
             peer, self._peer = self._peer, None
-            viewer_peer, self._viewer_peer = self._viewer_peer, None
             self._video_source = None
-            if viewer_peer is not None:
-                await viewer_peer.close()
             if peer is not None:
                 await peer.close()
 
@@ -454,26 +442,6 @@ class WebRtcSessionRuntime:
 
             return WebRtcAnswer(session_id=session_id, sdp=answer_sdp)
 
-    async def accept_viewer_offer(self, offer: WebRtcViewerOffer) -> WebRtcViewerAnswer:
-        async with self._session_lock:
-            source = self._video_source
-            if source is None:
-                raise WebRtcViewerUnavailableError("Glass3 video is not ready")
-
-            if self._viewer_peer is not None:
-                await self._viewer_peer.close()
-            peer = self._viewer_peer_factory(source.subscribe(buffered=False))
-            self._viewer_peer = peer
-            try:
-                answer_sdp = await peer.accept_offer(offer)
-            except Exception as error:
-                await peer.close()
-                if self._viewer_peer is peer:
-                    self._viewer_peer = None
-                message = f"viewer negotiation failed: {type(error).__name__}"
-                raise WebRtcViewerSessionError(message) from error
-            return WebRtcViewerAnswer(sdp=answer_sdp)
-
     async def recording_source(self) -> WebRtcVideoRecordingSource | None:
         async with self._state_lock:
             if (
@@ -518,10 +486,7 @@ class WebRtcSessionRuntime:
                     self._perf_clock(),
                 )
             peer, self._peer = self._peer, None
-            viewer_peer, self._viewer_peer = self._viewer_peer, None
             self._video_source = None
-            if viewer_peer is not None:
-                await viewer_peer.close()
             if peer is not None:
                 await peer.close()
             async with self._state_lock:
@@ -607,14 +572,23 @@ class WebRtcSessionRuntime:
                     session_id,
                     match,
                 )
-            if frame.video_frame is not None and self._perception_live_frame_sink is not None:
-                await self._perception_live_frame_sink.submit_gateway_frame(
-                    session_id=session_id,
-                    connection_session_id=session_id,
-                    frame_index=frame_index,
-                    received_at_client_monotonic_ns=now_ns,
-                    decoded_frame=frame.video_frame,
-                )
+            if frame.video_frame is not None:
+                for sink_name, sink in (
+                    ("decoded preview", self._decoded_preview_frame_sink),
+                    ("perception", self._perception_live_frame_sink),
+                ):
+                    if sink is None:
+                        continue
+                    try:
+                        await sink.submit_gateway_frame(
+                            session_id=session_id,
+                            connection_session_id=session_id,
+                            frame_index=frame_index,
+                            received_at_client_monotonic_ns=now_ns,
+                            decoded_frame=frame.video_frame,
+                        )
+                    except Exception:
+                        LOGGER.exception("%s frame sink rejected decoded frame", sink_name)
 
     async def _on_metadata(self, generation: int, payload: str | bytes) -> None:
         if generation != self._generation:

@@ -53,8 +53,8 @@ def test_health_and_real_video_console_are_served() -> None:
     assert ahrs.status_code == 200
     parser = ElementIdParser()
     parser.feed(page.text)
-    assert parser.tags_by_id["live-video-source"] == "video"
-    assert parser.tags_by_id["hand-tracking-preview"] == "img"
+    assert parser.tags_by_id["decoded-preview-source"] == "img"
+    assert parser.tags_by_id["hand-tracking-overlay"] == "canvas"
     assert parser.tags_by_id["hand-replay-video"] == "video"
     assert parser.tags_by_id["viewer-mode-live"] == "button"
     assert parser.tags_by_id["viewer-mode-replay"] == "button"
@@ -83,9 +83,10 @@ def test_health_and_real_video_console_are_served() -> None:
     assert parser.tags_by_id["reset-imu-button"] == "button"
     assert "GLASS3 LIVE SOURCE" in page.text
     assert "WebRTC / DTLS-SRTP" in page.text
-    assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script.text
-    assert "new RTCPeerConnection" in script.text
-    assert "requestVideoFrameCallback" in script.text
+    assert "127.0.0.1:8770/api/v1/webrtc/decoded-preview.mjpg" in script.text
+    assert "127.0.0.1:8770/api/v1/webrtc/decoded-preview/status" in script.text
+    assert "RTCPeerConnection" not in script.text
+    assert "/api/v1/webrtc/viewer/sessions" not in script.text
     assert 'id="link-state"' not in page.text
     assert "LAN DIRECT" not in page.text
     assert parser.tags_by_id["stream-toggle-button"] == "button"
@@ -102,6 +103,8 @@ def test_health_and_real_video_console_are_served() -> None:
     assert 'import { ImuSceneController } from "./imu-scene.js"' in script.text
     assert "function pollHandTrackingStatus()" in script.text
     assert "/api/v1/perception/hand-tracking" in script.text
+    assert "source_keypoints_2d_px" in script.text
+    assert "source_bbox_xyxy_px" in script.text
     assert 'addEvent("OK", "Glass3 视频已连接"' in script.text
     assert 'addEvent("OK", "Glass3 IMU 已连接"' in script.text
     assert "new THREE.WebGLRenderer" in imu_scene.text
@@ -111,7 +114,7 @@ def test_health_and_real_video_console_are_served() -> None:
     assert 'browserRequire("ahrs")' in imu_scene.text
     assert "aspect-ratio: 16 / 9" in styles.text
     live_video_styles = styles.text.split(
-        ".live-video-source,\n.hand-tracking-preview,\n.hand-replay-video {",
+        ".decoded-preview-source,\n.hand-replay-video {",
         maxsplit=1,
     )[1].split("}", maxsplit=1)[0]
     assert "object-fit: cover" in live_video_styles
@@ -137,10 +140,10 @@ def test_home_uses_one_stage_for_live_tracking_and_replay() -> None:
     )[1].split('</section>\n          </div>', maxsplit=1)[0]
 
     assert page.count('class="viewer-stage"') == 1
-    assert 'id="live-video-source"' in viewer_stage
-    assert 'id="hand-tracking-preview"' in viewer_stage
+    assert 'id="decoded-preview-source"' in viewer_stage
+    assert 'id="hand-tracking-overlay"' in viewer_stage
     assert 'id="hand-replay-video"' in viewer_stage
-    assert 'id="hand-tracking-preview"' not in algorithm_panel
+    assert 'id="hand-tracking-overlay"' not in algorithm_panel
     assert 'id="hand-replay-video"' not in algorithm_panel
     assert 'class="algorithm-preview-stage"' not in page
     assert ".algorithm-preview-stage" not in styles
@@ -148,13 +151,13 @@ def test_home_uses_one_stage_for_live_tracking_and_replay() -> None:
     assert 'id="viewer-mode-replay"' in page
     assert 'viewerMode: "live"' in script
     assert 'function setViewerMode(mode)' in script
-    assert 'elements.liveVideo.hidden = !showLiveVideo' in script
-    assert 'elements.handTrackingPreview.hidden = !showPreview' in script
+    assert 'elements.decodedPreview.hidden = !liveMode' in script
+    assert 'elements.handTrackingOverlay.hidden = !liveMode' in script
+    assert "drawHandTrackingOverlay(result)" in script
     assert 'elements.handReplayVideo.hidden = !showReplay' in script
-    assert 'const showPreview = liveMode && state.handPreviewReady' in script
-    assert 'const showLiveVideo = liveMode && !showPreview && state.liveVideoReady' in script
+    assert 'const showLiveVideo = liveMode && state.liveVideoReady' in script
     assert 'sessions.length === 0 || state.replayRequestInFlight' in script
-    assert 'elements.viewerEmpty.hidden = showPreview || showLiveVideo || showReplay' in script
+    assert 'elements.viewerEmpty.hidden = showLiveVideo || showReplay' in script
 
 
 def test_runtime_contains_no_simulated_data_controls_or_transport() -> None:

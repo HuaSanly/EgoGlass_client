@@ -54,9 +54,12 @@ alignment is available.
 The operator console reads these loopback-only endpoints:
 
 - `GET /api/v1/perception/hand-tracking/status`
-- `GET /api/v1/perception/hand-tracking/preview.jpg`
 - `POST /api/v1/perception/hand-tracking/replays`
 - `GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}`
+
+Live visualization uses the gateway's decoded MJPEG preview as the image layer
+and draws the structured hand-tracking result on a browser canvas. The model no
+longer encodes a separate live preview image.
 
 Offline replay renders an annotated MP4 for every clip and one `results.jsonl`
 under `<session>/perception/hand-tracking/<run-id>/`. It never overwrites raw

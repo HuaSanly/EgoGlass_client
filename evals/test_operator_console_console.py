@@ -1,20 +1,21 @@
 from operator_console.app import STATIC_DIR
 
 
-def test_live_glass3_preview_is_the_only_viewer_source() -> None:
+def test_gateway_decoded_preview_is_the_only_live_viewer_source() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
-    assert 'id="live-video-source"' in html
-    assert "127.0.0.1:8770/api/v1/webrtc/viewer/sessions" in script
+    assert 'id="decoded-preview-source"' in html
+    assert 'id="hand-tracking-overlay"' in html
+    assert "127.0.0.1:8770/api/v1/webrtc/decoded-preview.mjpg" in script
+    assert "127.0.0.1:8770/api/v1/webrtc/decoded-preview/status" in script
     assert "state.liveVideoReady" in script
-    assert "new RTCPeerConnection" in script
-    assert 'addTransceiver("video", { direction: "recvonly" })' in script
-    assert "requestVideoFrameCallback" in script
+    assert "RTCPeerConnection" not in script
+    assert "/api/v1/webrtc/viewer/sessions" not in script
     assert "frame.jpg" not in script
     assert 'id="live-badge-label">WAITING</span>' in html
-    assert "renderVideoState" in script
-    assert "Glass3 视频在线" in script
+    assert "renderDecodedPreviewState" in script
+    assert "Glass3 解码视频在线" in script
     assert 'id="preview-fps"' in html
     assert 'id="viewer-empty"' in html
 
@@ -23,7 +24,7 @@ def test_live_video_contract_is_independent_of_checkout_line_endings() -> None:
     html = (STATIC_DIR / "index.html").read_bytes().replace(b"\r\n", b"\n")
 
     for content in (html, html.replace(b"\n", b"\r\n")):
-        assert b'id="live-video-source"' in content
+        assert b'id="decoded-preview-source"' in content
 
 
 def test_video_status_replaces_the_removed_global_topbar() -> None:
@@ -79,8 +80,8 @@ def test_hand_tracking_panel_uses_live_status_and_offline_replay() -> None:
 
     assert 'id="event-rows"' not in html
     assert html.count('class="viewer-stage"') == 1
-    assert 'id="live-video-source"' in viewer_stage
-    assert 'id="hand-tracking-preview"' in viewer_stage
+    assert 'id="decoded-preview-source"' in viewer_stage
+    assert 'id="hand-tracking-overlay"' in viewer_stage
     assert 'id="hand-replay-video"' in viewer_stage
     assert 'class="algorithm-preview-stage"' not in html
     assert ".algorithm-preview-stage" not in styles
@@ -92,8 +93,10 @@ def test_hand_tracking_panel_uses_live_status_and_offline_replay() -> None:
     assert "function startHandTrackingReplay()" in script
     assert 'viewerMode: "live"' in script
     assert 'setViewerMode("replay")' in script
-    assert "state.handPreviewReady" in script
-    assert "!showPreview && state.liveVideoReady" in script
+    assert "drawHandTrackingOverlay(result)" in script
+    assert "source_keypoints_2d_px" in script
+    assert "source_bbox_xyxy_px" in script
+    assert "const showLiveVideo = liveMode && state.liveVideoReady" in script
     assert "replayMatchesSelectedSession()" in script
     assert "/api/v1/perception/hand-tracking" in script
     assert "state.events" not in script

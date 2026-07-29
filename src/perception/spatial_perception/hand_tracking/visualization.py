@@ -79,24 +79,3 @@ def render_hand_tracking_overlay(
             lineType=cv2.LINE_AA,
         )
     return overlay
-
-
-def encode_hand_tracking_preview(
-    image_bgr: NDArray[np.uint8],
-    result: HandTrackingResult,
-    *,
-    jpeg_quality: int = 85,
-) -> bytes:
-    """Encode a rectified annotated frame for the operator console preview."""
-
-    if not 1 <= jpeg_quality <= 100:
-        raise ValueError("JPEG quality must be between 1 and 100")
-    rendered = render_hand_tracking_overlay(image_bgr, result)
-    encoded, payload = cv2.imencode(
-        ".jpg",
-        rendered,
-        (cv2.IMWRITE_JPEG_QUALITY, jpeg_quality),
-    )
-    if not encoded:
-        raise RuntimeError("failed to encode hand-tracking preview")
-    return payload.tobytes()

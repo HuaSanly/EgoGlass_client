@@ -1074,8 +1074,7 @@ a {
   background: #080a09;
 }
 
-.live-video-source,
-.hand-tracking-preview,
+.decoded-preview-source,
 .hand-replay-video {
   position: absolute;
   inset: 0;
@@ -1085,20 +1084,26 @@ a {
   object-fit: cover;
 }
 
-.live-video-source {
+.decoded-preview-source {
   opacity: 0;
 }
 
-.live-video-source.is-ready {
+.decoded-preview-source.is-ready {
   opacity: 1;
 }
 
-.hand-tracking-preview {
-  background: #080a09;
+.hand-tracking-overlay {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .hand-replay-video {
-  z-index: 1;
+  z-index: 2;
   background: #080a09;
   object-fit: contain;
 }

@@ -52,7 +52,7 @@
                   <span class="status-light" id="connection-light" aria-hidden="true"></span>
                   <div>
                     <strong id="connection-label">等待 Glass3 视频</strong>
-                    <span>DIRECT WEBRTC</span>
+                    <span>GATEWAY DECODE</span>
                   </div>
                 </div>
                 <button class="button button-small" id="fullscreen-button" type="button">
@@ -62,20 +62,16 @@
             </div>
 
             <div class="viewer-stage" id="viewer-stage">
-              <video
-                id="live-video-source"
-                class="live-video-source"
-                aria-label="Glass3 实时第一视角视频"
-                autoplay
-                muted
-                playsinline
-              ></video>
               <img
-                id="hand-tracking-preview"
-                class="hand-tracking-preview"
-                alt="实时手部识别结果"
-                hidden
+                id="decoded-preview-source"
+                class="decoded-preview-source"
+                alt="接收网关解码后的 Glass3 实时第一视角视频"
               >
+              <canvas
+                id="hand-tracking-overlay"
+                class="hand-tracking-overlay"
+                aria-label="实时手部识别结果叠加层"
+              ></canvas>
               <video
                 id="hand-replay-video"
                 class="hand-replay-video"
@@ -127,10 +123,12 @@
             <div class="algorithm-layout">
               <div class="algorithm-inspector">
                 <dl class="algorithm-metrics">
-                  <div><dt>输入帧</dt><dd id="hand-input-frame">--</dd></div>
-                  <div><dt>推理耗时</dt><dd id="hand-inference-time">--</dd></div>
+                  <div><dt>解码帧</dt><dd id="decoded-frame-count">0</dd></div>
+                  <div><dt>感知接收</dt><dd id="hand-received-count">0</dd></div>
                   <div><dt>已处理</dt><dd id="hand-inference-count">0</dd></div>
-                  <div><dt>已丢弃</dt><dd id="hand-dropped-count">0</dd></div>
+                  <div><dt>推理跳帧</dt><dd id="hand-dropped-count">0</dd></div>
+                  <div><dt>结果帧</dt><dd id="hand-input-frame">--</dd></div>
+                  <div><dt>推理耗时</dt><dd id="hand-inference-time">--</dd></div>
                 </dl>
                 <div class="hand-readouts" aria-label="左右手识别状态">
                   <div class="hand-readout" id="left-hand-readout">
@@ -171,8 +169,8 @@
 
               <dl class="property-list">
                 <div><dt>媒体源</dt><dd>Rokid Glass3 相机</dd></div>
-                <div><dt>传输</dt><dd>WebRTC / DTLS-SRTP</dd></div>
-                <div><dt>编解码</dt><dd>H.264</dd></div>
+                <div><dt>入站传输</dt><dd>WebRTC / DTLS-SRTP</dd></div>
+                <div><dt>预览链路</dt><dd>H.264 解码 / RGB 帧</dd></div>
                 <div><dt>预览状态</dt><dd id="preview-status-property">等待首帧</dd></div>
                 <div><dt>画面尺寸</dt><dd id="frame-size-property">--</dd></div>
                 <div><dt>接收网关</dt><dd>127.0.0.1:8770</dd></div>

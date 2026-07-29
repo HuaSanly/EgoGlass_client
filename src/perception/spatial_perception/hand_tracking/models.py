@@ -251,6 +251,41 @@ class HandTrackingResult:
     def to_json_dict(self) -> dict[str, object]:
         """Convert the immutable result to a JSON-compatible boundary payload."""
 
+        source_width_px, source_height_px = source_image_dimensions(
+            self.image_width_px,
+            self.image_height_px,
+            self.source_rotation_degrees,
+        )
+        hands_payload: list[dict[str, object]] = []
+        for hand in self.hands:
+            source_keypoints = rotated_image_points_to_source(
+                hand.keypoints_2d_px,
+                image_width_px=self.image_width_px,
+                image_height_px=self.image_height_px,
+                rotation_degrees=self.source_rotation_degrees,
+            )
+            source_bbox = rotated_image_bbox_to_source(
+                hand.bbox_xyxy_px,
+                image_width_px=self.image_width_px,
+                image_height_px=self.image_height_px,
+                rotation_degrees=self.source_rotation_degrees,
+            )
+            hands_payload.append(
+                {
+                    "handedness": hand.handedness.value,
+                    "confidence": hand.confidence,
+                    "reconstruction_backend": hand.reconstruction_backend.value,
+                    "metric_depth_status": hand.metric_depth_status.value,
+                    "bbox_xyxy_px": list(hand.bbox_xyxy_px),
+                    "keypoints_2d_px": hand.keypoints_2d_px.tolist(),
+                    "source_bbox_xyxy_px": list(source_bbox),
+                    "source_keypoints_2d_px": source_keypoints.tolist(),
+                    "keypoints_3d_camera_m": hand.keypoints_3d_camera_m.tolist(),
+                    "joint_angles_degrees": dict(hand.joint_angles_degrees),
+                    "grasp_ratio": hand.grasp_ratio,
+                    "is_grasping": hand.is_grasping,
+                }
+            )
         return {
             "schema_version": self.schema_version,
             "session_id": self.session_id,
@@ -261,28 +296,97 @@ class HandTrackingResult:
             "image_width_px": self.image_width_px,
             "image_height_px": self.image_height_px,
             "source_rotation_degrees": self.source_rotation_degrees,
+            "source_image_width_px": source_width_px,
+            "source_image_height_px": source_height_px,
             "detector_backend": self.detector_backend,
             "requested_device": self.requested_device,
             "execution_device": self.execution_device,
             "hamer_loaded": self.hamer_loaded,
             "inference_duration_ns": self.inference_duration_ns,
             "joint_order": list(HUMANEGO_ARIA_JOINT_NAMES),
-            "hands": [
-                {
-                    "handedness": hand.handedness.value,
-                    "confidence": hand.confidence,
-                    "reconstruction_backend": hand.reconstruction_backend.value,
-                    "metric_depth_status": hand.metric_depth_status.value,
-                    "bbox_xyxy_px": list(hand.bbox_xyxy_px),
-                    "keypoints_2d_px": hand.keypoints_2d_px.tolist(),
-                    "keypoints_3d_camera_m": hand.keypoints_3d_camera_m.tolist(),
-                    "joint_angles_degrees": dict(hand.joint_angles_degrees),
-                    "grasp_ratio": hand.grasp_ratio,
-                    "is_grasping": hand.is_grasping,
-                }
-                for hand in self.hands
-            ],
+            "hands": hands_payload,
         }
+
+
+def source_image_dimensions(
+    image_width_px: int,
+    image_height_px: int,
+    rotation_degrees: int,
+) -> tuple[int, int]:
+    """Return decoded source dimensions before the preprocessing rotation."""
+
+    if image_width_px < 1 or image_height_px < 1:
+        raise ValueError("image dimensions must be positive")
+    if rotation_degrees not in {0, 90, 180, 270}:
+        raise ValueError("rotation must be 0, 90, 180, or 270 degrees")
+    if rotation_degrees in {90, 270}:
+        return image_height_px, image_width_px
+    return image_width_px, image_height_px
+
+
+def rotated_image_points_to_source(
+    points: NDArray[np.floating],
+    *,
+    image_width_px: int,
+    image_height_px: int,
+    rotation_degrees: int,
+) -> FloatArray:
+    """Map rotated preprocessing pixel centers back to decoded source coordinates."""
+
+    source_width_px, source_height_px = source_image_dimensions(
+        image_width_px,
+        image_height_px,
+        rotation_degrees,
+    )
+    values = np.asarray(points, dtype=np.float32)
+    if values.ndim != 2 or values.shape[1] != 2 or not np.isfinite(values).all():
+        raise ValueError("points must be a finite Nx2 array")
+    mapped = np.empty_like(values)
+    if rotation_degrees == 0:
+        mapped[:] = values
+    elif rotation_degrees == 90:
+        mapped[:, 0] = values[:, 1]
+        mapped[:, 1] = source_height_px - 1 - values[:, 0]
+    elif rotation_degrees == 180:
+        mapped[:, 0] = source_width_px - 1 - values[:, 0]
+        mapped[:, 1] = source_height_px - 1 - values[:, 1]
+    else:
+        mapped[:, 0] = source_width_px - 1 - values[:, 1]
+        mapped[:, 1] = values[:, 0]
+    mapped = np.ascontiguousarray(mapped, dtype=np.float32)
+    mapped.setflags(write=False)
+    return mapped
+
+
+def rotated_image_bbox_to_source(
+    bbox_xyxy_px: tuple[float, float, float, float],
+    *,
+    image_width_px: int,
+    image_height_px: int,
+    rotation_degrees: int,
+) -> tuple[float, float, float, float]:
+    """Map a rotated image-edge bounding box back to the decoded source image."""
+
+    source_width_px, source_height_px = source_image_dimensions(
+        image_width_px,
+        image_height_px,
+        rotation_degrees,
+    )
+    x1, y1, x2, y2 = bbox_xyxy_px
+    if not all(np.isfinite(value) for value in bbox_xyxy_px) or x2 <= x1 or y2 <= y1:
+        raise ValueError("bounding box must be finite and have positive area")
+    if rotation_degrees == 0:
+        return bbox_xyxy_px
+    if rotation_degrees == 90:
+        return y1, source_height_px - x2, y2, source_height_px - x1
+    if rotation_degrees == 180:
+        return (
+            source_width_px - x2,
+            source_height_px - y2,
+            source_width_px - x1,
+            source_height_px - y1,
+        )
+    return source_width_px - y2, x1, source_width_px - y1, x2
 
 
 class HandDetector(Protocol):

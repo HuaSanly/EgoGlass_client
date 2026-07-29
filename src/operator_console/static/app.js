@@ -11,7 +11,8 @@ import {
 } from "./recordings-api.js";
 
 const elements = {
-  liveVideo: document.querySelector("#live-video-source"),
+  decodedPreview: document.querySelector("#decoded-preview-source"),
+  handTrackingOverlay: document.querySelector("#hand-tracking-overlay"),
   viewerStage: document.querySelector("#viewer-stage"),
   viewerEmpty: document.querySelector("#viewer-empty"),
   viewerEmptyTitle: document.querySelector("#viewer-empty-title"),
@@ -49,8 +50,9 @@ const elements = {
   newSessionButton: document.querySelector("#new-session-button"),
   fullscreenButton: document.querySelector("#fullscreen-button"),
   handTrackingState: document.querySelector("#hand-tracking-state"),
-  handTrackingPreview: document.querySelector("#hand-tracking-preview"),
   handTrackingDetail: document.querySelector("#hand-tracking-detail"),
+  decodedFrameCount: document.querySelector("#decoded-frame-count"),
+  handReceivedCount: document.querySelector("#hand-received-count"),
   handInputFrame: document.querySelector("#hand-input-frame"),
   handInferenceTime: document.querySelector("#hand-inference-time"),
   handInferenceCount: document.querySelector("#hand-inference-count"),
@@ -78,15 +80,13 @@ const elements = {
 const state = {
   viewerMode: "live",
   liveVideoReady: false,
-  connecting: false,
-  peer: null,
-  reconnectTimer: null,
-  frameCallbackId: null,
-  fallbackFrameTimer: null,
-  lastPresentedFrames: null,
-  lastFpsSampleAt: null,
-  lastDetailsAt: 0,
-  lastSignalingError: null,
+  decodedPreviewStatus: null,
+  decodedPreviewError: null,
+  decodedPreviewPollTimer: null,
+  decodedPreviewPollInFlight: false,
+  decodedPreviewReconnectTimer: null,
+  decodedPreviewGeneration: 0,
+  lastDecodedFrameIndex: null,
   controlState: "unavailable",
   controlDetail: null,
   controlPollTimer: null,
@@ -111,8 +111,6 @@ const state = {
   handTrackingPollInFlight: false,
   handTrackingStatus: null,
   handTrackingError: null,
-  latestHandPreviewFrame: null,
-  handPreviewReady: false,
   replayRequestInFlight: false,
   imuPollTimer: null,
   imuPollInFlight: false,
@@ -121,8 +119,9 @@ const state = {
   imuSceneError: null,
 };
 
-const viewerSignalingEndpoint =
-  "http://127.0.0.1:8770/api/v1/webrtc/viewer/sessions";
+const decodedPreviewEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/decoded-preview.mjpg";
+const decodedPreviewStatusEndpoint =
+  "http://127.0.0.1:8770/api/v1/webrtc/decoded-preview/status";
 const streamControlEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/control";
 const streamControlCommandEndpoint = `${streamControlEndpoint}/commands`;
 const imuStatusEndpoint = "http://127.0.0.1:8770/api/v1/webrtc/imu/status";
@@ -160,17 +159,16 @@ if (window.location.search) {
   window.history.replaceState({}, "", window.location.pathname);
 }
 
-class ViewerSignalingError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
+function scheduleDecodedPreviewReconnect(delayMs = 1000) {
+  window.clearTimeout(state.decodedPreviewReconnectTimer);
+  if (document.hidden) return;
+  state.decodedPreviewReconnectTimer = window.setTimeout(connectDecodedPreview, delayMs);
 }
 
-function scheduleViewerRetry(delayMs = 1000) {
-  window.clearTimeout(state.reconnectTimer);
+function scheduleDecodedPreviewPoll(delayMs = 500) {
+  window.clearTimeout(state.decodedPreviewPollTimer);
   if (document.hidden) return;
-  state.reconnectTimer = window.setTimeout(connectLiveVideo, delayMs);
+  state.decodedPreviewPollTimer = window.setTimeout(pollDecodedPreviewStatus, delayMs);
 }
 
 function scheduleControlPoll(delayMs = 1000) {
@@ -577,6 +575,92 @@ function renderHandReadout(element, hand) {
   detail.textContent = `${hand.metric_depth_status} · ${hand.is_grasping ? "抓握" : "展开"}`;
 }
 
+const handBones = [
+  [5, 6], [6, 7], [7, 0],
+  [5, 8], [8, 9], [9, 10], [10, 1],
+  [5, 11], [11, 12], [12, 13], [13, 2],
+  [5, 14], [14, 15], [15, 16], [16, 3],
+  [5, 17], [17, 18], [18, 19], [19, 4],
+];
+
+function clearHandTrackingOverlay() {
+  const canvas = elements.handTrackingOverlay;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawHandTrackingOverlay(result) {
+  const canvas = elements.handTrackingOverlay;
+  const bounds = elements.viewerStage.getBoundingClientRect();
+  const sourceWidth = result?.source_image_width_px;
+  const sourceHeight = result?.source_image_height_px;
+  const hands = Array.isArray(result?.hands) ? result.hands : [];
+  if (
+    state.viewerMode !== "live"
+    || bounds.width <= 0
+    || bounds.height <= 0
+    || !Number.isFinite(sourceWidth)
+    || !Number.isFinite(sourceHeight)
+  ) {
+    clearHandTrackingOverlay();
+    return;
+  }
+
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  const canvasWidth = Math.max(1, Math.round(bounds.width * pixelRatio));
+  const canvasHeight = Math.max(1, Math.round(bounds.height * pixelRatio));
+  if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+  }
+  const context = canvas.getContext("2d");
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, bounds.width, bounds.height);
+
+  const scale = Math.max(bounds.width / sourceWidth, bounds.height / sourceHeight);
+  const offsetX = (bounds.width - sourceWidth * scale) / 2;
+  const offsetY = (bounds.height - sourceHeight * scale) / 2;
+  const mapPoint = (point) => [offsetX + point[0] * scale, offsetY + point[1] * scale];
+
+  hands.forEach((hand) => {
+    if (
+      !Array.isArray(hand.source_keypoints_2d_px)
+      || !Array.isArray(hand.source_bbox_xyxy_px)
+    ) return;
+    const color = hand.handedness === "left" ? "#f3c878" : "#64d98c";
+    const points = hand.source_keypoints_2d_px.map(mapPoint);
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.lineWidth = 2;
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    handBones.forEach(([first, second]) => {
+      if (!points[first] || !points[second]) return;
+      context.beginPath();
+      context.moveTo(...points[first]);
+      context.lineTo(...points[second]);
+      context.stroke();
+    });
+    points.slice(0, 20).forEach((point) => {
+      context.beginPath();
+      context.arc(point[0], point[1], 3, 0, Math.PI * 2);
+      context.fill();
+    });
+
+    const [x1, y1] = mapPoint(hand.source_bbox_xyxy_px.slice(0, 2));
+    const [x2, y2] = mapPoint(hand.source_bbox_xyxy_px.slice(2, 4));
+    context.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    const label = `${hand.handedness.toUpperCase()} ${Math.round(hand.confidence * 100)}%${hand.is_grasping ? " · GRASP" : ""}`;
+    context.font = "700 11px Consolas, monospace";
+    const labelWidth = context.measureText(label).width + 12;
+    const labelTop = Math.max(4, y1 - 23);
+    context.fillStyle = "rgba(8, 10, 9, 0.88)";
+    context.fillRect(x1, labelTop, labelWidth, 19);
+    context.fillStyle = color;
+    context.fillText(label, x1 + 6, labelTop + 13);
+  });
+}
+
 function renderReplaySessionOptions() {
   const selected = elements.replaySession.value;
   const sessions = (state.collectionLibrary?.sessions || []).filter(
@@ -611,8 +695,7 @@ function replayMatchesSelectedSession() {
 
 function renderViewerMedia() {
   const liveMode = state.viewerMode === "live";
-  const showPreview = liveMode && state.handPreviewReady;
-  const showLiveVideo = liveMode && !showPreview && state.liveVideoReady;
+  const showLiveVideo = liveMode && state.liveVideoReady;
   const showReplay = !liveMode && replayMatchesSelectedSession();
 
   elements.viewerStage.dataset.viewerMode = state.viewerMode;
@@ -620,24 +703,27 @@ function renderViewerMedia() {
   elements.viewerModeLive.setAttribute("aria-pressed", String(liveMode));
   elements.viewerModeReplay.classList.toggle("is-active", !liveMode);
   elements.viewerModeReplay.setAttribute("aria-pressed", String(!liveMode));
-  elements.liveVideo.hidden = !showLiveVideo;
-  elements.handTrackingPreview.hidden = !showPreview;
+  elements.decodedPreview.hidden = !liveMode;
+  elements.handTrackingOverlay.hidden = !liveMode;
   elements.handReplayVideo.hidden = !showReplay;
-  elements.viewerEmpty.hidden = showPreview || showLiveVideo || showReplay;
-  elements.liveBadge.classList.toggle("badge-live", liveMode && (showPreview || showLiveVideo));
+  elements.viewerEmpty.hidden = showLiveVideo || showReplay;
+  elements.liveBadge.classList.toggle("badge-live", liveMode && showLiveVideo);
 
   if (liveMode) {
-    elements.liveBadgeLabel.textContent = showPreview ? "HAMER LIVE" : showLiveVideo ? "LIVE · RAW" : "WAITING";
-    const frameSize = state.liveVideoReady
-      ? `${elements.liveVideo.videoWidth} × ${elements.liveVideo.videoHeight}`
-      : null;
+    const hands = state.handTrackingStatus?.latest_result?.hands || [];
+    elements.liveBadgeLabel.textContent = showLiveVideo ? "DECODED LIVE" : "WAITING";
+    const status = state.decodedPreviewStatus;
+    const frameSize = status?.width && status?.height ? `${status.width} × ${status.height}` : null;
     elements.resolutionBadge.textContent = frameSize
-      ? `${frameSize} · ${showPreview ? "TRACKED" : "LIVE"}`
+      ? `${frameSize} · ${hands.length > 0 ? "TRACKED" : "DECODED"}`
       : "等待画面";
     elements.viewerEmptyTitle.textContent = "等待 Glass3 首帧";
-    elements.viewerEmptyDetail.textContent = "接收网关已就绪后，画面会自动出现";
+    elements.viewerEmptyDetail.textContent = state.decodedPreviewError
+      || "接收网关完成首帧解码后，画面会自动出现";
     return;
   }
+
+  clearHandTrackingOverlay();
 
   const replay = state.handTrackingStatus?.replay;
   const hasReplaySessions = elements.replaySession.options.length > 0
@@ -680,6 +766,12 @@ function renderHandTrackingStatus() {
   elements.handTrackingState.textContent = status ? labels[status.state] || status.state : "不可用";
   elements.handTrackingState.dataset.status = status?.state || "error";
   elements.handTrackingDetail.textContent = state.handTrackingError || status?.detail || "等待接收网关";
+  elements.decodedFrameCount.textContent = (
+    state.decodedPreviewStatus?.frames_received || 0
+  ).toLocaleString("zh-CN");
+  elements.handReceivedCount.textContent = (status?.live_frames_received || 0).toLocaleString(
+    "zh-CN",
+  );
   elements.handInputFrame.textContent = result ? result.frame_index.toLocaleString("zh-CN") : "--";
   elements.handInferenceTime.textContent = result
     ? `${(result.inference_duration_ns / 1_000_000).toFixed(0)} ms`
@@ -689,14 +781,7 @@ function renderHandTrackingStatus() {
   const hands = result?.hands || [];
   renderHandReadout(elements.leftHandReadout, hands.find((hand) => hand.handedness === "left"));
   renderHandReadout(elements.rightHandReadout, hands.find((hand) => hand.handedness === "right"));
-
-  if (status?.latest_preview_available && result && state.latestHandPreviewFrame !== result.frame_index) {
-    state.latestHandPreviewFrame = result.frame_index;
-    elements.handTrackingPreview.src = `${handTrackingEndpoint}/preview.jpg?frame=${result.frame_index}`;
-  } else if (!status?.latest_preview_available || !result) {
-    state.latestHandPreviewFrame = null;
-    state.handPreviewReady = false;
-  }
+  drawHandTrackingOverlay(result);
 
   const replay = status?.replay;
   if (replay?.state === "running") {
@@ -803,199 +888,87 @@ async function sendRecordingCommand(action) {
   }
 }
 
-function waitForIceGathering(peer) {
-  if (peer.iceGatheringState === "complete") return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      peer.removeEventListener("icegatheringstatechange", handleStateChange);
-      reject(new Error("本机 WebRTC ICE 收集超时"));
-    }, 5000);
-
-    function handleStateChange() {
-      if (peer.iceGatheringState !== "complete") return;
-      window.clearTimeout(timeout);
-      peer.removeEventListener("icegatheringstatechange", handleStateChange);
-      resolve();
-    }
-
-    peer.addEventListener("icegatheringstatechange", handleStateChange);
-  });
-}
-
-async function exchangeViewerSdp(description) {
-  const response = await fetch(viewerSignalingEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      schema_version: "1.0",
-      type: description.type,
-      sdp: description.sdp,
-    }),
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new ViewerSignalingError(
-      response.status,
-      payload.detail || `Viewer signaling HTTP ${response.status}`,
-    );
+function readDecodedPreviewStatus(payload) {
+  const states = new Set(["waiting", "streaming", "error", "closed"]);
+  if (
+    payload === null
+    || typeof payload !== "object"
+    || payload.schema_version !== "1.0"
+    || !states.has(payload.state)
+    || !Number.isSafeInteger(payload.frames_received)
+    || !Number.isSafeInteger(payload.frames_encoded)
+    || !Number.isSafeInteger(payload.frames_dropped)
+  ) {
+    throw new Error("接收网关返回了无效的解码预览状态");
   }
-  return response.json();
+  return payload;
 }
 
-async function connectLiveVideo() {
-  if (state.connecting || state.peer || document.hidden) return;
-  state.connecting = true;
-  window.clearTimeout(state.reconnectTimer);
-
-  const peer = new RTCPeerConnection({
-    iceServers: [],
-    bundlePolicy: "max-bundle",
-  });
-  state.peer = peer;
-  peer.addTransceiver("video", { direction: "recvonly" });
-
-  peer.addEventListener("track", (event) => {
-    if (state.peer !== peer || event.track.kind !== "video") return;
-    const stream = event.streams[0] || new MediaStream([event.track]);
-    elements.liveVideo.srcObject = stream;
-    event.track.addEventListener("ended", () => handleViewerDisconnect(peer, "视频轨道已结束"));
-    elements.liveVideo.play().catch((error) => {
-      handleViewerDisconnect(peer, `视频播放失败: ${error.message}`);
-    });
-    startFrameMonitoring();
-  });
-
-  peer.addEventListener("connectionstatechange", () => {
-    if (["failed", "disconnected", "closed"].includes(peer.connectionState)) {
-      handleViewerDisconnect(peer, `WebRTC ${peer.connectionState}`);
-    }
-  });
-
-  try {
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    await waitForIceGathering(peer);
-    if (peer.localDescription === null) throw new Error("本机 WebRTC offer 不可用");
-    const answer = await exchangeViewerSdp(peer.localDescription);
-    await peer.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
-    state.lastSignalingError = null;
-  } catch (error) {
-    const status = error instanceof ViewerSignalingError ? error.status : null;
-    if (status !== 503 && state.lastSignalingError !== error.message) {
-      addEvent("WARN", "本机预览连接失败", error.message);
-      console.warn("Local preview connection failed", error);
-      state.lastSignalingError = error.message;
-    }
-    closeViewerPeer(peer, error.message);
-    scheduleViewerRetry(status === 503 ? 500 : 1500);
-  } finally {
-    state.connecting = false;
-  }
+function connectDecodedPreview() {
+  if (document.hidden) return;
+  window.clearTimeout(state.decodedPreviewReconnectTimer);
+  state.decodedPreviewGeneration += 1;
+  elements.decodedPreview.src = `${decodedPreviewEndpoint}?generation=${state.decodedPreviewGeneration}`;
 }
 
-function handleViewerDisconnect(peer, detail) {
-  if (state.peer !== peer) return;
-  closeViewerPeer(peer, detail);
-  scheduleViewerRetry();
-}
-
-function closeViewerPeer(peer, detail = "等待重新连接") {
-  if (state.peer !== peer) return;
-  state.peer = null;
-  peer.onconnectionstatechange = null;
-  peer.close();
-  stopFrameMonitoring();
-  elements.liveVideo.srcObject = null;
+function renderDecodedPreviewState() {
+  const status = state.decodedPreviewStatus;
+  const hasFrame = Boolean(status?.frames_encoded > 0);
   const wasReady = state.liveVideoReady;
-  state.liveVideoReady = false;
-  renderVideoState();
-  if (wasReady) addEvent("WARN", "Glass3 视频已断开", detail);
-}
-
-function startFrameMonitoring() {
-  stopFrameMonitoring();
-  if ("requestVideoFrameCallback" in elements.liveVideo) {
-    state.frameCallbackId = elements.liveVideo.requestVideoFrameCallback(handleVideoFrame);
-    return;
-  }
-  state.fallbackFrameTimer = window.setInterval(readFallbackFrameStats, 1000);
-}
-
-function stopFrameMonitoring() {
-  if (state.frameCallbackId !== null && "cancelVideoFrameCallback" in elements.liveVideo) {
-    elements.liveVideo.cancelVideoFrameCallback(state.frameCallbackId);
-  }
-  window.clearInterval(state.fallbackFrameTimer);
-  state.frameCallbackId = null;
-  state.fallbackFrameTimer = null;
-  state.lastPresentedFrames = null;
-  state.lastFpsSampleAt = null;
-  state.lastDetailsAt = 0;
-  elements.previewFps.textContent = "--";
-}
-
-function handleVideoFrame(now, metadata) {
-  markVideoReady();
-  updateFrameDetails(now);
-  updateDisplayedFps(now, metadata.presentedFrames);
-  state.frameCallbackId = elements.liveVideo.requestVideoFrameCallback(handleVideoFrame);
-}
-
-function readFallbackFrameStats() {
-  const quality = elements.liveVideo.getVideoPlaybackQuality?.();
-  markVideoReady();
-  updateFrameDetails(performance.now());
-  if (quality) updateDisplayedFps(performance.now(), quality.totalVideoFrames);
-}
-
-function updateDisplayedFps(now, presentedFrames) {
-  if (state.lastPresentedFrames === null || state.lastFpsSampleAt === null) {
-    state.lastPresentedFrames = presentedFrames;
-    state.lastFpsSampleAt = now;
-    return;
-  }
-  const elapsedMs = now - state.lastFpsSampleAt;
-  if (elapsedMs < 1000) return;
-  const fps = ((presentedFrames - state.lastPresentedFrames) * 1000) / elapsedMs;
-  elements.previewFps.textContent = `${fps.toFixed(1)} FPS`;
-  state.lastPresentedFrames = presentedFrames;
-  state.lastFpsSampleAt = now;
-}
-
-function updateFrameDetails(now) {
-  if (now - state.lastDetailsAt < 500) return;
-  state.lastDetailsAt = now;
-  const frameSize = `${elements.liveVideo.videoWidth} × ${elements.liveVideo.videoHeight}`;
-  if (state.viewerMode === "live") {
-    elements.resolutionBadge.textContent = `${frameSize} · ${state.handPreviewReady ? "TRACKED" : "LIVE"}`;
-  }
-  elements.frameSize.textContent = frameSize;
-  elements.lastFrameTime.textContent = new Date().toLocaleTimeString("zh-CN", {
-    hour12: false,
-  });
-}
-
-function markVideoReady() {
-  if (state.liveVideoReady) return;
-  state.liveVideoReady = true;
-  renderVideoState();
-  addEvent("OK", "Glass3 视频已连接", "WebRTC H.264 实时轨道");
-}
-
-function renderVideoState() {
+  state.liveVideoReady = state.liveVideoReady || hasFrame;
   const ready = state.liveVideoReady;
-  elements.connectionLight.classList.toggle("is-live", ready);
-  elements.connectionLabel.textContent = ready ? "Glass3 视频在线" : "等待 Glass3 视频";
-  elements.sourcePill.classList.toggle("pill-success", ready);
-  elements.sourcePill.textContent = ready ? "实时在线" : "等待首帧";
-  elements.previewStatus.textContent = ready ? "实时画面已连接" : "等待首帧";
-  elements.liveVideo.classList.toggle("is-ready", ready);
+  const stale = ready && Number.isFinite(status?.last_frame_age_ms)
+    && status.last_frame_age_ms > 2000;
+  const frameSize = status?.width && status?.height ? `${status.width} × ${status.height}` : "--";
 
-  if (!ready) {
-    elements.frameSize.textContent = "--";
+  elements.connectionLight.classList.toggle("is-live", ready && !stale);
+  elements.connectionLabel.textContent = !ready
+    ? "等待 Glass3 视频"
+    : stale ? "Glass3 画面暂停" : "Glass3 解码视频在线";
+  elements.sourcePill.classList.toggle("pill-success", ready && !stale);
+  elements.sourcePill.textContent = !ready ? "等待首帧" : stale ? "保留末帧" : "解码在线";
+  elements.previewStatus.textContent = state.decodedPreviewError
+    || (!ready ? "等待首帧" : stale ? "输入暂停，末帧保留" : "解码帧持续输出");
+  elements.decodedPreview.classList.toggle("is-ready", ready);
+  elements.frameSize.textContent = frameSize;
+  elements.previewFps.textContent = Number.isFinite(status?.output_fps)
+    ? `${status.output_fps.toFixed(1)} FPS`
+    : "--";
+  elements.decodedFrameCount.textContent = (status?.frames_received || 0).toLocaleString("zh-CN");
+  if (status?.latest_frame_index !== null && status?.latest_frame_index !== undefined) {
+    if (state.lastDecodedFrameIndex !== status.latest_frame_index) {
+      state.lastDecodedFrameIndex = status.latest_frame_index;
+      elements.lastFrameTime.textContent = new Date().toLocaleTimeString("zh-CN", {
+        hour12: false,
+      });
+    }
+  } else if (!ready) {
     elements.lastFrameTime.textContent = "--";
   }
+  if (!wasReady && ready) {
+    addEvent("OK", "Glass3 视频已连接", "网关 H.264 单次解码帧");
+  }
   renderViewerMedia();
+}
+
+async function pollDecodedPreviewStatus() {
+  if (state.decodedPreviewPollInFlight || document.hidden) {
+    scheduleDecodedPreviewPoll();
+    return;
+  }
+  state.decodedPreviewPollInFlight = true;
+  try {
+    const response = await fetch(decodedPreviewStatusEndpoint, { cache: "no-store" });
+    const payload = await readJsonResponse(response, `解码预览 HTTP ${response.status}`);
+    state.decodedPreviewStatus = readDecodedPreviewStatus(payload);
+    state.decodedPreviewError = null;
+  } catch (error) {
+    state.decodedPreviewError = error.message;
+  } finally {
+    state.decodedPreviewPollInFlight = false;
+    renderDecodedPreviewState();
+    scheduleDecodedPreviewPoll();
+  }
 }
 
 async function toggleFullscreen() {
@@ -1197,14 +1170,10 @@ function resetImuReference() {
 elements.fullscreenButton.addEventListener("click", toggleFullscreen);
 elements.viewerModeLive.addEventListener("click", () => setViewerMode("live"));
 elements.viewerModeReplay.addEventListener("click", () => setViewerMode("replay"));
-elements.handTrackingPreview.addEventListener("load", () => {
-  state.handPreviewReady = true;
-  renderViewerMedia();
-});
-elements.handTrackingPreview.addEventListener("error", () => {
-  state.handPreviewReady = false;
-  state.latestHandPreviewFrame = null;
-  renderViewerMedia();
+elements.decodedPreview.addEventListener("error", () => {
+  state.decodedPreviewError = "解码预览连接中断，正在恢复";
+  renderDecodedPreviewState();
+  scheduleDecodedPreviewReconnect();
 });
 elements.streamToggleButton.addEventListener("click", () => {
   sendStreamControlCommand(elements.streamToggleButton.dataset.action);
@@ -1221,7 +1190,8 @@ document.addEventListener("fullscreenchange", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
-    if (state.peer === null) scheduleViewerRetry(0);
+    connectDecodedPreview();
+    scheduleDecodedPreviewPoll(0);
     scheduleControlPoll(0);
     scheduleRecordingPoll(0);
     scheduleCollectionPoll(0);
@@ -1230,26 +1200,33 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("beforeunload", () => {
-  window.clearTimeout(state.reconnectTimer);
+  window.clearTimeout(state.decodedPreviewReconnectTimer);
+  window.clearTimeout(state.decodedPreviewPollTimer);
   window.clearTimeout(state.controlPollTimer);
   window.clearTimeout(state.recordingPollTimer);
   window.clearTimeout(state.recordingCountdownTimer);
   window.clearTimeout(state.collectionPollTimer);
   window.clearTimeout(state.handTrackingPollTimer);
   window.clearTimeout(state.imuPollTimer);
-  if (state.peer !== null) closeViewerPeer(state.peer);
+  viewerResizeObserver.disconnect();
   imuScene?.dispose();
 });
 
+const viewerResizeObserver = new ResizeObserver(() => {
+  drawHandTrackingOverlay(state.handTrackingStatus?.latest_result || null);
+});
+viewerResizeObserver.observe(elements.viewerStage);
+
 addEvent("INFO", "客户端已启动", "等待 Glass3 视频、控制通路和 IMU 数据");
-renderVideoState();
+renderDecodedPreviewState();
 renderStreamControl();
 renderRecordingControl();
 renderCollectionOverview();
 renderReplaySessionOptions();
 renderHandTrackingStatus();
 setImuUnavailable("接收网关尚未收到姿态数据");
-connectLiveVideo();
+connectDecodedPreview();
+pollDecodedPreviewStatus();
 pollStreamControlStatus();
 pollRecordingStatus();
 pollCollectionLibrary();
