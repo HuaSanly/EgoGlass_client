@@ -8,6 +8,12 @@ from pathlib import Path
 from av import VideoFrame
 
 from perception.runtime import HandTrackingRuntime, LiveHandTrackingFrame
+from perception.sensor_preprocessing import (
+    ClockId,
+    TimeObservation,
+    TimestampSemantic,
+    client_perf_source_instance_id,
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,37 @@ def test_live_runtime_keeps_only_newest_pending_frame(tmp_path: Path) -> None:
         assert await runtime.latest_preview() == b"preview-2"
 
     asyncio.run(scenario())
+
+
+def test_live_preprocessing_anchors_session_time_at_first_received_frame(tmp_path: Path) -> None:
+    repository = Path(__file__).parents[1]
+    runtime = HandTrackingRuntime(
+        recordings_root=tmp_path / "recordings",
+        runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
+        sensor_config_path=repository / "config" / "sensor-preprocessing.yaml",
+    )
+    first_received_ns = 8_724_913_800_000
+    frame = _frame(0, first_received_ns)
+
+    try:
+        preprocessor = runtime._live_preprocessing_for(frame)
+        estimate = preprocessor.clock_mapper.map(
+            TimeObservation(
+                session_id=frame.session_id,
+                source_clock_id=ClockId.CLIENT_PERF_COUNTER_NS,
+                source_instance_id=client_perf_source_instance_id(
+                    frame.session_id,
+                    frame.connection_session_id,
+                ),
+                source_timestamp=first_received_ns,
+                timestamp_semantic=TimestampSemantic.CLIENT_RECEIPT,
+            )
+        )
+
+        assert preprocessor.clock_mapper.segments[0].source_from == first_received_ns
+        assert estimate.session_time_ns == 0
+    finally:
+        asyncio.run(runtime.close())
 
 
 def test_runtime_rejects_recording_path_escape(tmp_path: Path) -> None:

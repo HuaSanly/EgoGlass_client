@@ -525,7 +525,7 @@ class HandTrackingRuntime:
                     source_clock_id=ClockId.CLIENT_PERF_COUNTER_NS,
                     source_instance_id=source_instance_id,
                     segment_index=0,
-                    source_from=0,
+                    source_from=frame.received_at_client_monotonic_ns,
                     source_to=_MAX_CLIENT_PERF_COUNTER_NS,
                     source_anchor=frame.received_at_client_monotonic_ns,
                     target_anchor_ns=0,
