@@ -112,8 +112,9 @@ def test_health_and_real_video_console_are_served() -> None:
     assert "THREE.PCFSoftShadowMap" not in imu_scene.text
     assert 'algorithm: "Madgwick"' in imu_scene.text
     assert 'browserRequire("ahrs")' in imu_scene.text
-    assert "aspect-ratio: 16 / 9" in styles.text
-    live_video_styles = styles.text.split(
+    styles_text = styles.text.replace("\r\n", "\n")
+    assert "aspect-ratio: 16 / 9" in styles_text
+    live_video_styles = styles_text.split(
         ".decoded-preview-source,\n.hand-replay-video {",
         maxsplit=1,
     )[1].split("}", maxsplit=1)[0]
