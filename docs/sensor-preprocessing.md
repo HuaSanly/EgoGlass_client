@@ -106,11 +106,13 @@ count, undistortion and remap modes, and the live pending-IMU limit. Relative
 calibration paths are resolved from the YAML directory. Unknown settings and
 wrong value types are rejected.
 
-`config/sensor-calibration.sample.json` contains guessed intrinsics, zero
-distortion, an identity Camera-to-IMU transform, and unmeasured IMU noise. It
-exists to exercise the interface. The pipeline uses whichever valid calibration
-JSON the YAML selects. Replace the sample values with parameters from a measured
-external calibration before collecting algorithm results.
+`config/sensor-calibration.sample.json` assumes the decoded 1280x720 Glass3
+frame is already upright, so it applies zero image rotation. It contains guessed
+intrinsics, zero distortion, an identity Camera-to-IMU transform, and unmeasured
+IMU noise. It exists to exercise the interface. The pipeline uses whichever
+valid calibration JSON the YAML selects. Replace the sample values with
+parameters from a measured external calibration before collecting algorithm
+results.
 
 ## Implemented boundary
 

@@ -4,19 +4,19 @@
   "capture_config_id": "720p30",
   "source_width": 1280,
   "source_height": 720,
-  "rotation_degrees": 90,
-  "calibrated_width": 720,
-  "calibrated_height": 1280,
+  "rotation_degrees": 0,
+  "calibrated_width": 1280,
+  "calibrated_height": 720,
   "distortion_model": "opencv_radtan",
   "camera_matrix": [
-    [640.0, 0.0, 360.0],
-    [0.0, 640.0, 640.0],
+    [640.0, 0.0, 640.0],
+    [0.0, 640.0, 360.0],
     [0.0, 0.0, 1.0]
   ],
   "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
   "rectified_camera_matrix": [
-    [640.0, 0.0, 360.0],
-    [0.0, 640.0, 640.0],
+    [640.0, 0.0, 640.0],
+    [0.0, 640.0, 360.0],
     [0.0, 0.0, 1.0]
   ],
   "transform_camera_to_imu": [
