@@ -12,17 +12,14 @@ from perception.sensor_preprocessing import (
     TimestampSemantic,
     client_perf_source_instance_id,
     derive_recorded_clock_mapping,
-    frame_callback_observation,
     frame_presentation_observation,
     imu_sensor_event_observation,
 )
 
 REPOSITORY = Path(__file__).parents[1]
-LOCAL_REPLAY_SESSION = (
-    REPOSITORY
-    / "local-data"
-    / "recordings"
-    / "ddee13a63311467d95dc91fcf9784e4b"
+LOCAL_REPLAY_SESSIONS = (
+    REPOSITORY / "local-data" / "recordings" / "ddee13a63311467d95dc91fcf9784e4b",
+    REPOSITORY / "local-data" / "recordings" / "1362c1075d524de6b38cb45947ba822d",
 )
 
 
@@ -71,10 +68,17 @@ def test_each_live_connection_starts_a_nonnegative_session_timeline(tmp_path: Pa
         asyncio.run(runtime.close())
 
 
-def test_local_recording_derives_one_strict_timeline_for_video_and_imu() -> None:
-    if not LOCAL_REPLAY_SESSION.is_dir():
+@pytest.mark.parametrize(
+    "session_directory",
+    LOCAL_REPLAY_SESSIONS,
+    ids=lambda path: path.name,
+)
+def test_local_recording_derives_one_strict_timeline_for_video_and_imu(
+    session_directory: Path,
+) -> None:
+    if not session_directory.is_dir():
         pytest.skip("local Glass3 replay recording is unavailable")
-    reader = CaptureSessionReader.open(LOCAL_REPLAY_SESSION)
+    reader = CaptureSessionReader.open(session_directory)
     frames = tuple(
         frame
         for clip in reader.session.clips
@@ -88,10 +92,7 @@ def test_local_recording_derives_one_strict_timeline_for_video_and_imu() -> None
         imu_samples,
     )
     frame_times = [
-        mapping.mapper.map(
-            frame_callback_observation(frame)
-            or frame_presentation_observation(frame)
-        ).session_time_ns
+        mapping.mapper.map(frame_presentation_observation(frame)).session_time_ns
         for frame in frames
     ]
     imu_times = [
@@ -101,6 +102,7 @@ def test_local_recording_derives_one_strict_timeline_for_video_and_imu() -> None
 
     print(
         "recorded_clock_mapping "
+        f"session={reader.session.session_id} "
         f"frames={len(frame_times)} imu={len(imu_times)} "
         f"segments={len(mapping.mapper.segments)} "
         f"max_uncertainty_ms="

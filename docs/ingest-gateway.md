@@ -77,12 +77,15 @@ SQLite WAL, writes the final quality report and manifest, and only then
 returns.
 
 Recording accepts only an active 1280x720 Glass3 source. It uses the incoming
-decoded frames at their full dimensions, a nominal 30 FPS H.264 stream, and a
-buffered aiortc `MediaRelay` subscription so the operator preview does not
-consume recording frames. After muxing, PyAV reads back the actual MP4 PTS and
-time base for every encoded frame. Missing frame timing fails the clip; the
-gateway never derives PTS as `frame_index / fps`. PyAV supplies the FFmpeg
-bindings and the `libx264` encoder; no separate `ffmpeg.exe` process is
+decoded frames at their full dimensions, a nominal 30 FPS H.264 encoder
+profile, and a buffered aiortc `MediaRelay` subscription so the operator
+preview does not consume recording frames. The MP4 is variable-frame-rate: a
+normal monotonic WebRTC/RTP source PTS is rebased to zero and preserved with a
+90 kHz encoder time base. A missing or non-monotonic source PTS starts a
+continuous segment from the measured adjacent client-receipt interval instead
+of forcing the whole clip to `frame_index / fps`. After muxing, PyAV reads back
+the actual MP4 PTS and time base for every encoded frame. PyAV supplies the
+FFmpeg bindings and the `libx264` encoder; no separate `ffmpeg.exe` process is
 required.
 
 New sessions use the versioned `capture-session-v1` layout:
@@ -152,9 +155,11 @@ conda run -n egoglass python scripts/inspect-recording.py F:\path\to\session\cli
 ~~~
 
 The command exits nonzero unless the file is a finalized, playable MP4 with
-one H.264 1280x720 video stream, nominal 30 FPS, and at least one decodable
-frame. It prints the measured stream properties and decoded frame count as
-JSON on success.
+one H.264 1280x720 video stream, at least one decodable frame, and exact,
+strictly increasing frame PTS. It prints the measured average FPS,
+presentation-time span, stream properties, and decoded frame count as JSON on
+success. The measured average is allowed to differ from the nominal 30 FPS
+capture profile.
 
 The glasses also opens an ordered, reliable `stream-control-v1` DataChannel.
 The loopback API can stop camera capture without closing WebRTC, then start it

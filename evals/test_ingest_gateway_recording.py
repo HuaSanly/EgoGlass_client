@@ -79,7 +79,8 @@ def test_real_pyav_path_publishes_only_playable_hd_h264_mp4(
         inspection = inspect_recording(path)
         assert inspection.video_codec == "h264"
         assert (inspection.width, inspection.height) == (1280, 720)
-        assert inspection.nominal_fps == 30.0
+        assert inspection.average_fps > 0
+        assert inspection.presentation_span_seconds > 0
         assert inspection.decoded_frames == 3
         assert not list(tmp_path.rglob("*.part.mp4"))
         renamed_library = await runtime.rename_session(SESSION_ID, "Eval capture")

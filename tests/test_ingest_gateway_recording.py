@@ -506,5 +506,6 @@ def test_inspector_decodes_full_hd_h264_mp4(tmp_path: Path) -> None:
 
     assert result.video_codec == "h264"
     assert (result.width, result.height) == (1280, 720)
-    assert result.nominal_fps == 30.0
+    assert result.average_fps == 30.0
+    assert result.presentation_span_seconds == pytest.approx(1 / 30, abs=0.000001)
     assert result.decoded_frames == 2

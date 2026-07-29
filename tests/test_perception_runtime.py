@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 import av
@@ -56,8 +57,15 @@ def _frame(index: int, received_at_ns: int) -> LiveHandTrackingFrame:
 def test_replay_writer_creates_fast_start_h264_mp4(tmp_path: Path) -> None:
     path = tmp_path / "annotated.mp4"
     writer = _H264ReplayWriter(path, 30.0, 8, 6)
-    for value in (20, 120, 220):
-        writer.write(np.full((6, 8, 3), value, dtype=np.uint8))
+    for value, presentation_time_ns in (
+        (20, 1_000_000_000),
+        (120, 1_040_000_000),
+        (220, 1_090_000_000),
+    ):
+        writer.write(
+            np.full((6, 8, 3), value, dtype=np.uint8),
+            presentation_time_ns,
+        )
     writer.close()
     writer.close()
 
@@ -68,6 +76,11 @@ def test_replay_writer_creates_fast_start_h264_mp4(tmp_path: Path) -> None:
     encoded = path.read_bytes()
     assert stream.codec_context.name == "h264"
     assert len(frames) == 3
+    assert [Fraction(frame.pts) * frame.time_base for frame in frames] == [
+        Fraction(0),
+        Fraction(1, 25),
+        Fraction(9, 100),
+    ]
     assert encoded.index(b"moov") < encoded.index(b"mdat")
 
 

@@ -213,6 +213,74 @@ def test_recorded_evidence_derives_device_and_mp4_segments(tmp_path: Path) -> No
     assert all(segment["status"] == "estimated" for segment in payload["segments"])
 
 
+def test_recorded_media_fit_recovers_slower_source_saved_as_30_fps(
+    tmp_path: Path,
+) -> None:
+    frames = tuple(
+        replace(
+            _raw_frame(tmp_path),
+            video_frame_row_id=index + 1,
+            frame_index=index,
+            frame_id=index,
+            mp4_timestamp=Mp4Timestamp(index * 512, 1, 15_360),
+            video_at_monotonic_ns=1_100_000_000 + index * 40_000_000,
+            received_at_elapsed_realtime_ns=(
+                1_100_100_000 + index * 40_000_000
+            ),
+            received_at_client_perf_counter_ns=(
+                5_000_000_000 + index * 40_000_000
+            ),
+            metadata_received_at_client_perf_counter_ns=(
+                5_000_100_000 + index * 40_000_000
+            ),
+            source_frame_timestamp=Mp4Timestamp(index * 3_600, 1, 90_000),
+        )
+        for index in range(6)
+    )
+    first_imu = replace(
+        _raw_imu_sample(),
+        sensor_event_monotonic_ns=1_050_000_000,
+        received_at_client_perf_counter_ns=4_950_200_000,
+    )
+    second_imu = replace(
+        _raw_imu_sample(),
+        sample_id=2,
+        sequence_number=1,
+        sensor_event_monotonic_ns=1_350_000_000,
+        received_at_elapsed_realtime_ns=1_350_100_000,
+        received_at_client_perf_counter_ns=5_250_300_000,
+    )
+
+    mapping = derive_recorded_clock_mapping(
+        SESSION_ID,
+        frames,
+        (first_imu, second_imu),
+    )
+    media_segment = next(
+        segment
+        for segment in mapping.mapper.segments
+        if segment.source_clock_id is ClockId.MP4_PRESENTATION_TICKS
+    )
+    presentation_times = [
+        mapping.mapper.map(frame_presentation_observation(frame)).session_time_ns
+        for frame in frames
+    ]
+
+    assert media_segment.scale == Fraction(78_125, 1)
+    assert media_segment.fit_method == (
+        "least_squares_scale_median_offset_camera_to_mp4"
+    )
+    assert all(
+        current > previous
+        for previous, current in zip(
+            presentation_times,
+            presentation_times[1:],
+            strict=False,
+        )
+    )
+    assert presentation_times[-1] - presentation_times[0] == 200_000_000
+
+
 def test_recorded_alignment_rejects_missing_strict_evidence(tmp_path: Path) -> None:
     frame = _raw_frame(tmp_path)
 

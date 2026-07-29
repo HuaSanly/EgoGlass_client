@@ -24,15 +24,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from .capture_reader import CaptureSessionReader
 from .clock_mapping import (
     SegmentedClockMapper,
-    frame_callback_observation,
     frame_presentation_observation,
     imu_sensor_event_observation,
-    rtp_match_error_to_uncertainty_ns,
 )
 from .models import (
     AlignmentStatus,
     ImuSensorType,
-    MetadataMatchStatus,
     RawFrameRef,
     RawImuSample,
     StoredAlignment,
@@ -636,29 +633,13 @@ class SensorPreprocessingPipeline:
             raise SensorPreprocessingError("failed to decode recorded MP4") from exc
 
     def _map_recorded_frame(self, frame: RawFrameRef) -> TimeEstimate:
-        """优先使用相机回调时间；无匹配元数据时退回精确 MP4 PTS。"""
+        """统一使用拟合后的媒体时间线，避免逐帧切换时钟。"""
 
-        callback_observation = frame_callback_observation(frame)
-        observation = callback_observation or frame_presentation_observation(frame)
+        observation = frame_presentation_observation(frame)
         stored = _stored_time_estimate(observation, frame.stored_alignment)
         if stored is not None:
             return stored
-        if callback_observation is None:
-            estimate = self.clock_mapper.map(observation)
-        else:
-            assert frame.timestamp_match_error_90khz is not None
-            association_status = (
-                TimeStatus.VERIFIED
-                if frame.metadata_match_status is MetadataMatchStatus.EXACT
-                else TimeStatus.ESTIMATED
-            )
-            estimate = self.clock_mapper.map(
-                observation,
-                additional_uncertainty_ns=rtp_match_error_to_uncertainty_ns(
-                    frame.timestamp_match_error_90khz
-                ),
-                additional_status=association_status,
-            )
+        estimate = self.clock_mapper.map(observation)
         self._require_resolved_time(estimate, f"recorded frame {frame.frame_index}")
         return estimate
 

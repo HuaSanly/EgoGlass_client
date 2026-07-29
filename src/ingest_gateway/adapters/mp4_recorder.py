@@ -11,6 +11,9 @@ import av
 from aiortc import MediaStreamError
 from av import VideoFrame
 
+_ENCODER_TIME_BASE = Fraction(1, 90_000)
+_NS_PER_SECOND = 1_000_000_000
+
 
 @dataclass(frozen=True)
 class RecordedVideoFrame:
@@ -49,6 +52,11 @@ class PyAvH264Mp4Recorder:
         self._frames_received = 0
         self._source_frame_records: list[tuple[int | None, int | None, int | None, int]] = []
         self._frame_records: list[RecordedVideoFrame] = []
+        self._source_segment_anchor: Fraction | None = None
+        self._output_segment_anchor_pts = 0
+        self._last_source_time: Fraction | None = None
+        self._last_output_pts: int | None = None
+        self._last_received_at_ns: int | None = None
 
     @property
     def frames_received(self) -> int:
@@ -75,6 +83,8 @@ class PyAvH264Mp4Recorder:
         stream.width = self._width
         stream.height = self._height
         stream.pix_fmt = "yuv420p"
+        stream.time_base = _ENCODER_TIME_BASE
+        stream.codec_context.time_base = _ENCODER_TIME_BASE
         self._stream = stream
         self._task = asyncio.create_task(self._consume())
 
@@ -121,8 +131,11 @@ class PyAvH264Mp4Recorder:
                     strict=True,
                 ):
                     output_plane.update(bytes(source_plane))
-                output_frame.pts = self._frames_received
-                output_frame.time_base = Fraction(1, self._fps)
+                output_frame.pts = self._next_output_pts(
+                    frame,
+                    received_at_client_perf_counter_ns,
+                )
+                output_frame.time_base = _ENCODER_TIME_BASE
                 container = self._container
                 stream = self._stream
                 if container is None or stream is None:
@@ -141,6 +154,59 @@ class PyAvH264Mp4Recorder:
                 self._frames_received += 1
         except MediaStreamError:
             return
+
+    def _next_output_pts(
+        self,
+        frame: VideoFrame,
+        received_at_client_perf_counter_ns: int,
+    ) -> int:
+        """Preserve source presentation time and bridge only real discontinuities."""
+
+        source_time = (
+            Fraction(frame.pts) * Fraction(frame.time_base)
+            if frame.pts is not None and frame.time_base is not None
+            else None
+        )
+        if self._last_output_pts is None:
+            output_pts = 0
+            if source_time is not None:
+                self._source_segment_anchor = source_time
+                self._output_segment_anchor_pts = output_pts
+        else:
+            output_pts = self._source_output_candidate(source_time)
+            if output_pts is None or output_pts <= self._last_output_pts:
+                assert self._last_received_at_ns is not None
+                receipt_delta_ns = max(
+                    0,
+                    received_at_client_perf_counter_ns - self._last_received_at_ns,
+                )
+                output_pts = self._last_output_pts + max(
+                    1,
+                    _round_fraction(
+                        Fraction(receipt_delta_ns * _ENCODER_TIME_BASE.denominator, _NS_PER_SECOND)
+                    ),
+                )
+                if source_time is not None:
+                    self._source_segment_anchor = source_time
+                    self._output_segment_anchor_pts = output_pts
+
+        self._last_source_time = source_time
+        self._last_output_pts = output_pts
+        self._last_received_at_ns = received_at_client_perf_counter_ns
+        return output_pts
+
+    def _source_output_candidate(self, source_time: Fraction | None) -> int | None:
+        if (
+            source_time is None
+            or self._last_source_time is None
+            or source_time <= self._last_source_time
+            or self._source_segment_anchor is None
+        ):
+            return None
+        source_delta = source_time - self._source_segment_anchor
+        return self._output_segment_anchor_pts + _round_fraction(
+            source_delta * _ENCODER_TIME_BASE.denominator
+        )
 
     def _close_container(self) -> None:
         container, self._container = self._container, None
@@ -179,3 +245,8 @@ class PyAvH264Mp4Recorder:
                 zip(self._source_frame_records, muxed_frames, strict=True)
             )
         ]
+
+
+def _round_fraction(value: Fraction) -> int:
+    quotient, remainder = divmod(value.numerator, value.denominator)
+    return quotient + int(remainder * 2 >= value.denominator)

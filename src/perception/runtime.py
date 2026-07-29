@@ -149,6 +149,8 @@ class ReplayReport:
 class _H264ReplayWriter:
     """Synchronous browser-compatible H.264 MP4 writer for annotated frames."""
 
+    _TIME_BASE = Fraction(1, 90_000)
+
     def __init__(self, path: Path, fps: float, width: int, height: int) -> None:
         rate = Fraction(str(fps)).limit_denominator(1001)
         if rate <= 0:
@@ -167,24 +169,38 @@ class _H264ReplayWriter:
         self._stream.width = width
         self._stream.height = height
         self._stream.pix_fmt = "yuv420p"
-        self._time_base = Fraction(rate.denominator, rate.numerator)
+        self._stream.time_base = self._TIME_BASE
+        self._stream.codec_context.time_base = self._TIME_BASE
         self._width = width
         self._height = height
         self._frame_count = 0
+        self._origin_time_ns: int | None = None
+        self._last_pts: int | None = None
         self._closed = False
 
-    def write(self, image_bgr: np.ndarray) -> None:
-        """Encode one BGR frame with a deterministic CFR presentation timestamp."""
+    def write(self, image_bgr: np.ndarray, presentation_time_ns: int) -> None:
+        """Encode one BGR frame using its strictly increasing session time."""
 
         if self._closed:
             raise RuntimeError("replay writer is closed")
         if image_bgr.shape != (self._height, self._width, 3):
             raise ValueError("replay frame dimensions changed during encoding")
+        if type(presentation_time_ns) is not int:
+            raise TypeError("replay presentation time must be an integer")
+        if self._origin_time_ns is None:
+            self._origin_time_ns = presentation_time_ns
+        relative_time_ns = presentation_time_ns - self._origin_time_ns
+        if relative_time_ns < 0:
+            raise ValueError("replay presentation time precedes its clip origin")
+        pts = (relative_time_ns * self._TIME_BASE.denominator + 500_000_000) // 1_000_000_000
+        if self._last_pts is not None and pts <= self._last_pts:
+            raise ValueError("replay presentation time must strictly increase")
         frame = VideoFrame.from_ndarray(image_bgr, format="bgr24")
-        frame.pts = self._frame_count
-        frame.time_base = self._time_base
+        frame.pts = pts
+        frame.time_base = self._TIME_BASE
         for packet in self._stream.encode(frame):
             self._container.mux(packet)
+        self._last_pts = pts
         self._frame_count += 1
 
     def close(self) -> None:
@@ -282,7 +298,7 @@ def render_recorded_hand_tracking_replay(
                     writer_stack.callback(writer.close)
                     writers[clip_id] = writer
                     videos[clip_id] = video_path
-                writer.write(image)
+                writer.write(image, bundle.session_time_ns)
                 if progress is not None:
                     progress(input_frame_count, total_frames)
     except Exception as exc:

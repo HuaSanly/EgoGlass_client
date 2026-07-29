@@ -89,6 +89,14 @@ unchanged. Repeating derivation from identical evidence produces identical
 bytes; missing IMU, missing device-clock span, or fewer than two camera-to-MP4
 matches fails instead of creating a permissive timeline.
 
+The media mapping fits both affine scale and offset from strictly increasing
+camera-to-MP4 evidence using exact rational arithmetic. Every recorded frame is
+then mapped through that one media clock. This avoids switching between camera
+callback time and MP4 time on individual matched/unmatched frames. It also
+recovers earlier clips whose recorder wrote fixed 30 FPS PTS while the source
+was actually slower; the fitted uncertainty includes the maximum callback
+residual and device-mapping bound.
+
 ## Unified pipeline
 
 `pipeline.py` is the only orchestration module in this package. It loads one

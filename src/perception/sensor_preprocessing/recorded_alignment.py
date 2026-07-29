@@ -21,7 +21,7 @@ from .models import ClockId, RawFrameRef, RawImuSample, TimeStatus
 
 _ARTIFACT_SCHEMA_VERSION = "1.0"
 _ARTIFACT_CONTRACT_ID = "sensor-clock-mapping-v1"
-_NS_PER_SECOND = 1_000_000_000
+_FIT_PROVENANCE_VERSION = "v2"
 
 
 class RecordedAlignmentError(RuntimeError):
@@ -70,7 +70,9 @@ def derive_recorded_clock_mapping(
         raise RecordedAlignmentError("recorded timing evidence spans multiple sessions")
 
     evidence_sha256 = _evidence_digest(session_id, frames, imu_samples)
-    provenance_id = f"recorded-clock-evidence-v1-{evidence_sha256}"
+    provenance_id = (
+        f"recorded-clock-fit-{_FIT_PROVENANCE_VERSION}-{evidence_sha256}"
+    )
     device_segments = _derive_device_segments(
         session_id,
         frames,
@@ -233,11 +235,6 @@ def _derive_media_segments(
         if len(time_bases) != 1:
             raise RecordedAlignmentError(f"clip {clip_id} changes MP4 time base")
         time_base_numerator, time_base_denominator = next(iter(time_bases))
-        scale = Fraction(
-            _NS_PER_SECOND * time_base_numerator,
-            time_base_denominator,
-        )
-        fit_offsets: list[Fraction] = []
         mapped_evidence: list[tuple[int, int, int]] = []
         for frame in ordered_frames:
             observation = frame_callback_observation(frame)
@@ -253,23 +250,49 @@ def _derive_media_segments(
             if estimate.session_time_ns is None or estimate.uncertainty_ns is None:
                 continue
             pts = frame.mp4_timestamp.pts
-            fit_offsets.append(Fraction(estimate.session_time_ns) - pts * scale)
             mapped_evidence.append(
                 (pts, estimate.session_time_ns, estimate.uncertainty_ns)
             )
-        if len(fit_offsets) < 2:
+        if len(mapped_evidence) < 2:
             raise RecordedAlignmentError(
                 f"clip {clip_id} has fewer than two camera-to-MP4 matches"
             )
 
-        median_offset = _median_fraction(fit_offsets)
+        ordered_evidence = sorted(mapped_evidence)
+        if any(
+            current_pts <= previous_pts or current_time_ns <= previous_time_ns
+            for (
+                previous_pts,
+                previous_time_ns,
+                _previous_uncertainty_ns,
+            ), (
+                current_pts,
+                current_time_ns,
+                _current_uncertainty_ns,
+            ) in zip(ordered_evidence, ordered_evidence[1:], strict=False)
+        ):
+            raise RecordedAlignmentError(
+                f"clip {clip_id} camera-to-MP4 evidence is not strictly increasing"
+            )
+
+        scale = _least_squares_scale(ordered_evidence)
+        if scale <= 0:
+            raise RecordedAlignmentError(
+                f"clip {clip_id} camera-to-MP4 fit has a non-positive scale"
+            )
+        median_offset = _median_fraction(
+            [
+                Fraction(session_time_ns) - pts * scale
+                for pts, session_time_ns, _uncertainty_ns in ordered_evidence
+            ]
+        )
         source_from = min(frame.mp4_timestamp.pts for frame in ordered_frames)
         source_to = max(frame.mp4_timestamp.pts for frame in ordered_frames)
         target_anchor_ns = _round_fraction(median_offset + source_from * scale)
         residual_bound_ns = max(
             _ceil_fraction_abs(Fraction(session_time_ns) - (pts * scale + median_offset))
             + uncertainty_ns
-            for pts, session_time_ns, uncertainty_ns in mapped_evidence
+            for pts, session_time_ns, uncertainty_ns in ordered_evidence
         )
         segments.append(
             ClockMappingSegment(
@@ -290,9 +313,11 @@ def _derive_media_segments(
                 scale_denominator_source_units=scale.denominator,
                 uncertainty_ns=residual_bound_ns,
                 status=TimeStatus.ESTIMATED,
-                fit_method="median_camera_callback_to_mp4_pts",
+                fit_method="least_squares_scale_median_offset_camera_to_mp4",
                 provenance_id=provenance_id,
-                uncertainty_basis="maximum callback residual plus device mapping bound",
+                uncertainty_basis=(
+                    "maximum affine callback residual plus device mapping bound"
+                ),
             )
         )
     return tuple(segments)
@@ -372,6 +397,23 @@ def _median_fraction(values: list[Fraction]) -> Fraction:
     if len(ordered) % 2:
         return ordered[midpoint]
     return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
+def _least_squares_scale(evidence: list[tuple[int, int, int]]) -> Fraction:
+    count = len(evidence)
+    sum_source = sum(source for source, _target, _uncertainty in evidence)
+    sum_target = sum(target for _source, target, _uncertainty in evidence)
+    covariance = sum(
+        (count * source - sum_source) * (count * target - sum_target)
+        for source, target, _uncertainty in evidence
+    )
+    variance = sum(
+        (count * source - sum_source) ** 2
+        for source, _target, _uncertainty in evidence
+    )
+    if variance == 0:
+        raise RecordedAlignmentError("camera-to-MP4 evidence has no source time span")
+    return Fraction(covariance, variance)
 
 
 def _round_fraction(value: Fraction) -> int:
