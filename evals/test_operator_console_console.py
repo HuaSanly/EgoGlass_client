@@ -41,7 +41,7 @@ def test_video_status_replaces_the_removed_global_topbar() -> None:
     assert ".topbar" not in styles
 
 
-def test_main_window_places_events_below_video_and_imu_in_right_column() -> None:
+def test_main_window_places_perception_below_video_and_imu_in_right_column() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
@@ -59,8 +59,8 @@ def test_main_window_places_events_below_video_and_imu_in_right_column() -> None
     assert 'class="algorithm-tool"' not in right_column
     assert "height: 100vh" in styles
     assert "overflow: hidden" in styles
-    assert "grid-template-rows: auto minmax(280px, 1fr)" in styles
-    assert ".algorithm-preview-stage" in styles
+    assert "grid-template-rows: auto minmax(96px, 1fr)" in styles
+    assert ".algorithm-preview-stage" not in styles
     assert "overflow-y: auto" in styles
     assert 'id="imu-scene-canvas"' in right_column
     assert 'id="reset-imu-button"' in right_column
@@ -72,13 +72,29 @@ def test_main_window_places_events_below_video_and_imu_in_right_column() -> None
 def test_hand_tracking_panel_uses_live_status_and_offline_replay() -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+    viewer_stage = html.split(
+        '<div class="viewer-stage" id="viewer-stage">', maxsplit=1
+    )[1].split('<div class="viewer-footer">', maxsplit=1)[0]
 
     assert 'id="event-rows"' not in html
-    assert 'id="hand-tracking-preview"' in html
+    assert html.count('class="viewer-stage"') == 1
+    assert 'id="live-video-source"' in viewer_stage
+    assert 'id="hand-tracking-preview"' in viewer_stage
+    assert 'id="hand-replay-video"' in viewer_stage
+    assert 'class="algorithm-preview-stage"' not in html
+    assert ".algorithm-preview-stage" not in styles
+    assert 'id="viewer-mode-live"' in html
+    assert 'id="viewer-mode-replay"' in html
     assert 'id="replay-session"' in html
     assert 'id="start-replay-button"' in html
     assert "function pollHandTrackingStatus()" in script
     assert "function startHandTrackingReplay()" in script
+    assert 'viewerMode: "live"' in script
+    assert 'setViewerMode("replay")' in script
+    assert "state.handPreviewReady" in script
+    assert "!showPreview && state.liveVideoReady" in script
+    assert "replayMatchesSelectedSession()" in script
     assert "/api/v1/perception/hand-tracking" in script
     assert "state.events" not in script
     assert "innerHTML" not in script

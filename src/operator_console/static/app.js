@@ -14,6 +14,10 @@ const elements = {
   liveVideo: document.querySelector("#live-video-source"),
   viewerStage: document.querySelector("#viewer-stage"),
   viewerEmpty: document.querySelector("#viewer-empty"),
+  viewerEmptyTitle: document.querySelector("#viewer-empty-title"),
+  viewerEmptyDetail: document.querySelector("#viewer-empty-detail"),
+  viewerModeLive: document.querySelector("#viewer-mode-live"),
+  viewerModeReplay: document.querySelector("#viewer-mode-replay"),
   connectionLight: document.querySelector("#connection-light"),
   connectionLabel: document.querySelector("#connection-label"),
   liveBadge: document.querySelector("#live-badge"),
@@ -46,7 +50,6 @@ const elements = {
   fullscreenButton: document.querySelector("#fullscreen-button"),
   handTrackingState: document.querySelector("#hand-tracking-state"),
   handTrackingPreview: document.querySelector("#hand-tracking-preview"),
-  handTrackingEmpty: document.querySelector("#hand-tracking-empty"),
   handTrackingDetail: document.querySelector("#hand-tracking-detail"),
   handInputFrame: document.querySelector("#hand-input-frame"),
   handInferenceTime: document.querySelector("#hand-inference-time"),
@@ -73,6 +76,7 @@ const elements = {
 };
 
 const state = {
+  viewerMode: "live",
   liveVideoReady: false,
   connecting: false,
   peer: null,
@@ -108,6 +112,7 @@ const state = {
   handTrackingStatus: null,
   handTrackingError: null,
   latestHandPreviewFrame: null,
+  handPreviewReady: false,
   replayRequestInFlight: false,
   imuPollTimer: null,
   imuPollInFlight: false,
@@ -597,6 +602,71 @@ function renderReplaySessionOptions() {
   elements.startReplayButton.disabled = sessions.length === 0 || state.replayRequestInFlight;
 }
 
+function replayMatchesSelectedSession() {
+  return Boolean(
+    elements.handReplayVideo.dataset.source
+      && elements.handReplayVideo.dataset.sessionId === elements.replaySession.value,
+  );
+}
+
+function renderViewerMedia() {
+  const liveMode = state.viewerMode === "live";
+  const showPreview = liveMode && state.handPreviewReady;
+  const showLiveVideo = liveMode && !showPreview && state.liveVideoReady;
+  const showReplay = !liveMode && replayMatchesSelectedSession();
+
+  elements.viewerStage.dataset.viewerMode = state.viewerMode;
+  elements.viewerModeLive.classList.toggle("is-active", liveMode);
+  elements.viewerModeLive.setAttribute("aria-pressed", String(liveMode));
+  elements.viewerModeReplay.classList.toggle("is-active", !liveMode);
+  elements.viewerModeReplay.setAttribute("aria-pressed", String(!liveMode));
+  elements.liveVideo.hidden = !showLiveVideo;
+  elements.handTrackingPreview.hidden = !showPreview;
+  elements.handReplayVideo.hidden = !showReplay;
+  elements.viewerEmpty.hidden = showPreview || showLiveVideo || showReplay;
+  elements.liveBadge.classList.toggle("badge-live", liveMode && (showPreview || showLiveVideo));
+
+  if (liveMode) {
+    elements.liveBadgeLabel.textContent = showPreview ? "HAMER LIVE" : showLiveVideo ? "LIVE · RAW" : "WAITING";
+    const frameSize = state.liveVideoReady
+      ? `${elements.liveVideo.videoWidth} × ${elements.liveVideo.videoHeight}`
+      : null;
+    elements.resolutionBadge.textContent = frameSize
+      ? `${frameSize} · ${showPreview ? "TRACKED" : "LIVE"}`
+      : "等待画面";
+    elements.viewerEmptyTitle.textContent = "等待 Glass3 首帧";
+    elements.viewerEmptyDetail.textContent = "接收网关已就绪后，画面会自动出现";
+    return;
+  }
+
+  const replay = state.handTrackingStatus?.replay;
+  const hasReplaySessions = elements.replaySession.options.length > 0
+    && Boolean(elements.replaySession.value);
+  elements.liveBadgeLabel.textContent = "REPLAY";
+  elements.resolutionBadge.textContent = showReplay ? "离线识别结果" : "暂无回放";
+  elements.viewerEmptyTitle.textContent = hasReplaySessions ? "等待回放结果" : "暂无可回放会话";
+  elements.viewerEmptyDetail.textContent = replay?.state === "running"
+    ? "正在生成手部识别回放"
+    : hasReplaySessions ? "当前会话尚未生成识别回放" : "完成一次录制后可在这里回放";
+}
+
+function setViewerMode(mode) {
+  if (mode !== "live" && mode !== "replay") return;
+  state.viewerMode = mode;
+  if (mode === "live") {
+    elements.handReplayVideo.pause();
+  }
+  renderViewerMedia();
+}
+
+function clearReplayVideo() {
+  elements.handReplayVideo.pause();
+  elements.handReplayVideo.removeAttribute("src");
+  elements.handReplayVideo.removeAttribute("data-source");
+  elements.handReplayVideo.removeAttribute("data-session-id");
+  elements.handReplayVideo.load();
+}
+
 function renderHandTrackingStatus() {
   const status = state.handTrackingStatus;
   const result = status?.latest_result || null;
@@ -623,8 +693,9 @@ function renderHandTrackingStatus() {
   if (status?.latest_preview_available && result && state.latestHandPreviewFrame !== result.frame_index) {
     state.latestHandPreviewFrame = result.frame_index;
     elements.handTrackingPreview.src = `${handTrackingEndpoint}/preview.jpg?frame=${result.frame_index}`;
-    elements.handTrackingPreview.hidden = false;
-    elements.handTrackingEmpty.hidden = true;
+  } else if (!status?.latest_preview_available || !result) {
+    state.latestHandPreviewFrame = null;
+    state.handPreviewReady = false;
   }
 
   const replay = status?.replay;
@@ -641,12 +712,13 @@ function renderHandTrackingStatus() {
     const videoUrl = `${handTrackingEndpoint}/replays/${replay.report.session_id}/${replay.report.run_id}/${firstVideo.clip_id}`;
     if (elements.handReplayVideo.dataset.source !== videoUrl) {
       elements.handReplayVideo.dataset.source = videoUrl;
+      elements.handReplayVideo.dataset.sessionId = replay.report.session_id;
       elements.handReplayVideo.src = videoUrl;
-      elements.handReplayVideo.hidden = false;
     }
   }
   elements.startReplayButton.disabled =
     !elements.replaySession.value || state.replayRequestInFlight || replay?.state === "running";
+  renderViewerMedia();
 }
 
 async function pollHandTrackingStatus() {
@@ -674,6 +746,8 @@ async function startHandTrackingReplay() {
   const sessionId = elements.replaySession.value;
   if (!sessionId || state.replayRequestInFlight) return;
   state.replayRequestInFlight = true;
+  clearReplayVideo();
+  setViewerMode("replay");
   renderReplaySessionOptions();
   try {
     const response = await fetch(`${handTrackingEndpoint}/replays`, {
@@ -892,7 +966,9 @@ function updateFrameDetails(now) {
   if (now - state.lastDetailsAt < 500) return;
   state.lastDetailsAt = now;
   const frameSize = `${elements.liveVideo.videoWidth} × ${elements.liveVideo.videoHeight}`;
-  elements.resolutionBadge.textContent = `${frameSize} · LIVE`;
+  if (state.viewerMode === "live") {
+    elements.resolutionBadge.textContent = `${frameSize} · ${state.handPreviewReady ? "TRACKED" : "LIVE"}`;
+  }
   elements.frameSize.textContent = frameSize;
   elements.lastFrameTime.textContent = new Date().toLocaleTimeString("zh-CN", {
     hour12: false,
@@ -910,19 +986,16 @@ function renderVideoState() {
   const ready = state.liveVideoReady;
   elements.connectionLight.classList.toggle("is-live", ready);
   elements.connectionLabel.textContent = ready ? "Glass3 视频在线" : "等待 Glass3 视频";
-  elements.liveBadge.classList.toggle("badge-live", ready);
-  elements.liveBadgeLabel.textContent = ready ? "LIVE" : "WAITING";
   elements.sourcePill.classList.toggle("pill-success", ready);
   elements.sourcePill.textContent = ready ? "实时在线" : "等待首帧";
   elements.previewStatus.textContent = ready ? "实时画面已连接" : "等待首帧";
   elements.liveVideo.classList.toggle("is-ready", ready);
-  elements.viewerEmpty.hidden = ready;
 
   if (!ready) {
-    elements.resolutionBadge.textContent = "等待画面";
     elements.frameSize.textContent = "--";
     elements.lastFrameTime.textContent = "--";
   }
+  renderViewerMedia();
 }
 
 async function toggleFullscreen() {
@@ -1122,6 +1195,17 @@ function resetImuReference() {
 }
 
 elements.fullscreenButton.addEventListener("click", toggleFullscreen);
+elements.viewerModeLive.addEventListener("click", () => setViewerMode("live"));
+elements.viewerModeReplay.addEventListener("click", () => setViewerMode("replay"));
+elements.handTrackingPreview.addEventListener("load", () => {
+  state.handPreviewReady = true;
+  renderViewerMedia();
+});
+elements.handTrackingPreview.addEventListener("error", () => {
+  state.handPreviewReady = false;
+  state.latestHandPreviewFrame = null;
+  renderViewerMedia();
+});
 elements.streamToggleButton.addEventListener("click", () => {
   sendStreamControlCommand(elements.streamToggleButton.dataset.action);
 });

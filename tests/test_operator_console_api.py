@@ -54,6 +54,10 @@ def test_health_and_real_video_console_are_served() -> None:
     parser = ElementIdParser()
     parser.feed(page.text)
     assert parser.tags_by_id["live-video-source"] == "video"
+    assert parser.tags_by_id["hand-tracking-preview"] == "img"
+    assert parser.tags_by_id["hand-replay-video"] == "video"
+    assert parser.tags_by_id["viewer-mode-live"] == "button"
+    assert parser.tags_by_id["viewer-mode-replay"] == "button"
     assert 'class="topbar"' not in page.text
     assert 'class="brand"' not in page.text
     viewer_header = page.text.split('<section class="viewer-tool"', maxsplit=1)[1].split(
@@ -73,7 +77,6 @@ def test_health_and_real_video_console_are_served() -> None:
     assert right_column.index('class="signal-tool"') < right_column.index('class="imu-tool"')
     assert 'class="algorithm-tool"' not in right_column
     assert "事件记录" not in right_column
-    assert parser.tags_by_id["hand-tracking-preview"] == "img"
     assert parser.tags_by_id["start-replay-button"] == "button"
     assert parser.tags_by_id["replay-session"] == "select"
     assert parser.tags_by_id["imu-scene-canvas"] == "canvas"
@@ -107,9 +110,10 @@ def test_health_and_real_video_console_are_served() -> None:
     assert 'algorithm: "Madgwick"' in imu_scene.text
     assert 'browserRequire("ahrs")' in imu_scene.text
     assert "aspect-ratio: 16 / 9" in styles.text
-    live_video_styles = styles.text.split(".live-video-source {", maxsplit=1)[1].split(
-        "}", maxsplit=1
-    )[0]
+    live_video_styles = styles.text.split(
+        ".live-video-source,\n.hand-tracking-preview,\n.hand-replay-video {",
+        maxsplit=1,
+    )[1].split("}", maxsplit=1)[0]
     assert "object-fit: cover" in live_video_styles
     assert "object-fit: contain" not in live_video_styles
     assert "frame.jpg" not in script.text
@@ -117,6 +121,40 @@ def test_health_and_real_video_console_are_served() -> None:
     assert "api/v1/recordings/status" in recordings_api.text
     assert "api/v1/recordings/library" in recordings_api.text
     assert 'video.controls = true' in storage_script.text
+
+
+def test_home_uses_one_stage_for_live_tracking_and_replay() -> None:
+    with make_client() as client:
+        page = client.get("/").text
+        script = client.get("/assets/app.js").text
+        styles = client.get("/assets/styles.css").text
+
+    viewer_stage = page.split(
+        '<div class="viewer-stage" id="viewer-stage">', maxsplit=1
+    )[1].split('<div class="viewer-footer">', maxsplit=1)[0]
+    algorithm_panel = page.split(
+        '<section class="algorithm-tool"', maxsplit=1
+    )[1].split('</section>\n          </div>', maxsplit=1)[0]
+
+    assert page.count('class="viewer-stage"') == 1
+    assert 'id="live-video-source"' in viewer_stage
+    assert 'id="hand-tracking-preview"' in viewer_stage
+    assert 'id="hand-replay-video"' in viewer_stage
+    assert 'id="hand-tracking-preview"' not in algorithm_panel
+    assert 'id="hand-replay-video"' not in algorithm_panel
+    assert 'class="algorithm-preview-stage"' not in page
+    assert ".algorithm-preview-stage" not in styles
+    assert 'id="viewer-mode-live"' in page
+    assert 'id="viewer-mode-replay"' in page
+    assert 'viewerMode: "live"' in script
+    assert 'function setViewerMode(mode)' in script
+    assert 'elements.liveVideo.hidden = !showLiveVideo' in script
+    assert 'elements.handTrackingPreview.hidden = !showPreview' in script
+    assert 'elements.handReplayVideo.hidden = !showReplay' in script
+    assert 'const showPreview = liveMode && state.handPreviewReady' in script
+    assert 'const showLiveVideo = liveMode && !showPreview && state.liveVideoReady' in script
+    assert 'sessions.length === 0 || state.replayRequestInFlight' in script
+    assert 'elements.viewerEmpty.hidden = showPreview || showLiveVideo || showReplay' in script
 
 
 def test_runtime_contains_no_simulated_data_controls_or_transport() -> None:
