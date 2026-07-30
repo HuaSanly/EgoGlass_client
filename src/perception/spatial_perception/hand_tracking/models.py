@@ -11,7 +11,7 @@ from typing import Literal, Protocol
 import numpy as np
 import yaml
 from numpy.typing import NDArray
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 FloatArray = NDArray[np.float32]
 
@@ -113,21 +113,29 @@ class HandTrackingConfig(BaseModel):
     enable_cuda_amp: bool = True
     require_hamer: bool = True
     download_models: bool = True
-    detector: Literal["vitpose", "mediapipe"] = "vitpose"
-    fallback_detector: Literal["mediapipe", "none"] = "mediapipe"
+    detector: Literal["vitpose", "mediapipe"] = "mediapipe"
+    fallback_detector: Literal["mediapipe", "none"] = "none"
     allow_mediapipe_reconstruction_fallback: bool = True
-    vitpose_variant: Literal["h", "l", "b", "s"] = "h"
+    vitpose_variant: Literal["h", "l", "b", "s"] = "s"
     detector_keypoint_confidence: float = Field(default=0.3, ge=0.0, le=1.0)
-    detector_min_valid_keypoints: int = Field(default=4, ge=1, le=21)
+    detector_min_valid_keypoints: int = Field(default=3, ge=1, le=21)
     detector_bbox_padding_ratio: float = Field(default=0.3, ge=0.0, le=2.0)
     detector_min_bbox_dimension_ratio: float = Field(default=0.05, ge=0.0, le=1.0)
     detector_max_bbox_area_ratio: float = Field(default=0.35, gt=0.0, le=1.0)
-    minimum_hand_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    minimum_hand_confidence: float = Field(default=0.3, ge=0.0, le=1.0)
     physical_wrist_to_middle_mcp_m: float = Field(default=0.085, gt=0.0)
     minimum_depth_m: float = Field(default=0.05, gt=0.0)
     maximum_depth_m: float = Field(default=3.0, gt=0.0)
     grasp_ratio_threshold: float = Field(default=1.0, gt=0.0)
     sources: ModelSourceConfig = Field(default_factory=ModelSourceConfig)
+
+    @model_validator(mode="after")
+    def validate_detector_fallback(self) -> HandTrackingConfig:
+        """Reject a fallback that repeats the selected primary detector."""
+
+        if self.detector == self.fallback_detector:
+            raise ValueError("fallback_detector must differ from detector")
+        return self
 
     @classmethod
     def load(cls, path: str | Path) -> HandTrackingConfig:

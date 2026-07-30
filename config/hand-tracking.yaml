@@ -9,20 +9,21 @@ require_cuda: true
 require_hamer: true
 download_models: true
 
-# HumanEgo uses YOLO + easy_ViTPose first, then MediaPipe if that detector cannot load.
-detector: vitpose
-fallback_detector: mediapipe
+# EgoGlass defaults to the lower-latency MediaPipe detector. ViTPose remains an
+# explicit alternative for reproducibility and detector comparisons.
+detector: mediapipe
+fallback_detector: none
 allow_mediapipe_reconstruction_fallback: true
-vitpose_variant: h
+vitpose_variant: s
 
 detector_keypoint_confidence: 0.3
-detector_min_valid_keypoints: 4
+detector_min_valid_keypoints: 3
 detector_bbox_padding_ratio: 0.3
 # Applied to every ViTPose candidate to reject tiny or near-full-frame boxes.
 detector_min_bbox_dimension_ratio: 0.05
 detector_max_bbox_area_ratio: 0.35
 # Current Glass3 no-hand replay: 0.3325 false positive; public true hands: >=0.721.
-minimum_hand_confidence: 0.5
+minimum_hand_confidence: 0.3
 
 # HumanEgo's physical-size fallback for absolute camera-space depth.
 physical_wrist_to_middle_mcp_m: 0.085

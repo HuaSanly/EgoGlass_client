@@ -222,13 +222,36 @@ def test_repository_config_is_pinned_and_resolves_local_model_directory() -> Non
 
     assert config.require_cuda is True
     assert config.require_hamer is True
-    assert config.detector == "vitpose"
+    assert config.detector == "mediapipe"
+    assert config.fallback_detector == "none"
+    assert config.vitpose_variant == "s"
+    assert config.detector_min_valid_keypoints == 3
+    assert config.minimum_hand_confidence == pytest.approx(0.3)
     assert config.model_directory == (
         repository / "local-data" / "models" / "hand-tracking"
     ).resolve()
     assert config.sources.hamer_code_revision == (
         "3a01849f4148352e9260b69bf28b65d1671a4905"
     )
+
+
+def test_hand_tracking_defaults_prioritize_mediapipe(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    assert config.detector == "mediapipe"
+    assert config.fallback_detector == "none"
+    assert config.vitpose_variant == "s"
+    assert config.detector_min_valid_keypoints == 3
+    assert config.minimum_hand_confidence == pytest.approx(0.3)
+
+
+def test_hand_tracking_rejects_repeated_primary_fallback(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="fallback_detector must differ from detector"):
+        _config(
+            tmp_path,
+            detector="mediapipe",
+            fallback_detector="mediapipe",
+        )
 
 
 def test_hamer_result_uses_humanego_joint_order_and_records_backend(tmp_path: Path) -> None:

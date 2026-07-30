@@ -61,7 +61,7 @@ def model_pipeline() -> HumanEgoHandTrackingPipeline:
     return pipeline
 
 
-def test_public_hand_sample_runs_vitpose_and_cuda_hamer(
+def test_public_hand_sample_runs_default_mediapipe_and_cuda_hamer(
     model_pipeline: HumanEgoHandTrackingPipeline,
 ) -> None:
     teaser = _load_public_teaser()
@@ -81,6 +81,7 @@ def test_public_hand_sample_runs_vitpose_and_cuda_hamer(
 
     print(
         "hand_model_positive "
+        f"detector={result.detector_backend} "
         f"hands={len(result.hands)} "
         f"latency_ms={result.inference_duration_ns / 1_000_000:.3f} "
         f"detector_ms={result.detector_duration_ns / 1_000_000:.3f} "
@@ -95,9 +96,7 @@ def test_public_hand_sample_runs_vitpose_and_cuda_hamer(
 
     assert result.hamer_loaded is True
     assert result.execution_device.startswith("cuda")
-    assert result.detector_backend == (
-        f"vitpose-{model_pipeline.config.vitpose_variant}+yolov8s"
-    )
+    assert result.detector_backend == "mediapipe"
     assert result.amp_enabled is True
     assert result.reconstruction_batch_size >= len(result.hands)
     assert result.inference_duration_ns == (
@@ -107,6 +106,7 @@ def test_public_hand_sample_runs_vitpose_and_cuda_hamer(
         + result.postprocessing_duration_ns
     )
     assert result.inference_duration_ns < 30_000_000_000
+    assert result.detector_duration_ns < 1_000_000_000
     assert result.hands
     assert all(
         hand.reconstruction_backend is ReconstructionBackend.HAMER
