@@ -92,8 +92,10 @@ Before inference, replay strictly derives one video/IMU session timeline from
 the recording's immutable timing evidence and persists it as
 `<session>/derived/sensor-preprocessing/clock-mapping-v1.json`. Missing timing
 evidence fails the run; replay has no video-only or unchecked-clock mode. The
-annotated output uses H.264 with fast-start metadata so the browser can play it
-while preserving the original capture files.
+annotated output uses the prepared frame's strictly increasing
+`session_time_ns` as variable-frame-rate H.264 PTS and writes fast-start
+metadata so the browser preserves recovered capture pacing. Raw capture files
+remain unchanged.
 
 The equivalent command-line replay is:
 
