@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import dearpygui.dearpygui as dpg
@@ -39,6 +40,7 @@ HAND_CONNECTIONS = (
 class VideoSurfaceStatus:
     uploaded_frames: int
     source_frames_skipped: int
+    recent_upload_fps: float
     latest_upload_ms: float | None
     latest_frame_index: int | None
 
@@ -61,26 +63,34 @@ class VideoSurface:
         self._source_height = source_height
         self._texture_registry_tag = "main-video-texture-registry"
         self._texture_generation = 0
-        self._texture_tag = self._next_texture_tag()
+        self._texture_tags = (self._next_texture_tag(), self._next_texture_tag())
+        self._front_texture_index = 0
+        self._texture_tag = self._texture_tags[self._front_texture_index]
         self._image_tag = "main-video-image"
         self._overlay_tag = "main-video-overlay"
         self._drawlist_tag = "main-video-drawlist"
-        self._texture_buffer = np.zeros(
-            (source_height, source_width, 3),
-            dtype=np.float32,
+        self._texture_buffers = (
+            np.zeros((source_height, source_width, 3), dtype=np.float32),
+            np.zeros((source_height, source_width, 3), dtype=np.float32),
         )
         self._latest_frame_key: tuple[str, str, int] | None = None
         self._uploaded_frames = 0
+        self._uploaded_at_ns: deque[int] = deque(maxlen=240)
         self._source_frames_skipped = 0
         self._latest_upload_ms: float | None = None
         with dpg.texture_registry(show=False, tag=self._texture_registry_tag):
-            dpg.add_raw_texture(
-                width=source_width,
-                height=source_height,
-                default_value=self._texture_buffer.ravel(),
-                format=dpg.mvFormat_Float_rgb,
-                tag=self._texture_tag,
-            )
+            for texture_tag, texture_buffer in zip(
+                self._texture_tags,
+                self._texture_buffers,
+                strict=True,
+            ):
+                dpg.add_raw_texture(
+                    width=source_width,
+                    height=source_height,
+                    default_value=texture_buffer.ravel(),
+                    format=dpg.mvFormat_Float_rgb,
+                    tag=texture_tag,
+                )
         with dpg.drawlist(
             width=width,
             height=height,
@@ -110,12 +120,17 @@ class VideoSurface:
         if frame.width != self._source_width or frame.height != self._source_height:
             self._replace_texture(frame.width, frame.height)
         started_at_ns = time.perf_counter_ns()
+        back_texture_index = 1 - self._front_texture_index
+        back_texture_buffer = self._texture_buffers[back_texture_index]
         np.multiply(
             frame.image_rgb,
             np.float32(1.0 / 255.0),
-            out=self._texture_buffer,
+            out=back_texture_buffer,
             casting="unsafe",
         )
+        self._front_texture_index = back_texture_index
+        self._texture_tag = self._texture_tags[self._front_texture_index]
+        dpg.configure_item(self._image_tag, texture_tag=self._texture_tag)
         finished_at_ns = time.perf_counter_ns()
         if self._latest_frame_key is not None and frame_key[:2] == self._latest_frame_key[:2]:
             self._source_frames_skipped += max(
@@ -124,6 +139,7 @@ class VideoSurface:
             )
         self._latest_frame_key = frame_key
         self._uploaded_frames += 1
+        self._uploaded_at_ns.append(finished_at_ns)
         self._latest_upload_ms = (finished_at_ns - started_at_ns) / 1_000_000
         return True
 
@@ -177,9 +193,17 @@ class VideoSurface:
                 )
 
     def status(self) -> VideoSurfaceStatus:
+        recent_cutoff_ns = time.perf_counter_ns() - 2_000_000_000
+        recent = tuple(value for value in self._uploaded_at_ns if value >= recent_cutoff_ns)
+        recent_upload_fps = 0.0
+        if len(recent) > 1 and recent[-1] > recent[0]:
+            recent_upload_fps = (
+                (len(recent) - 1) * 1_000_000_000 / (recent[-1] - recent[0])
+            )
         return VideoSurfaceStatus(
             uploaded_frames=self._uploaded_frames,
             source_frames_skipped=self._source_frames_skipped,
+            recent_upload_fps=round(recent_upload_fps, 3),
             latest_upload_ms=(
                 round(self._latest_upload_ms, 3)
                 if self._latest_upload_ms is not None
@@ -191,21 +215,32 @@ class VideoSurface:
         )
 
     def _replace_texture(self, width: int, height: int) -> None:
-        old_texture_tag = self._texture_tag
+        old_texture_tags = self._texture_tags
         self._source_width = width
         self._source_height = height
-        self._texture_buffer = np.zeros((height, width, 3), dtype=np.float32)
-        self._texture_tag = self._next_texture_tag()
-        dpg.add_raw_texture(
-            width=width,
-            height=height,
-            default_value=self._texture_buffer.ravel(),
-            format=dpg.mvFormat_Float_rgb,
-            tag=self._texture_tag,
-            parent=self._texture_registry_tag,
+        self._texture_buffers = (
+            np.zeros((height, width, 3), dtype=np.float32),
+            np.zeros((height, width, 3), dtype=np.float32),
         )
+        self._texture_tags = (self._next_texture_tag(), self._next_texture_tag())
+        self._front_texture_index = 0
+        self._texture_tag = self._texture_tags[self._front_texture_index]
+        for texture_tag, texture_buffer in zip(
+            self._texture_tags,
+            self._texture_buffers,
+            strict=True,
+        ):
+            dpg.add_raw_texture(
+                width=width,
+                height=height,
+                default_value=texture_buffer.ravel(),
+                format=dpg.mvFormat_Float_rgb,
+                tag=texture_tag,
+                parent=self._texture_registry_tag,
+            )
         dpg.configure_item(self._image_tag, texture_tag=self._texture_tag)
-        dpg.delete_item(old_texture_tag)
+        for old_texture_tag in old_texture_tags:
+            dpg.delete_item(old_texture_tag)
 
     def _next_texture_tag(self) -> str:
         tag = f"main-video-texture-{self._texture_generation}"

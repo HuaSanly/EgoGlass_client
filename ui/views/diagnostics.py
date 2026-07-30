@@ -74,6 +74,10 @@ class DiagnosticsView:
             lines.extend(
                 (
                     f"RGB 转换: {display.frames_converted:,} 帧  {display.recent_fps:.1f} FPS",
+                    (
+                        f"RGB 分发: {display.rgb_frames_forwarded:,}  "
+                        f"错误 {display.rgb_sink_failures:,}"
+                    ),
                     f"显示覆盖: {display.pending_frames_overwritten:,}",
                 )
             )

@@ -36,11 +36,12 @@ cleartext in v1 and must stay on a trusted LAN; the pairing token is never
 returned by status or error APIs.
 
 aiortc is the only component that terminates Glass3 WebRTC and decodes H.264.
-Each decoded `av.VideoFrame` is submitted to the display and perception sinks.
-Both submissions are enqueue-only and retain at most the newest pending frame,
-so RGB conversion or CUDA inference cannot block media reception. The display
-sink converts directly to contiguous RGB on one worker. Dear PyGui uploads the
-newest RGB buffer to a raw texture without HTTP or image encoding.
+Each decoded `av.VideoFrame` is submitted only to `LiveFrameBuffer`, which
+retains at most the newest pending frame and converts it once to immutable
+contiguous RGB on one worker. The same RGB array is then forwarded in process
+to Dear PyGui and perception. CUDA inference has its own newest-frame queue, so
+it cannot block media reception. Dear PyGui swaps the RGB frame through two raw
+textures without HTTP or image encoding.
 
 The live relay itself is also unbuffered, preventing decoded frames from
 accumulating before fan-out. Frames carrying PyAV's corruption flag are

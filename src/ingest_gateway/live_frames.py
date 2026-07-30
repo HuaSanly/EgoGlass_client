@@ -8,6 +8,7 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 from av import VideoFrame
@@ -43,6 +44,8 @@ class LiveFrameStatus:
     frames_converted: int
     pending_frames_overwritten: int
     conversion_failures: int
+    rgb_frames_forwarded: int
+    rgb_sink_failures: int
     latest_frame_index: int | None
     latest_width: int | None
     latest_height: int | None
@@ -61,6 +64,20 @@ class _PendingFrame:
     decoded_frame: VideoFrame
 
 
+class LiveRgbFrameSink(Protocol):
+    """A consumer of the one canonical RGB conversion produced for each live frame."""
+
+    async def submit_rgb_frame(
+        self,
+        *,
+        session_id: str,
+        connection_session_id: str,
+        frame_index: int,
+        received_at_client_monotonic_ns: int,
+        image_rgb: np.ndarray,
+    ) -> None: ...
+
+
 class LiveFrameBuffer:
     """Convert WebRTC frames off the media callback and retain only the newest RGB frame."""
 
@@ -69,9 +86,11 @@ class LiveFrameBuffer:
         *,
         perf_clock: Callable[[], int] = time.perf_counter_ns,
         converter: Callable[[VideoFrame], np.ndarray] | None = None,
+        rgb_frame_sink: LiveRgbFrameSink | None = None,
     ) -> None:
         self._perf_clock = perf_clock
         self._converter = converter or _to_rgb24
+        self._rgb_frame_sink = rgb_frame_sink
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-frame")
         self._pending_lock = asyncio.Lock()
         self._state_lock = threading.Lock()
@@ -83,9 +102,16 @@ class LiveFrameBuffer:
         self._frames_converted = 0
         self._pending_frames_overwritten = 0
         self._conversion_failures = 0
+        self._rgb_frames_forwarded = 0
+        self._rgb_sink_failures = 0
         self._latest_conversion_ms: float | None = None
         self._last_error: str | None = None
         self._published_at_ns: deque[int] = deque(maxlen=240)
+
+    def set_rgb_frame_sink(self, sink: LiveRgbFrameSink | None) -> None:
+        """Route immutable RGB frames downstream after display conversion completes."""
+
+        self._rgb_frame_sink = sink
 
     async def submit_gateway_frame(
         self,
@@ -139,6 +165,8 @@ class LiveFrameBuffer:
                 frames_converted=self._frames_converted,
                 pending_frames_overwritten=self._pending_frames_overwritten,
                 conversion_failures=self._conversion_failures,
+                rgb_frames_forwarded=self._rgb_frames_forwarded,
+                rgb_sink_failures=self._rgb_sink_failures,
                 latest_frame_index=latest.frame_index if latest is not None else None,
                 latest_width=latest.width if latest is not None else None,
                 latest_height=latest.height if latest is not None else None,
@@ -202,6 +230,26 @@ class LiveFrameBuffer:
                 )
                 self._published_at_ns.append(converted_at_ns)
                 self._last_error = None
+            sink = self._rgb_frame_sink
+            if sink is not None:
+                try:
+                    await sink.submit_rgb_frame(
+                        session_id=live_frame.session_id,
+                        connection_session_id=live_frame.connection_session_id,
+                        frame_index=live_frame.frame_index,
+                        received_at_client_monotonic_ns=(
+                            live_frame.received_at_client_monotonic_ns
+                        ),
+                        image_rgb=live_frame.image_rgb,
+                    )
+                except Exception as error:
+                    LOGGER.exception("RGB frame sink rejected canonical live frame")
+                    with self._state_lock:
+                        self._rgb_sink_failures += 1
+                        self._last_error = str(error)
+                else:
+                    with self._state_lock:
+                        self._rgb_frames_forwarded += 1
 
 
 def _to_rgb24(frame: VideoFrame) -> np.ndarray:

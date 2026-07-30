@@ -529,6 +529,25 @@ class SensorPreprocessingPipeline:
         self._last_live_frame_time_ns = frame_time.session_time_ns
         return bundle
 
+    def process_live_rgb_frame(
+        self,
+        image_rgb: np.ndarray,
+        frame_input: LiveFrameInput,
+        imu_samples: Sequence[LiveImuInput] = (),
+    ) -> PreparedFrameBundle:
+        """处理网关已经统一转换的 RGB 帧，不再读取共享的 PyAV 解码帧。"""
+
+        if (
+            not isinstance(image_rgb, np.ndarray)
+            or image_rgb.dtype != np.uint8
+            or image_rgb.ndim != 3
+            or image_rgb.shape[2] != 3
+        ):
+            raise TypeError("image_rgb must be an uint8 HxWx3 array")
+        contiguous_rgb = np.ascontiguousarray(image_rgb)
+        decoded_frame = VideoFrame.from_ndarray(contiguous_rgb, format="rgb24")
+        return self.process_live_frame(decoded_frame, frame_input, imu_samples)
+
     def reset_live_state(self) -> None:
         """在实时会话、连接或回放重新开始时清空 IMU 分窗状态。"""
 

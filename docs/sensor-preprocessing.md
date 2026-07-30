@@ -107,13 +107,16 @@ sorts mapped IMU evidence, and emits immutable
 the IMU samples assigned to its frame interval, plus the exact calibration and
 time-mapping provenance required by VIO and hand tracking.
 
-The two input paths share all preparation after frame acquisition:
+The input paths share all preparation after frame acquisition:
 
 - `process_live_frame()` accepts an aiortc/PyAV `VideoFrame` that the gateway
-  has already decoded. It never decodes or encodes video. A proportional
-  WebRTC transport downscale is resized back to the calibrated source raster
-  before rotation and undistortion; upscales and aspect-ratio changes are
-  rejected.
+  has already decoded. This remains the direct-gateway compatibility boundary.
+- `process_live_rgb_frame()` accepts the canonical immutable RGB array already
+  produced for the native display. The unified client uses this path so
+  perception never reads a PyAV frame while the display converter is reading
+  it. Neither live path decodes or encodes video. A proportional WebRTC
+  transport downscale is resized back to the calibrated source raster before
+  rotation and undistortion; upscales and aspect-ratio changes are rejected.
 - `iter_recorded_session()` verifies the completed capture, decodes each MP4
   frame once, checks decoded PTS against the stored exact frame index, and feeds
   the same image preparation and output contract.
@@ -125,8 +128,8 @@ recorded clock mapping, then requires every used video frame and IMU sample to
 resolve through that one mapper. There is no video-only fallback.
 
 The pipeline does not persist decoded RGB frames. Long-term capture remains
-compressed MP4 plus immutable metadata and IMU; the same decoded frame can be
-shared with live VIO, hand tracking, and visualization in memory.
+compressed MP4 plus immutable metadata and IMU. The canonical immutable RGB
+array can be shared with live VIO, hand tracking, and visualization in memory.
 
 `config/sensor-preprocessing.yaml` selects the calibration file and contains
 the common runtime controls: media-hash verification, FFmpeg decode thread

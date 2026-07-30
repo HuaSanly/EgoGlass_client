@@ -316,6 +316,27 @@ def test_live_pipeline_normalizes_balanced_webrtc_resolution_to_calibration(
     assert bundle.calibration is calibration
 
 
+def test_live_pipeline_accepts_canonical_rgb_without_mutating_it(tmp_path: Path) -> None:
+    calibration = SensorCalibration.load(
+        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90)
+    )
+    pipeline = _pipeline(calibration)
+    image_rgb = np.empty((6, 8, 3), dtype=np.uint8)
+    image_rgb[:] = (10, 20, 30)
+    image_rgb.setflags(write=False)
+
+    bundle = pipeline.process_live_rgb_frame(
+        image_rgb,
+        _live_frame_input(0, 20_000_000),
+    )
+
+    assert bundle.image_bgr.shape == (8, 6, 3)
+    assert np.all(bundle.image_bgr == np.asarray((30, 20, 10), dtype=np.uint8))
+    assert not bundle.image_bgr.flags.writeable
+    assert not image_rgb.flags.writeable
+    assert np.all(image_rgb == np.asarray((10, 20, 30), dtype=np.uint8))
+
+
 def test_live_pipeline_rejects_transport_scaling_with_different_aspect_ratio(
     tmp_path: Path,
 ) -> None:

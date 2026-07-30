@@ -26,3 +26,24 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     assert "mvFormat_Float_rgb" in video
     assert "jpeg" not in video.lower()
     assert "mjpg" not in video.lower()
+
+
+def test_native_video_path_has_rgb_fanout_double_buffering_and_per_frame_overlay() -> None:
+    repository = Path(__file__).parents[1]
+    live_frames = (repository / "src" / "ingest_gateway" / "live_frames.py").read_text(
+        encoding="utf-8"
+    )
+    video = (repository / "ui" / "widgets" / "video_surface.py").read_text(
+        encoding="utf-8"
+    )
+    live_view = (repository / "ui" / "views" / "live.py").read_text(encoding="utf-8")
+
+    assert "submit_rgb_frame" in live_frames
+    assert "_texture_buffers" in video
+    assert "_front_texture_index" in video
+    assert "_perception_result_key" in live_view
+    assert "frame_index" in live_view
+    assert "recent_upload_fps" in video
+    assert "_update_active_view" in (
+        repository / "ui" / "app.py"
+    ).read_text(encoding="utf-8")

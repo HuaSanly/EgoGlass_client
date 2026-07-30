@@ -124,6 +124,37 @@ def test_live_runtime_keeps_only_newest_pending_frame(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_live_runtime_accepts_an_immutable_gateway_rgb_frame(tmp_path: Path) -> None:
+    image_rgb = np.full((6, 8, 3), 41, dtype=np.uint8)
+    image_rgb.setflags(write=False)
+    processed: list[LiveHandTrackingFrame] = []
+
+    async def scenario() -> None:
+        runtime = HandTrackingRuntime(
+            recordings_root=tmp_path / "recordings",
+            runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
+        )
+
+        def process(frame: LiveHandTrackingFrame) -> FakeResult:
+            processed.append(frame)
+            return FakeResult(frame.frame_index)
+
+        runtime._process_live_frame = process  # type: ignore[method-assign]
+        await runtime.submit_rgb_frame(
+            session_id="a" * 32,
+            connection_session_id="b" * 32,
+            frame_index=12,
+            received_at_client_monotonic_ns=500,
+            image_rgb=image_rgb,
+        )
+        await runtime.close()
+
+    asyncio.run(scenario())
+    assert len(processed) == 1
+    assert processed[0].decoded_frame is None
+    assert processed[0].image_rgb is image_rgb
+
+
 def test_status_events_push_initial_snapshot_and_completed_inference(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = HandTrackingRuntime(

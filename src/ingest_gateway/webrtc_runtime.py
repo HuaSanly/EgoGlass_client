@@ -203,7 +203,7 @@ class WebRtcSessionRuntime:
     def set_capture_telemetry_sink(self, sink: CaptureTelemetrySink) -> None:
         self._capture_telemetry_sink = sink
 
-    def set_perception_live_frame_sink(self, sink: DecodedFrameSink) -> None:
+    def set_perception_live_frame_sink(self, sink: DecodedFrameSink | None) -> None:
         """Attach an enqueue-only perception consumer for decoded source frames."""
 
         self._perception_live_frame_sink = sink

@@ -54,14 +54,7 @@ class NativeApplication:
             while dpg.is_dearpygui_running():
                 dpg.run_callbacks(dpg.get_callback_queue())
                 snapshot = self.runtime.snapshot()
-                if self.live_view is not None:
-                    self.live_view.update(snapshot)
-                if self.library_view is not None:
-                    self.library_view.update(snapshot)
-                if self.annotation_view is not None:
-                    self.annotation_view.update(snapshot)
-                if self.diagnostics_view is not None:
-                    self.diagnostics_view.update(snapshot)
+                self._update_active_view(snapshot)
                 for result in self.runtime.command_results():
                     dpg.set_value("global-command-status", result.detail)
                     dpg.configure_item(
@@ -75,6 +68,18 @@ class NativeApplication:
                 self.live_view.close()
             self.runtime.stop()
             dpg.destroy_context()
+
+    def _update_active_view(self, snapshot: object) -> None:
+        active_tab = dpg.get_value("main-navigation")
+        views = {
+            "live-tab": self.live_view,
+            "library-tab": self.library_view,
+            "annotation-tab": self.annotation_view,
+            "diagnostics-tab": self.diagnostics_view,
+        }
+        view = views.get(active_tab)
+        if view is not None:
+            view.update(snapshot)
 
     def _build(self) -> None:
         with dpg.window(tag="egoglass-primary-window", no_title_bar=True, no_move=True):

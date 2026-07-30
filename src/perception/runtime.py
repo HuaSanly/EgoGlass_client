@@ -101,13 +101,29 @@ class HandTrackingRuntimeConfig(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class LiveHandTrackingFrame:
-    """One decoded WebRTC frame submitted without blocking the media callback."""
+    """One decoded WebRTC or canonical RGB frame queued for hand tracking."""
 
     session_id: str
     connection_session_id: str
     frame_index: int
     received_at_client_monotonic_ns: int
-    decoded_frame: VideoFrame
+    decoded_frame: VideoFrame | None = None
+    image_rgb: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        if (self.decoded_frame is None) == (self.image_rgb is None):
+            raise ValueError("exactly one decoded_frame or image_rgb input is required")
+        if self.image_rgb is not None:
+            if (
+                self.image_rgb.dtype != np.uint8
+                or self.image_rgb.ndim != 3
+                or self.image_rgb.shape[2] != 3
+            ):
+                raise TypeError("image_rgb must be an uint8 HxWx3 array")
+            if not self.image_rgb.flags.c_contiguous:
+                raise ValueError("image_rgb must be C-contiguous")
+            if self.image_rgb.flags.writeable:
+                raise ValueError("image_rgb must be read-only")
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +427,27 @@ class HandTrackingRuntime:
             )
         )
 
+    async def submit_rgb_frame(
+        self,
+        *,
+        session_id: str,
+        connection_session_id: str,
+        frame_index: int,
+        received_at_client_monotonic_ns: int,
+        image_rgb: np.ndarray,
+    ) -> None:
+        """Accept the immutable RGB frame already prepared for the native display."""
+
+        await self.submit_live_frame(
+            LiveHandTrackingFrame(
+                session_id=session_id,
+                connection_session_id=connection_session_id,
+                frame_index=frame_index,
+                received_at_client_monotonic_ns=received_at_client_monotonic_ns,
+                image_rgb=image_rgb,
+            )
+        )
+
     async def status(self) -> dict[str, object]:
         """Return the latest JSON-ready state snapshot."""
 
@@ -556,28 +593,30 @@ class HandTrackingRuntime:
         frame: LiveHandTrackingFrame,
     ) -> HandTrackingResult:
         preprocessing = self._live_preprocessing_for(frame)
-        bundle = preprocessing.process_live_frame(
-            frame.decoded_frame,
-            LiveFrameInput(
+        live_input = LiveFrameInput(
+            session_id=frame.session_id,
+            stream_id=frame.connection_session_id,
+            frame_index=frame.frame_index,
+            time_observation=TimeObservation(
                 session_id=frame.session_id,
-                stream_id=frame.connection_session_id,
-                frame_index=frame.frame_index,
-                time_observation=TimeObservation(
-                    session_id=frame.session_id,
-                    source_clock_id=ClockId.CLIENT_PERF_COUNTER_NS,
-                    source_instance_id=client_perf_source_instance_id(
-                        frame.session_id,
-                        frame.connection_session_id,
-                    ),
-                    source_timestamp=frame.received_at_client_monotonic_ns,
-                    timestamp_semantic=TimestampSemantic.CLIENT_RECEIPT,
+                source_clock_id=ClockId.CLIENT_PERF_COUNTER_NS,
+                source_instance_id=client_perf_source_instance_id(
+                    frame.session_id,
+                    frame.connection_session_id,
                 ),
-                rotation_degrees=preprocessing.calibration.rotation_degrees,
-                capture_config_id=preprocessing.calibration.capture_config_id,
-                association_uncertainty_ns=10_000_000,
-                association_status=TimeStatus.ESTIMATED,
+                source_timestamp=frame.received_at_client_monotonic_ns,
+                timestamp_semantic=TimestampSemantic.CLIENT_RECEIPT,
             ),
+            rotation_degrees=preprocessing.calibration.rotation_degrees,
+            capture_config_id=preprocessing.calibration.capture_config_id,
+            association_uncertainty_ns=10_000_000,
+            association_status=TimeStatus.ESTIMATED,
         )
+        if frame.image_rgb is not None:
+            bundle = preprocessing.process_live_rgb_frame(frame.image_rgb, live_input)
+        else:
+            assert frame.decoded_frame is not None
+            bundle = preprocessing.process_live_frame(frame.decoded_frame, live_input)
         tracker = self._tracker_for_current_thread()
         return tracker.process_frame(bundle)
 

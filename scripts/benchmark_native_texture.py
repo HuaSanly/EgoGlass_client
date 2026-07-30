@@ -22,21 +22,30 @@ def run_benchmark(width: int, height: int, frame_count: int) -> dict[str, float]
         size=(height, width, 3),
         dtype=np.uint8,
     )
-    texture = np.empty((height, width, 3), dtype=np.float32)
+    textures = (
+        np.empty((height, width, 3), dtype=np.float32),
+        np.empty((height, width, 3), dtype=np.float32),
+    )
     upload_ms: list[float] = []
     frame_ms: list[float] = []
     dpg.create_context()
     try:
         with dpg.texture_registry(show=False):
-            dpg.add_raw_texture(
+            for index, texture in enumerate(textures):
+                dpg.add_raw_texture(
+                    width=width,
+                    height=height,
+                    default_value=texture.ravel(),
+                    format=dpg.mvFormat_Float_rgb,
+                    tag=f"benchmark-texture-{index}",
+                )
+        with dpg.window(tag="benchmark-window"):
+            dpg.add_image(
+                "benchmark-texture-0",
                 width=width,
                 height=height,
-                default_value=texture.ravel(),
-                format=dpg.mvFormat_Float_rgb,
-                tag="benchmark-texture",
+                tag="benchmark-image",
             )
-        with dpg.window(tag="benchmark-window"):
-            dpg.add_image("benchmark-texture", width=width, height=height)
         dpg.create_viewport(
             title="EgoGlass texture benchmark",
             width=min(width + 32, 1320),
@@ -46,9 +55,21 @@ def run_benchmark(width: int, height: int, frame_count: int) -> dict[str, float]
         dpg.setup_dearpygui()
         dpg.show_viewport()
         dpg.set_primary_window("benchmark-window", True)
+        front_texture_index = 0
         for frame_index in range(frame_count):
             started_at_ns = time.perf_counter_ns()
-            np.multiply(image, np.float32(1.0 / 255.0), out=texture, casting="unsafe")
+            back_texture_index = 1 - front_texture_index
+            np.multiply(
+                image,
+                np.float32(1.0 / 255.0),
+                out=textures[back_texture_index],
+                casting="unsafe",
+            )
+            dpg.configure_item(
+                "benchmark-image",
+                texture_tag=f"benchmark-texture-{back_texture_index}",
+            )
+            front_texture_index = back_texture_index
             upload_finished_at_ns = time.perf_counter_ns()
             dpg.render_dearpygui_frame()
             frame_finished_at_ns = time.perf_counter_ns()

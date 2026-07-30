@@ -22,7 +22,7 @@ class LiveView:
         self.replay = ReplayPlayer()
         self._viewer_mode = "live"
         self._last_snapshot_revision = -1
-        self._last_result_sequence: str | None = None
+        self._last_result_key: tuple[str, str, int] | None = None
         self._library_identity: int | None = None
         self._session_labels: dict[str, str] = {}
         self._clip_labels: dict[str, tuple[str, str]] = {}
@@ -140,6 +140,7 @@ class LiveView:
             dpg.add_text("帧链路", color=(171, 180, 179))
             dpg.add_text("接收 --", tag="live-ingest-metric")
             dpg.add_text("转换 --", tag="live-convert-metric")
+            dpg.add_text("RGB 分发 --", tag="live-rgb-fanout-metric")
             dpg.add_text("上传 --", tag="live-upload-metric")
             dpg.add_text("覆盖 --", tag="live-drop-metric")
             dpg.add_separator()
@@ -239,14 +240,14 @@ class LiveView:
         latest = perception.get("latest_result")
         if not isinstance(latest, dict):
             return
-        sequence = latest.get("sequence_id")
+        result_key = _perception_result_key(latest)
         if (
             self._viewer_mode == "live"
-            and isinstance(sequence, str)
-            and sequence != self._last_result_sequence
+            and result_key is not None
+            and result_key != self._last_result_key
         ):
             self.video.update_overlay(latest)
-            self._last_result_sequence = sequence
+            self._last_result_key = result_key
         hands = latest.get("hands")
         left = None
         right = None
@@ -274,11 +275,18 @@ class LiveView:
         if display is None:
             return
         surface = self.video.status()
-        dpg.set_value("live-display-fps", f"显示 {display.recent_fps:.1f} FPS")
+        dpg.set_value("live-display-fps", f"显示 {surface.recent_upload_fps:.1f} FPS")
         dpg.set_value("live-ingest-metric", f"接收 {display.frames_received} 帧")
         dpg.set_value(
             "live-convert-metric",
             f"转换 {display.frames_converted} 帧 / {display.latest_conversion_ms or 0:.2f} ms",
+        )
+        dpg.set_value(
+            "live-rgb-fanout-metric",
+            (
+                f"RGB 分发 {display.rgb_frames_forwarded} 帧 / "
+                f"错误 {display.rgb_sink_failures}"
+            ),
         )
         dpg.set_value(
             "live-upload-metric",
@@ -392,7 +400,7 @@ class LiveView:
         if self._viewer_mode == "replay":
             self.video.update_overlay(None)
         else:
-            self._last_result_sequence = None
+            self._last_result_key = None
 
     def _set_replay_mode(self) -> None:
         self._viewer_mode = "replay"
@@ -458,6 +466,20 @@ def _confidence_text(label: str, hand: dict[str, object] | None) -> str:
         else:
             values.append(f"{name} --")
     return f"{label}  " + "  ".join(values)
+
+
+def _perception_result_key(result: dict[str, object]) -> tuple[str, str, int] | None:
+    session_id = result.get("session_id")
+    sequence_id = result.get("sequence_id")
+    frame_index = result.get("frame_index")
+    if (
+        not isinstance(session_id, str)
+        or not isinstance(sequence_id, str)
+        or not isinstance(frame_index, int)
+        or isinstance(frame_index, bool)
+    ):
+        return None
+    return session_id, sequence_id, frame_index
 
 
 def _clock(seconds: float) -> str:

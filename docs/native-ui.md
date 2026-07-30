@@ -11,7 +11,7 @@ One `python -m ui` process owns all client modules:
 ```text
 Dear PyGui main thread
   -> reads immutable RuntimeSnapshot values
-  -> uploads newest RGB frame to one raw texture
+  -> swaps the newest RGB frame into a double-buffered raw texture
   -> sends commands directly to UnifiedRuntimeHost
 
 asyncio runtime thread
@@ -28,11 +28,12 @@ bounded workers
   -> IMU Madgwick orientation preview
 ```
 
-The gateway sends the same decoded `av.VideoFrame` object to bounded display
-and perception consumers. `LiveFrameBuffer` keeps at most one pending frame so
-UI conversion cannot block WebRTC reception. The UI consumes contiguous RGB
-without network serialization. Slow inference can drop its own pending input
-without stopping the video surface.
+`LiveFrameBuffer` is the only live consumer that reads the decoded
+`av.VideoFrame`. It keeps at most one pending frame, converts it once to an
+immutable contiguous RGB array, and publishes that same array to the UI and
+perception. This avoids concurrent PyAV color conversion on one decoded frame.
+The UI consumes RGB without network serialization. Slow inference can drop its
+own pending input without stopping the video surface.
 
 The live aiortc relay is unbuffered: if UI bookkeeping briefly falls behind,
 the next callback receives the newest decoded frame instead of replaying an
@@ -46,6 +47,8 @@ in the diagnostics view.
 The Live view owns the application's only `VideoSurface` and `ReplayPlayer`.
 It switches the large raw RGB texture between live input and stored replay.
 Hand boxes and keypoints are drawn on a Dear PyGui layer above that texture.
+The overlay identity includes session, stream, and inference frame index, so a
+new result on the same WebRTC connection replaces the previous result.
 
 The Library view reads `RecordingRuntime.library()` through the unified
 snapshot. It shows session quality, clip metadata, rename, replay generation,
@@ -62,6 +65,12 @@ The Diagnostics view shows WebRTC state, input/display rates, metadata pairing,
 IMU rates and gaps, orientation queue overflow, recording state, inference
 latency/drop counts, and the latest runtime command events.
 
+Only the selected Dear PyGui tab is updated on each render iteration. Hidden
+library, annotation, and diagnostics widgets retain their last snapshot until
+selected, avoiding periodic hidden-widget work on the live video path. The
+Live header reports actual raw-texture swaps per second; RGB conversion FPS
+remains a separate diagnostic.
+
 ## Frame and replay behavior
 
 Live display always uses gateway-decoded RGB frames. It never reconnects a
@@ -70,11 +79,14 @@ viewer or waits for inference output. `VideoSurface` preserves a stable
 image dimensions.
 
 WebRTC may change encoded resolution under its balanced congestion policy.
-`VideoSurface` creates a uniquely tagged texture, binds it, and only then
-deletes the previous texture, so a size transition cannot reuse a pending
-Dear PyGui alias. The perception preprocessor accepts proportional transport
-downscales and restores them to the calibrated raster before undistortion and
-inference. A different aspect ratio remains an error.
+`VideoSurface` owns two raw textures at the active dimensions. It writes only
+the texture that is not currently displayed, then swaps the image binding.
+This prevents the renderer from observing a partially updated RGB buffer. A
+resolution transition creates two uniquely tagged replacements before deleting
+the old pair, so it cannot reuse a pending Dear PyGui alias. The perception
+preprocessor accepts proportional transport downscales and restores them to the
+calibrated raster before undistortion and inference. A different aspect ratio
+remains an error.
 
 Replay uses PyAV on one worker. Frame presentation time is `PTS * time_base`;
 wall scheduling applies the selected 0.25x to 2.0x rate. Pause, step, seek, and
@@ -96,10 +108,11 @@ Run the native texture benchmark:
 conda run -n egoglass python scripts\benchmark_native_texture.py
 ```
 
-The current Windows test at 1280x720 measured 596.84 effective FPS, 1.675 ms
-mean frame work, 2.027 ms p95 frame work, 1.076 ms mean upload, and 1.310 ms p95
-upload. The benchmark creates a real viewport, runs a fixed frame count, prints
-JSON, and closes automatically.
+The current Windows double-buffer test at 1280x720 measured 246.63 effective
+FPS, 4.055 ms mean frame work, 5.253 ms p95 frame work, 1.659 ms mean RGB
+conversion, and 2.229 ms p95 RGB conversion. This remains well below the
+33.3 ms budget of a 30 FPS source. The benchmark creates a real viewport, runs
+a fixed frame count, prints JSON, and closes automatically.
 
 ## Run and build
 

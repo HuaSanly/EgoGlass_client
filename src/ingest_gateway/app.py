@@ -90,10 +90,13 @@ def create_app(
         set_capture_sink(active_recording_runtime)
     set_perception_sink = getattr(active_webrtc_runtime, "set_perception_live_frame_sink", None)
     if set_perception_sink is not None:
-        set_perception_sink(active_perception_runtime)
+        set_perception_sink(
+            active_perception_runtime if active_live_frame_buffer is None else None
+        )
     set_display_sink = getattr(active_webrtc_runtime, "set_display_frame_sink", None)
     if set_display_sink is not None and active_live_frame_buffer is not None:
         set_display_sink(active_live_frame_buffer)
+        active_live_frame_buffer.set_rgb_frame_sink(active_perception_runtime)
     set_display_imu_sink = getattr(active_webrtc_runtime, "set_display_imu_sink", None)
     if set_display_imu_sink is not None and active_imu_preview_runtime is not None:
         set_display_imu_sink(active_imu_preview_runtime)
@@ -108,9 +111,9 @@ def create_app(
             if discovery_service is not None:
                 await discovery_service.close()
             await active_webrtc_runtime.close()
-            await active_perception_runtime.close()
             if active_live_frame_buffer is not None:
                 await active_live_frame_buffer.close()
+            await active_perception_runtime.close()
             if active_imu_preview_runtime is not None:
                 await active_imu_preview_runtime.close()
             await active_recording_runtime.close()
