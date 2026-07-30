@@ -1,0 +1,321 @@
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import logging
+import queue
+import secrets
+import threading
+import time
+from collections import deque
+from collections.abc import Coroutine
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import uvicorn
+
+from annotation.store import AnnotationStore
+from ingest_gateway.app import create_app
+from ingest_gateway.discovery import DISCOVERY_PORT, LanDiscoveryService
+from ingest_gateway.imu_preview import ImuPreviewRuntime
+from ingest_gateway.live_frames import LiveFrame, LiveFrameBuffer
+from ingest_gateway.recording import RecordingRuntime
+from ingest_gateway.recording_models import RecordingState
+from ingest_gateway.webrtc_models import StreamControlAction, StreamControlCommand
+from ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
+from perception.runtime import HandTrackingRuntime
+
+from .state import CommandResult, RuntimeSnapshot
+
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfig:
+    host: str = "0.0.0.0"
+    port: int = 8770
+    discovery_port: int = DISCOVERY_PORT
+    recordings_root: Path = Path("local-data/recordings")
+    pairing_token: str | None = None
+    enable_discovery: bool = True
+
+    def __post_init__(self) -> None:
+        if self.port not in range(1, 65_536):
+            raise ValueError("port must be between 1 and 65535")
+        if self.discovery_port not in range(1, 65_536):
+            raise ValueError("discovery_port must be between 1 and 65535")
+        if self.pairing_token is not None and len(self.pairing_token) < 16:
+            raise ValueError("pairing_token must contain at least 16 characters")
+
+
+class UnifiedRuntimeHost:
+    """Run gateway, recording, perception, and UI state collection in one process."""
+
+    def __init__(self, config: RuntimeConfig) -> None:
+        self.config = config
+        self.pairing_token = config.pairing_token or secrets.token_urlsafe(24)
+        self.frame_buffer = LiveFrameBuffer()
+        self.imu_preview = ImuPreviewRuntime()
+        self.webrtc = WebRtcSessionRuntime(
+            self.pairing_token,
+            display_frame_sink=self.frame_buffer,
+            display_imu_sink=self.imu_preview,
+        )
+        recordings_root = config.recordings_root.expanduser().resolve()
+        self.recording = RecordingRuntime(
+            recordings_root,
+            lambda: self.webrtc.recording_source(),
+        )
+        self.annotation = AnnotationStore(recordings_root)
+        self.perception = HandTrackingRuntime(recordings_root=recordings_root)
+        self.discovery = (
+            LanDiscoveryService(
+                self.pairing_token,
+                config.port,
+                discovery_port=config.discovery_port,
+            )
+            if config.enable_discovery
+            else None
+        )
+        self.app = create_app(
+            webrtc_runtime=self.webrtc,
+            discovery_service=self.discovery,
+            recording_runtime=self.recording,
+            perception_runtime=self.perception,
+            live_frame_buffer=self.frame_buffer,
+            imu_preview_runtime=self.imu_preview,
+            recordings_root=recordings_root,
+        )
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._server: uvicorn.Server | None = None
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._stopped = threading.Event()
+        self._snapshot_lock = threading.Lock()
+        self._snapshot = RuntimeSnapshot()
+        self._command_results: queue.SimpleQueue[CommandResult] = queue.SimpleQueue()
+        self._startup_error: BaseException | None = None
+        self._recent_events: deque[str] = deque(maxlen=50)
+
+    def start(self, timeout_seconds: float = 20.0) -> None:
+        if self._thread is not None:
+            raise RuntimeError("runtime is already started")
+        self._thread = threading.Thread(
+            target=self._thread_main,
+            name="egoglass-runtime",
+            daemon=False,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout_seconds):
+            self.stop()
+            raise TimeoutError("EgoGlass runtime did not become ready")
+        if self._startup_error is not None:
+            raise RuntimeError("EgoGlass runtime failed to start") from self._startup_error
+        self._record_event(f"runtime listening on {self.config.host}:{self.config.port}")
+
+    def stop(self, timeout_seconds: float = 20.0) -> None:
+        server = self._server
+        if server is not None and not server.should_exit:
+            try:
+                future = self.submit(self.recording.session_command("finalize"))
+                future.result(timeout=min(timeout_seconds, 15.0))
+            except Exception:
+                LOGGER.exception("capture session finalization failed during shutdown")
+            server.should_exit = True
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout_seconds)
+        if thread is not None and thread.is_alive():
+            raise TimeoutError("EgoGlass runtime did not stop cleanly")
+
+    def snapshot(self) -> RuntimeSnapshot:
+        with self._snapshot_lock:
+            return self._snapshot
+
+    def latest_frame(self) -> LiveFrame | None:
+        return self.frame_buffer.latest()
+
+    def command_results(self) -> tuple[CommandResult, ...]:
+        results: list[CommandResult] = []
+        while True:
+            try:
+                results.append(self._command_results.get_nowait())
+            except queue.Empty:
+                return tuple(results)
+
+    def submit(self, coroutine: Coroutine[Any, Any, Any]) -> concurrent.futures.Future[Any]:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            coroutine.close()
+            raise RuntimeError("runtime event loop is unavailable")
+        return asyncio.run_coroutine_threadsafe(coroutine, loop)
+
+    def request_stream(self, action: StreamControlAction) -> None:
+        self._track_command("stream", self._request_stream(action))
+
+    def request_recording(self, action: str) -> None:
+        if action == "start":
+            operation = self.recording.start()
+        elif action == "stop":
+            operation = self.recording.stop()
+        else:
+            raise ValueError("recording action must be start or stop")
+        self._track_command(f"recording-{action}", operation)
+
+    def request_session(self, action: str) -> None:
+        if action not in {"new", "finalize"}:
+            raise ValueError("session action must be new or finalize")
+        self._track_command(f"session-{action}", self.recording.session_command(action))
+
+    def request_replay_generation(self, session_id: str) -> None:
+        self._track_command("generate-replay", self.perception.start_replay(session_id))
+
+    def rename_session(self, session_id: str, display_name: str) -> None:
+        self._track_command(
+            "rename-session",
+            self.recording.rename_session(session_id, display_name),
+        )
+
+    def delete_session(self, session_id: str) -> None:
+        self._track_command("delete-session", self.recording.delete_session(session_id))
+
+    def delete_clip(self, session_id: str, clip_id: str) -> None:
+        self._track_command("delete-clip", self.recording.delete_clip(session_id, clip_id))
+
+    def media_path(self, session_id: str, clip_id: str) -> concurrent.futures.Future[Path | None]:
+        return self.submit(self.recording.media_path(session_id, clip_id))
+
+    def replay_video_path(
+        self,
+        session_id: str,
+        run_id: str,
+        clip_id: str,
+    ) -> concurrent.futures.Future[Path]:
+        return self.submit(self.perception.replay_video_path(session_id, run_id, clip_id))
+
+    async def _request_stream(self, action: StreamControlAction) -> object:
+        if action is StreamControlAction.STOP:
+            recording = await self.recording.status()
+            if recording.state in {
+                RecordingState.COUNTDOWN,
+                RecordingState.RECORDING,
+                RecordingState.FINALIZING,
+            }:
+                raise RuntimeError("stop the active recording before stopping the stream")
+        return await self.webrtc.send_control_command(
+            StreamControlCommand(
+                command_id=secrets.token_hex(16),
+                action=action,
+            )
+        )
+
+    def _track_command(self, name: str, coroutine: Coroutine[Any, Any, Any]) -> None:
+        future = self.submit(coroutine)
+
+        def completed(done: concurrent.futures.Future[Any]) -> None:
+            try:
+                result = done.result()
+                detail = getattr(result, "detail", None) or "completed"
+                self._record_event(f"{name}: {detail}")
+                self._command_results.put(CommandResult(name, True, str(detail)))
+            except Exception as error:
+                LOGGER.exception("runtime command failed: %s", name)
+                self._record_event(f"{name} failed: {error}")
+                self._command_results.put(CommandResult(name, False, str(error)))
+
+        future.add_done_callback(completed)
+
+    def _thread_main(self) -> None:
+        try:
+            asyncio.run(self._serve())
+        except BaseException as error:
+            self._startup_error = error
+            LOGGER.exception("unified EgoGlass runtime stopped with an error")
+        finally:
+            self._ready.set()
+            self._stopped.set()
+
+    async def _serve(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        config = uvicorn.Config(
+            self.app,
+            host=self.config.host,
+            port=self.config.port,
+            access_log=False,
+            log_config=None,
+        )
+        self._server = uvicorn.Server(config)
+        status_task = asyncio.create_task(self._collect_status())
+        server_task = asyncio.create_task(self._server.serve())
+        while not self._server.started and not server_task.done():
+            await asyncio.sleep(0.02)
+        if not self._server.started:
+            await server_task
+            raise RuntimeError("ingest server stopped before becoming ready")
+        self._ready.set()
+        try:
+            await server_task
+        finally:
+            status_task.cancel()
+            await asyncio.gather(status_task, return_exceptions=True)
+
+    async def _collect_status(self) -> None:
+        revision = 0
+        library = None
+        library_refresh_at_ns = 0
+        while True:
+            try:
+                now_ns = time.perf_counter_ns()
+                webrtc, stream_control, imu, recording, perception = await asyncio.gather(
+                    self.webrtc.status(),
+                    self.webrtc.control_status(),
+                    self.webrtc.imu_status(),
+                    self.recording.status(),
+                    self.perception.status(),
+                )
+                if now_ns >= library_refresh_at_ns:
+                    library = await self.recording.library()
+                    library_refresh_at_ns = now_ns + 1_000_000_000
+                revision += 1
+                snapshot = RuntimeSnapshot(
+                    revision=revision,
+                    captured_at_client_monotonic_ns=now_ns,
+                    server_ready=True,
+                    webrtc=webrtc,
+                    stream_control=stream_control,
+                    imu=imu,
+                    imu_pose=self.imu_preview.snapshot(),
+                    recording=recording,
+                    library=library,
+                    perception=perception,
+                    display=self.frame_buffer.status(),
+                    recent_events=tuple(self._recent_events),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                LOGGER.exception("failed to collect UI runtime status")
+                previous = self.snapshot()
+                snapshot = RuntimeSnapshot(
+                    revision=previous.revision + 1,
+                    captured_at_client_monotonic_ns=time.perf_counter_ns(),
+                    server_ready=True,
+                    webrtc=previous.webrtc,
+                    stream_control=previous.stream_control,
+                    imu=previous.imu,
+                    imu_pose=self.imu_preview.snapshot(),
+                    recording=previous.recording,
+                    library=previous.library,
+                    perception=previous.perception,
+                    display=self.frame_buffer.status(),
+                    last_error=str(error),
+                    recent_events=tuple(self._recent_events),
+                )
+            with self._snapshot_lock:
+                self._snapshot = snapshot
+            await asyncio.sleep(0.1)
+
+    def _record_event(self, detail: str) -> None:
+        timestamp = time.strftime("%H:%M:%S")
+        self._recent_events.appendleft(f"{timestamp}  {detail}")

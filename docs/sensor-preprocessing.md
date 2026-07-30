@@ -172,7 +172,7 @@ with a complete time, uncertainty, and mapping-segment reference.
 The current reader deliberately does not decode video, sort/filter/resample IMU,
 fit clocks, infer exposure time, bind calibration, or split sequences. Those are
 separate preprocessing stages. It also has no runtime import dependency on
-`ingest_gateway`, `operator_console`, or `spatial_perception`; only tests use the
+`ingest_gateway`, `annotation`, `ui`, or `spatial_perception`; only tests use the
 real gateway writer to produce contract-compatible synthetic fixtures.
 
 ## Public API

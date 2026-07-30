@@ -1,8 +1,8 @@
 # Client Evals
 
 All periodic evaluations live here. Filenames begin with the owning package:
-`test_ingest_gateway_`, `test_operator_console_`, or a `perception` stage such
-as `test_sensor_preprocessing_`.
+`test_ingest_gateway_`, `test_ui_`, `test_annotation_`, or a `perception` stage
+such as `test_sensor_preprocessing_`.
 
 Run every eval from the client root:
 

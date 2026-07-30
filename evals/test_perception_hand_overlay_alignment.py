@@ -9,7 +9,7 @@ from perception.spatial_perception.hand_tracking import (
 )
 
 
-def test_portrait_hamer_coordinates_align_with_landscape_decoded_preview() -> None:
+def test_portrait_hamer_coordinates_align_with_landscape_rgb_surface() -> None:
     rotated_points = np.asarray(((719.0, 0.0), (0.0, 1279.0)), dtype=np.float32)
 
     source_points = rotated_image_points_to_source(
@@ -30,11 +30,11 @@ def test_portrait_hamer_coordinates_align_with_landscape_decoded_preview() -> No
     assert source_bbox == (200.0, 420.0, 500.0, 620.0)
 
 
-def test_operator_overlay_consumes_source_coordinate_contract() -> None:
+def test_native_overlay_consumes_source_coordinate_contract() -> None:
     repository = Path(__file__).parents[1]
-    script = (repository / "src/operator_console/static/app.js").read_text(encoding="utf-8")
+    script = (repository / "ui/widgets/video_surface.py").read_text(encoding="utf-8")
 
-    assert "hand.source_keypoints_2d_px.map(mapPoint)" in script
-    assert "hand.source_bbox_xyxy_px.slice(0, 2)" in script
-    assert "result?.source_image_width_px" in script
-    assert "result?.source_image_height_px" in script
+    assert 'hand.get("source_keypoints_2d_px")' in script
+    assert 'hand.get("source_bbox_xyxy_px")' in script
+    assert 'result.get("source_image_width_px")' in script
+    assert 'result.get("source_image_height_px")' in script

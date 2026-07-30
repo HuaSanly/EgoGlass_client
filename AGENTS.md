@@ -45,14 +45,14 @@ The client uses one native Windows Conda environment named `egoglass`, one root
 `evals/` directory. Do not add package-local environments, lock files, test
 trees, eval trees, or project manifests.
 
-Top-level code packages live directly under `src/` and use concise
-responsibility names: `ingest_gateway`, `operator_console`, and `perception`.
-The `perception` package is the independently reusable research and runtime
-core; its processing stages live beneath that package. The operator console
-owns annotation UI, validation, and annotation persistence. Do not add an
-`egoglass_` prefix to internal Python package names. Keep these packages
-independently testable, and do not import another package's private modules or
-share mutable process state.
+Non-UI code packages live directly under `src/` and use concise responsibility
+names: `annotation`, `ingest_gateway`, and `perception`. Native Dear PyGui code
+lives in the repository-root `ui/` package. The `perception` package is the
+independently reusable research and runtime core; its processing stages live
+beneath that package. `annotation` owns validation and persistence while `ui`
+owns only presentation and user interaction. Do not add an `egoglass_` prefix
+to internal Python package names. Keep these packages independently testable
+and do not import another package's private modules.
 
 The device stream format and the cloud transport are separate concerns. An
 adapter may convert SDK-provided NV21 frames into a WebRTC media track, but the

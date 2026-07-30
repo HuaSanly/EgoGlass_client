@@ -1,9 +1,8 @@
 # Ingest Gateway
 
 The ingest gateway terminates and decodes the direct Glass3 WebRTC stream,
-publishes decoded-frame preview data to the loopback operator console, receives IMU telemetry, and records
-operator-selected clips. It is an isolated client package and does not depend
-on the operator console.
+submits frames to in-process RGB display and perception consumers, receives IMU
+telemetry, and records operator-selected clips. It does not depend on the UI.
 
 ## Direct WebRTC path
 
@@ -37,17 +36,11 @@ cleartext in v1 and must stay on a trusted LAN; the pairing token is never
 returned by status or error APIs.
 
 aiortc is the only component that terminates Glass3 WebRTC and decodes H.264.
-Each decoded `av.VideoFrame` is submitted to the preview and perception sinks.
+Each decoded `av.VideoFrame` is submitted to the display and perception sinks.
 Both submissions are enqueue-only and retain at most the newest pending frame,
-so JPEG encoding or CUDA inference cannot block media reception.
-
-The preview sink converts the decoded frame to BGR and encodes it once as JPEG.
-All local UI clients share that encoded frame through one MJPEG endpoint. Slow
-clients do not create extra Glass3 peers or extra H.264 encoders. If source
-frames pause, the MJPEG connection and latest encoded frame remain available.
-HaMeR returns structured boxes and keypoints; the operator console draws those
-results on a canvas over the continuous preview instead of replacing it with a
-low-rate annotated image.
+so RGB conversion or CUDA inference cannot block media reception. The display
+sink converts directly to contiguous RGB on one worker. Dear PyGui uploads the
+newest RGB buffer to a raw texture without HTTP or image encoding.
 
 Decoded aiortc PTS starts from a receiver-relative RTP origin and therefore
 must not be anchored to the first Glass3 metadata message: the encoder can drop
@@ -197,8 +190,8 @@ system ffmpeg.exe is not required.
 conda run -n egoglass python -m ingest_gateway.app
 ~~~
 
-The CLI binds to `0.0.0.0:8770` by default for Glass3 signaling. Preview,
-control, IMU, recording, and media-library APIs enforce loopback access.
+The CLI binds to `0.0.0.0:8770` by default for Glass3 signaling. Control, IMU,
+recording, perception, and media-library APIs enforce loopback access.
 
 ## API
 
@@ -206,8 +199,6 @@ control, IMU, recording, and media-library APIs enforce loopback access.
 - GET /api/v1/webrtc/status
 - GET /api/v1/webrtc/imu/status (loopback-only experimental IMU evidence)
 - POST /api/v1/webrtc/sessions
-- GET /api/v1/webrtc/decoded-preview.mjpg (loopback-only decoded MJPEG preview)
-- GET /api/v1/webrtc/decoded-preview/status (loopback-only preview metrics)
 - GET /api/v1/webrtc/control (loopback-only capture state)
 - POST /api/v1/webrtc/control/commands (loopback-only `{ "action": "start|stop" }`)
 - GET /api/v1/recordings/status (loopback-only recording state)

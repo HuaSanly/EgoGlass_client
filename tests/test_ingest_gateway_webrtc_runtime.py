@@ -575,7 +575,7 @@ def test_control_timeout_and_send_failure_leave_safe_error_status() -> None:
 
 def test_one_decoded_video_frame_is_fanned_out_without_pixel_copy() -> None:
     peers: list[FakePeer] = []
-    preview_sink = FakePerceptionSink()
+    display_sink = FakePerceptionSink()
     perception_sink = FakePerceptionSink()
 
     def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
@@ -589,7 +589,7 @@ def test_one_decoded_video_frame_is_fanned_out_without_pixel_copy() -> None:
             factory,
             perf_clock=lambda: 123_000_000,
             perception_live_frame_sink=perception_sink,
-            decoded_preview_frame_sink=preview_sink,
+            display_frame_sink=display_sink,
         )
         await runtime.accept_offer(offer(), TOKEN)
         source_frame = VideoFrame(8, 6, "yuv420p")
@@ -604,8 +604,8 @@ def test_one_decoded_video_frame_is_fanned_out_without_pixel_copy() -> None:
         )
         await runtime.close()
 
-        assert len(preview_sink.frames) == len(perception_sink.frames) == 1
-        for submitted in (preview_sink.frames[0], perception_sink.frames[0]):
+        assert len(display_sink.frames) == len(perception_sink.frames) == 1
+        for submitted in (display_sink.frames[0], perception_sink.frames[0]):
             assert submitted["decoded_frame"] is source_frame
             assert submitted["frame_index"] == 0
             assert submitted["received_at_client_monotonic_ns"] == 123_000_000

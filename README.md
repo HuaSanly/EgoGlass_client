@@ -1,38 +1,38 @@
 # EgoGlass Client
 
-The client is one Python workspace for Glass3 ingest, the Windows operator
-console, annotation, spatial perception, interaction processing, and dataset
-assembly. It has one dependency declaration, one lock file, and one virtual
-environment. Code is separated by package responsibility, not by independent
-service scaffolds.
+The Windows client receives Glass3 video and IMU, records capture sessions,
+runs online perception, replays stored media, and provides a native operator UI.
+The runtime uses one Python process and one Conda environment named `egoglass`.
 
 ## Layout
 
 ```text
+ui/                         # Dear PyGui application and native views
 src/
-  ingest_gateway/            # WebRTC ingress, recording, and raw sessions
-  operator_console/          # Native UI, annotation, and annotation persistence
-  perception/                # Independently reusable perception core
-    sensor_preprocessing/    # Sensor time, calibration binding, and preparation
-    spatial_perception/      # HaMeR hands; planned VIO and coordinate fusion
-config/                      # Shared client configuration
-tests/                       # Fast tests, named with package prefixes
-evals/                       # Periodic evaluations and device evidence
-scripts/                     # Client launch, lifecycle, build, and inspection
-packaging/                   # Windows executable packaging assets
-docs/                        # Component-specific operation notes
+  annotation/               # Annotation contracts, editor state, and persistence
+  ingest_gateway/           # WebRTC ingress, recording, and raw sessions
+  perception/               # Independently reusable research/runtime core
+    sensor_preprocessing/   # Time mapping, calibration, and prepared inputs
+    spatial_perception/     # Hand tracking; planned VIO and coordinate fusion
+config/                     # Shared client configuration
+tests/                      # Deterministic gate tests
+evals/                      # Periodic quality evaluations and device evidence
+scripts/                    # Setup, launch, build, benchmark, and inspection
+packaging/                  # Windows executable packaging assets
+docs/                       # Component operation notes
 ```
 
-The `perception` package isolates the research and runtime core from the ingest
-gateway and operator console. Hand tracking adapts HumanEgo's
-ViTPose/MediaPipe + HaMeR pipeline under its noncommercial license; source and
-license records live beside the adapted module.
+Dear PyGui owns the main thread. WebRTC and Uvicorn use one asyncio thread;
+RGB conversion, inference, recording, replay, and IMU orientation use bounded
+workers inside that same process. The native UI calls runtime objects directly.
+HTTP port `8770` remains available for Glass3 signaling and external diagnostics.
 
-Detailed notes are available in [ingest gateway](docs/ingest-gateway.md),
-[operator console](docs/operator-console.md),
+Hand tracking adapts HumanEgo's MediaPipe/ViTPose + HaMeR flow. Source and
+license records for adapted model code live beside the hand-tracking module.
+
+See [native UI](docs/native-ui.md), [ingest gateway](docs/ingest-gateway.md),
 [sensor preprocessing](docs/sensor-preprocessing.md),
-[hand tracking](docs/hand-tracking.md),
-[spatial perception](docs/spatial-perception.md),
+[hand tracking](docs/hand-tracking.md), [spatial perception](docs/spatial-perception.md),
 [interaction processing](docs/interaction-processing.md), and
 [dataset builder](docs/dataset-builder.md).
 
@@ -44,32 +44,28 @@ Run once from this directory:
 .\scripts\setup_client.ps1
 ```
 
-This creates the only client environment: native Windows Conda environment
-`egoglass`, with Python 3.11, PyTorch 2.5.1, and CUDA 12.1.
+This creates or updates native Windows Conda environment `egoglass` with
+Python 3.11, PyTorch 2.5.1, and CUDA 12.1. Download model artifacts separately:
 
 ```powershell
 conda run -n egoglass python scripts\download_hand_tracking_models.py
 ```
 
-Neither command imports or executes `reference_code/HumanEgo`.
+Neither command executes code from `reference_code/HumanEgo`.
 
-## Windows Client
-
-Start the complete client from this directory:
+## Run
 
 ```powershell
 .\scripts\start-client.ps1
 ```
 
-The command starts the LAN ingest gateway, enables Glass3 discovery, and opens
-the native Windows operator console. The annotation page uses the console's
-same-origin API. Closing the desktop window or pressing `Ctrl+C` stops both
-process trees and releases ports `8770` and `8771`.
+This launches one `python -m ui` process. Closing the native window or pressing
+`Ctrl+C` stops discovery, signaling, capture, inference, workers, and the UI.
+Active capture sessions are finalized before shutdown.
 
-Completed recordings live under `local-data/recordings/`. The entire
-`local-data/` tree is ignored by Git. Annotation writes only beneath each
-session's ignored `annotations/` directory and never changes source MP4 or
-telemetry files.
+Completed recordings live under ignored path `local-data/recordings/`.
+Annotation revisions are written beneath each session's `annotations/`
+directory and do not modify source MP4 or telemetry files.
 
 Build the local Windows executable with:
 
@@ -84,10 +80,10 @@ The ignored output is `dist/EgoGlass/EgoGlass.exe`.
 ```powershell
 conda run -n egoglass python -m pytest
 conda run -n egoglass python -m pytest -q evals
-conda run -n egoglass ruff check src tests evals
+conda run -n egoglass ruff check src ui tests evals scripts
 ```
 
-Run the CUDA model eval from the same client environment:
+Run the CUDA model eval separately:
 
 ```powershell
 $env:EGOGLASS_RUN_HAND_MODEL_EVAL = "1"

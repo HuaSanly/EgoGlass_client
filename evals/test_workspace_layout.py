@@ -5,8 +5,9 @@ from pathlib import Path
 
 CLIENT_ROOT = Path(__file__).parents[1]
 EXPECTED_PACKAGES = {
+    "ui",
+    "src/annotation",
     "src/ingest_gateway",
-    "src/operator_console",
     "src/perception",
 }
 
@@ -20,8 +21,7 @@ def test_workspace_manifest_builds_every_client_package_once() -> None:
 
     assert packages == EXPECTED_PACKAGES
     assert set(scripts) == {
-        "egoglass-console",
-        "egoglass-desktop",
+        "egoglass-client",
         "egoglass-ingest-gateway",
     }
     assert all("egoglass_" not in target for target in scripts.values())

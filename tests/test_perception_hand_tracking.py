@@ -579,7 +579,7 @@ def test_vitpose_amp_heatmaps_return_to_fp32_before_opencv_postprocess() -> None
         (270, (1.0, 2.0), (1.0, 1.0), (2.0, 0.25, 3.5, 2.25)),
     ],
 )
-def test_rotated_result_coordinates_map_back_to_decoded_preview(
+def test_rotated_result_coordinates_map_back_to_source_rgb_frame(
     rotation: int,
     point: tuple[float, float],
     expected_point: tuple[float, float],

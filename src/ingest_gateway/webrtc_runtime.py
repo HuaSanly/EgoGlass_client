@@ -130,6 +130,18 @@ class DecodedFrameSink(Protocol):
     ) -> None: ...
 
 
+class ImuSampleSink(Protocol):
+    """Receives every validated IMU sample without performing UI work."""
+
+    async def submit_imu_sample(
+        self,
+        *,
+        session_id: str,
+        sample: ImuSample,
+        received_at_client_monotonic_ns: int,
+    ) -> None: ...
+
+
 WebRtcPeerFactory = Callable[[WebRtcPeerCallbacks], WebRtcPeer]
 
 
@@ -160,7 +172,8 @@ class WebRtcSessionRuntime:
         control_command_timeout_seconds: float = 3.0,
         capture_telemetry_sink: CaptureTelemetrySink | None = None,
         perception_live_frame_sink: DecodedFrameSink | None = None,
-        decoded_preview_frame_sink: DecodedFrameSink | None = None,
+        display_frame_sink: DecodedFrameSink | None = None,
+        display_imu_sink: ImuSampleSink | None = None,
     ) -> None:
         if len(pairing_token) < 16:
             raise ValueError("pairing_token must contain at least 16 characters")
@@ -173,7 +186,8 @@ class WebRtcSessionRuntime:
         self._control_command_timeout_seconds = control_command_timeout_seconds
         self._capture_telemetry_sink = capture_telemetry_sink
         self._perception_live_frame_sink = perception_live_frame_sink
-        self._decoded_preview_frame_sink = decoded_preview_frame_sink
+        self._display_frame_sink = display_frame_sink
+        self._display_imu_sink = display_imu_sink
         self._session_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._control_command_lock = asyncio.Lock()
@@ -193,10 +207,15 @@ class WebRtcSessionRuntime:
 
         self._perception_live_frame_sink = sink
 
-    def set_decoded_preview_frame_sink(self, sink: DecodedFrameSink) -> None:
-        """Attach the enqueue-only UI preview consumer to the decoded frame fan-out."""
+    def set_display_frame_sink(self, sink: DecodedFrameSink) -> None:
+        """Attach the enqueue-only native UI consumer to the decoded frame fan-out."""
 
-        self._decoded_preview_frame_sink = sink
+        self._display_frame_sink = sink
+
+    def set_display_imu_sink(self, sink: ImuSampleSink) -> None:
+        """Attach the bounded native pose-preview consumer."""
+
+        self._display_imu_sink = sink
 
     async def status(self) -> WebRtcStatus:
         async with self._state_lock:
@@ -574,7 +593,7 @@ class WebRtcSessionRuntime:
                 )
             if frame.video_frame is not None:
                 for sink_name, sink in (
-                    ("decoded preview", self._decoded_preview_frame_sink),
+                    ("native display", self._display_frame_sink),
                     ("perception", self._perception_live_frame_sink),
                 ):
                     if sink is None:
@@ -824,6 +843,15 @@ class WebRtcSessionRuntime:
                 message,
                 received_at_ns,
             )
+            if self._display_imu_sink is not None:
+                try:
+                    await self._display_imu_sink.submit_imu_sample(
+                        session_id=session_id,
+                        sample=message,
+                        received_at_client_monotonic_ns=received_at_ns,
+                    )
+                except Exception:
+                    LOGGER.exception("native IMU preview rejected a sample")
 
     async def _emit_capture_event(self, method_name: str, *args: object) -> None:
         sink = self._capture_telemetry_sink

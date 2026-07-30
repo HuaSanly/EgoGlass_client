@@ -2,8 +2,8 @@ from pathlib import Path
 
 CLIENT_ROOT = Path(__file__).parents[1]
 EXPECTED_PACKAGES = {
+    "annotation",
     "ingest_gateway",
-    "operator_console",
     "perception",
 }
 

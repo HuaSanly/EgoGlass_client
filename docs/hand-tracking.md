@@ -72,16 +72,16 @@ falls back to detector confidence while the original HaMeR quality components
 remain visible as diagnostics. A MediaPipe-only reconstruction reports those
 four HaMeR-specific values as `null` rather than inventing comparable scores.
 
-The operator console reads these loopback-only endpoints:
+External diagnostics can read these loopback-only endpoints:
 
 - `GET /api/v1/perception/hand-tracking/status`
 - `GET /api/v1/perception/hand-tracking/events` (SSE status push)
 - `POST /api/v1/perception/hand-tracking/replays`
 - `GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}`
 
-Live visualization uses the gateway's decoded MJPEG preview as the image layer
-and draws the structured hand-tracking result on a browser canvas. The model no
-longer encodes a separate live preview image.
+Live visualization reads the in-process decoded RGB buffer and draws structured
+hand-tracking results on a Dear PyGui layer. The model does not encode a
+separate live preview image.
 
 Offline replay renders an annotated MP4 for every clip and one `results.jsonl`
 under `<session>/perception/hand-tracking/<run-id>/`. It never overwrites raw
@@ -94,7 +94,7 @@ the recording's immutable timing evidence and persists it as
 evidence fails the run; replay has no video-only or unchecked-clock mode. The
 annotated output uses the prepared frame's strictly increasing
 `session_time_ns` as variable-frame-rate H.264 PTS and writes fast-start
-metadata so the browser preserves recovered capture pacing. Raw capture files
+metadata so native PTS-driven replay preserves recovered capture pacing. Raw capture files
 remain unchanged.
 
 The equivalent command-line replay is:

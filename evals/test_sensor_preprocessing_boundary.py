@@ -15,8 +15,9 @@ SOURCE_ROOT = (
 )
 FORBIDDEN_IMPORT_PREFIXES = (
     "ingest_gateway",
-    "operator_console",
+    "annotation",
     "perception.spatial_perception",
+    "ui",
 )
 
 

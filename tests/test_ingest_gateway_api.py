@@ -291,35 +291,22 @@ def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:
     assert status.json()["device_session_id"] == "device-session-0002"
 
 
-def test_stream_control_api_is_loopback_only_and_supports_get_post_cors() -> None:
+def test_stream_control_api_is_loopback_only_and_supports_commands() -> None:
     runtime = ControlRuntime()
     app = create_app(
         webrtc_runtime=runtime,  # type: ignore[arg-type]
         viewer_allowed_hosts=frozenset({"testclient"}),
     )
     payload = {"action": "start"}
-    origin = "http://127.0.0.1:8765"
     with TestClient(app) as client:
-        status = client.get(
-            "/api/v1/webrtc/control",
-            headers={"Origin": origin},
-        )
+        status = client.get("/api/v1/webrtc/control")
         command = client.post(
             "/api/v1/webrtc/control/commands",
             json=payload,
-            headers={"Origin": origin},
-        )
-        preflight = client.options(
-            "/api/v1/webrtc/control",
-            headers={
-                "Origin": origin,
-                "Access-Control-Request-Method": "GET",
-            },
         )
 
     assert status.status_code == 200
     assert status.json()["state"] == "ready"
-    assert status.headers["access-control-allow-origin"] == origin
     assert command.status_code == 200
     command_id = command.json()["command_id"]
     assert len(command_id) == 32
@@ -327,8 +314,6 @@ def test_stream_control_api_is_loopback_only_and_supports_get_post_cors() -> Non
     assert command.json()["state"] == "starting"
     assert runtime.commands[0].command_id == command_id
     assert runtime.commands[0].action == "start"
-    assert preflight.status_code == 200
-    assert "GET" in preflight.headers["access-control-allow-methods"]
 
     with TestClient(
         create_app(webrtc_runtime=ControlRuntime())  # type: ignore[arg-type]
@@ -343,19 +328,14 @@ def test_stream_control_api_is_loopback_only_and_supports_get_post_cors() -> Non
 
 
 def test_imu_status_api_is_loopback_only_and_exposes_no_sample_history() -> None:
-    origin = "http://127.0.0.1:8765"
     app = create_app(
         webrtc_runtime=ImuRuntime(),  # type: ignore[arg-type]
         viewer_allowed_hosts=frozenset({"testclient"}),
     )
     with TestClient(app) as client:
-        response = client.get(
-            "/api/v1/webrtc/imu/status",
-            headers={"Origin": origin},
-        )
+        response = client.get("/api/v1/webrtc/imu/status")
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == origin
     payload = response.json()
     assert payload["channel_state"] == "receiving"
     assert payload["samples_received"] == 2
@@ -425,13 +405,11 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
         recording_runtime=recording_runtime,  # type: ignore[arg-type]
         viewer_allowed_hosts=frozenset({"testclient"}),
     )
-    origin = "http://127.0.0.1:8765"
     with TestClient(app) as client:
-        status = client.get("/api/v1/recordings/status", headers={"Origin": origin})
+        status = client.get("/api/v1/recordings/status")
         start = client.post(
             "/api/v1/recordings/commands",
             json={"action": "start"},
-            headers={"Origin": origin},
         )
         library = client.get("/api/v1/recordings/library")
         media_response = client.get(
@@ -448,17 +426,9 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
         rename_path = (
             f"/api/v1/recordings/sessions/{recording_runtime.session_id}"
         )
-        rename_preflight = client.options(
-            rename_path,
-            headers={
-                "Origin": origin,
-                "Access-Control-Request-Method": "PATCH",
-            },
-        )
         renamed = client.patch(
             rename_path,
             json={"display_name": "厨房采集"},
-            headers={"Origin": origin},
         )
         invalid_rename = client.patch(
             rename_path,
@@ -468,18 +438,10 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
             f"/api/v1/recordings/sessions/{'d' * 32}",
             json={"display_name": "不存在"},
         )
-        delete_preflight = client.options(
-            delete_path,
-            headers={
-                "Origin": origin,
-                "Access-Control-Request-Method": "DELETE",
-            },
-        )
-        deleted = client.delete(delete_path, headers={"Origin": origin})
+        deleted = client.delete(delete_path)
         missing_delete = client.delete(delete_path)
 
     assert status.status_code == 200
-    assert status.headers["access-control-allow-origin"] == origin
     assert status.json()["detail"] == ""
     assert status.json()["output"] == {
         "width": 1280,
@@ -498,17 +460,11 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
     assert media_response.headers["content-type"] == "video/mp4"
     assert media_response.content == b"mp4-data"
     assert missing.status_code == 404
-    assert rename_preflight.status_code == 200
-    assert "PATCH" in rename_preflight.headers["access-control-allow-methods"]
     assert renamed.status_code == 200
-    assert renamed.headers["access-control-allow-origin"] == origin
     assert renamed.json()["sessions"][0]["display_name"] == "厨房采集"
     assert invalid_rename.status_code == 422
     assert missing_rename.status_code == 404
-    assert delete_preflight.status_code == 200
-    assert "DELETE" in delete_preflight.headers["access-control-allow-methods"]
     assert deleted.status_code == 200
-    assert deleted.headers["access-control-allow-origin"] == origin
     assert deleted.json() == {"schema_version": "1.0", "sessions": []}
     assert missing_delete.status_code == 404
 
@@ -616,7 +572,6 @@ def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> No
         status = client.get("/api/v1/perception/hand-tracking/status")
         events = client.get(
             "/api/v1/perception/hand-tracking/events",
-            headers={"Origin": "http://127.0.0.1:8765"},
         )
         replay = client.post(
             "/api/v1/perception/hand-tracking/replays",
@@ -634,7 +589,6 @@ def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> No
         "no-store, no-cache, must-revalidate, max-age=0"
     )
     assert events.headers["x-accel-buffering"] == "no"
-    assert events.headers["access-control-allow-origin"] == "http://127.0.0.1:8765"
     assert "event: status\ndata: " in events.text
     assert '"live_inferences":2' in events.text
     assert events.text.endswith(": heartbeat\n\n")

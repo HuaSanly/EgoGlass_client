@@ -52,7 +52,7 @@ class PerceptionRuntimeError(RuntimeError):
 
 
 class HandTrackingRuntimeState(StrEnum):
-    """State shown to the operator console for the shared HaMeR worker."""
+    """State shown to the native UI for the shared HaMeR worker."""
 
     DISABLED = "disabled"
     IDLE = "idle"

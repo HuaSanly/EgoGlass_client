@@ -11,14 +11,14 @@ from typing import Annotated
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi import Path as ApiPath
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from perception.runtime import HandTrackingRuntime, PerceptionRuntimeError
 
-from .decoded_preview import MJPEG_BOUNDARY, DecodedPreviewRuntime, DecodedPreviewStatus
 from .discovery import DISCOVERY_PORT, LanDiscoveryService
+from .imu_preview import ImuPreviewRuntime
+from .live_frames import LiveFrameBuffer
 from .recording import (
     RecordingClipNotFoundError,
     RecordingConflictError,
@@ -68,7 +68,8 @@ def create_app(
     discovery_service: LanDiscoveryService | None = None,
     recording_runtime: RecordingRuntime | None = None,
     perception_runtime: HandTrackingRuntime | None = None,
-    decoded_preview_runtime: DecodedPreviewRuntime | None = None,
+    live_frame_buffer: LiveFrameBuffer | None = None,
+    imu_preview_runtime: ImuPreviewRuntime | None = None,
     *,
     recordings_root: Path | None = None,
     viewer_allowed_hosts: frozenset[str] = frozenset({"127.0.0.1", "::1"}),
@@ -82,16 +83,20 @@ def create_app(
     active_perception_runtime = perception_runtime or HandTrackingRuntime(
         recordings_root=active_recordings_root,
     )
-    active_decoded_preview_runtime = decoded_preview_runtime or DecodedPreviewRuntime()
+    active_live_frame_buffer = live_frame_buffer
+    active_imu_preview_runtime = imu_preview_runtime
     set_capture_sink = getattr(active_webrtc_runtime, "set_capture_telemetry_sink", None)
     if set_capture_sink is not None:
         set_capture_sink(active_recording_runtime)
     set_perception_sink = getattr(active_webrtc_runtime, "set_perception_live_frame_sink", None)
     if set_perception_sink is not None:
         set_perception_sink(active_perception_runtime)
-    set_preview_sink = getattr(active_webrtc_runtime, "set_decoded_preview_frame_sink", None)
-    if set_preview_sink is not None:
-        set_preview_sink(active_decoded_preview_runtime)
+    set_display_sink = getattr(active_webrtc_runtime, "set_display_frame_sink", None)
+    if set_display_sink is not None and active_live_frame_buffer is not None:
+        set_display_sink(active_live_frame_buffer)
+    set_display_imu_sink = getattr(active_webrtc_runtime, "set_display_imu_sink", None)
+    if set_display_imu_sink is not None and active_imu_preview_runtime is not None:
+        set_display_imu_sink(active_imu_preview_runtime)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -104,7 +109,10 @@ def create_app(
                 await discovery_service.close()
             await active_webrtc_runtime.close()
             await active_perception_runtime.close()
-            await active_decoded_preview_runtime.close()
+            if active_live_frame_buffer is not None:
+                await active_live_frame_buffer.close()
+            if active_imu_preview_runtime is not None:
+                await active_imu_preview_runtime.close()
             await active_recording_runtime.close()
 
     app = FastAPI(
@@ -117,15 +125,9 @@ def create_app(
     app.state.webrtc_runtime = active_webrtc_runtime
     app.state.recording_runtime = active_recording_runtime
     app.state.perception_runtime = active_perception_runtime
-    app.state.decoded_preview_runtime = active_decoded_preview_runtime
+    app.state.live_frame_buffer = active_live_frame_buffer
+    app.state.imu_preview_runtime = active_imu_preview_runtime
     app.state.discovery_service = discovery_service
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=r"^http://127\.0\.0\.1(?::\d+)?$",
-        allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["content-type"],
-    )
-
     @app.get("/api/v1/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "ingest-gateway", "version": "0.1.0"}
@@ -163,27 +165,6 @@ def create_app(
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.get(
-        "/api/v1/webrtc/decoded-preview/status",
-        response_model=DecodedPreviewStatus,
-    )
-    async def decoded_preview_status(request: Request) -> DecodedPreviewStatus:
-        _require_loopback(request, viewer_allowed_hosts, "decoded preview")
-        return await active_decoded_preview_runtime.status()
-
-    @app.get("/api/v1/webrtc/decoded-preview.mjpg")
-    async def decoded_preview_stream(request: Request) -> StreamingResponse:
-        _require_loopback(request, viewer_allowed_hosts, "decoded preview")
-        return StreamingResponse(
-            active_decoded_preview_runtime.stream(),
-            media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
-            headers={
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "Pragma": "no-cache",
                 "X-Accel-Buffering": "no",
             },
         )
@@ -406,17 +387,6 @@ def _require_loopback(
     client_host = request.client.host if request.client is not None else ""
     if client_host not in allowed_hosts:
         raise HTTPException(status_code=403, detail=f"{resource} is available on loopback only")
-
-
-_default_pairing_token = os.environ.get("EGOGLASS_PAIRING_TOKEN") or secrets.token_urlsafe(24)
-_default_recordings_root = Path(
-    os.environ.get("EGOGLASS_RECORDINGS_ROOT", "local-data/recordings")
-)
-app = create_app(
-    webrtc_runtime=WebRtcSessionRuntime(_default_pairing_token),
-    discovery_service=LanDiscoveryService(_default_pairing_token, 8770),
-    recordings_root=_default_recordings_root,
-)
 
 
 def main() -> None:

@@ -16,7 +16,7 @@ try {
         throw "PyInstaller was not found at $pyinstaller. Run .\scripts\setup_client.ps1 -EnvironmentName $EnvironmentName first."
     }
 
-    & $pyinstaller --noconfirm --clean packaging\egoglass-console.spec
+    & $pyinstaller --noconfirm --clean packaging\egoglass-client.spec
     if ($LASTEXITCODE -ne 0) {
         throw "Desktop build failed with exit code $LASTEXITCODE"
     }
