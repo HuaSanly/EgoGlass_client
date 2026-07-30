@@ -21,7 +21,7 @@ from ingest_gateway.discovery import DISCOVERY_PORT, LanDiscoveryService
 from ingest_gateway.imu_preview import ImuPreviewRuntime
 from ingest_gateway.live_frames import LiveFrame, LiveFrameBuffer
 from ingest_gateway.recording import RecordingRuntime
-from ingest_gateway.recording_models import RecordingState
+from ingest_gateway.recording_models import RecordingLibrary, RecordingState
 from ingest_gateway.webrtc_models import StreamControlAction, StreamControlCommand
 from ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
 from perception.runtime import HandTrackingRuntime
@@ -97,6 +97,8 @@ class UnifiedRuntimeHost:
         self._command_results: queue.SimpleQueue[CommandResult] = queue.SimpleQueue()
         self._startup_error: BaseException | None = None
         self._recent_events: deque[str] = deque(maxlen=50)
+        self._library: RecordingLibrary | None = None
+        self._library_refresh_lock = asyncio.Lock()
 
     def start(self, timeout_seconds: float = 20.0) -> None:
         if self._thread is not None:
@@ -134,7 +136,7 @@ class UnifiedRuntimeHost:
             return self._snapshot
 
     def latest_frame(self) -> LiveFrame | None:
-        return self.frame_buffer.latest()
+        return self.frame_buffer.next_for_display()
 
     def command_results(self) -> tuple[CommandResult, ...]:
         results: list[CommandResult] = []
@@ -170,6 +172,9 @@ class UnifiedRuntimeHost:
 
     def request_replay_generation(self, session_id: str) -> None:
         self._track_command("generate-replay", self.perception.start_replay(session_id))
+
+    def request_library_refresh(self) -> None:
+        self._track_command("refresh-library", self._refresh_library())
 
     def rename_session(self, session_id: str, display_name: str) -> None:
         self._track_command(
@@ -247,6 +252,7 @@ class UnifiedRuntimeHost:
         )
         self._server = uvicorn.Server(config)
         status_task = asyncio.create_task(self._collect_status())
+        library_task = asyncio.create_task(self._initial_library_refresh())
         server_task = asyncio.create_task(self._server.serve())
         while not self._server.started and not server_task.done():
             await asyncio.sleep(0.02)
@@ -258,12 +264,21 @@ class UnifiedRuntimeHost:
             await server_task
         finally:
             status_task.cancel()
-            await asyncio.gather(status_task, return_exceptions=True)
+            await asyncio.gather(status_task, library_task, return_exceptions=True)
+
+    async def _initial_library_refresh(self) -> None:
+        try:
+            await self._refresh_library()
+        except Exception:
+            LOGGER.exception("initial recording library scan failed")
+
+    async def _refresh_library(self) -> RecordingLibrary:
+        async with self._library_refresh_lock:
+            self._library = await self.recording.library()
+            return self._library
 
     async def _collect_status(self) -> None:
         revision = 0
-        library = None
-        library_refresh_at_ns = 0
         while True:
             try:
                 now_ns = time.perf_counter_ns()
@@ -274,9 +289,6 @@ class UnifiedRuntimeHost:
                     self.recording.status(),
                     self.perception.status(),
                 )
-                if now_ns >= library_refresh_at_ns:
-                    library = await self.recording.library()
-                    library_refresh_at_ns = now_ns + 1_000_000_000
                 revision += 1
                 snapshot = RuntimeSnapshot(
                     revision=revision,
@@ -287,7 +299,7 @@ class UnifiedRuntimeHost:
                     imu=imu,
                     imu_pose=self.imu_preview.snapshot(),
                     recording=recording,
-                    library=library,
+                    library=self._library,
                     perception=perception,
                     display=self.frame_buffer.status(),
                     recent_events=tuple(self._recent_events),

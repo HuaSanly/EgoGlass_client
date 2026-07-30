@@ -7,6 +7,7 @@ import numpy as np
 from annotation.store import AnnotationStore
 from ingest_gateway.live_frames import LiveFrame
 from ui.app import NativeApplication
+from ui.views.library import LibraryView
 from ui.views.live import _perception_result_key
 from ui.widgets.video_surface import VideoSurface
 
@@ -42,6 +43,23 @@ def test_native_ui_has_one_video_surface_instance() -> None:
     )
 
     assert ui_sources.count("VideoSurface(") == 1
+
+
+def test_library_refresh_button_requests_a_real_background_scan() -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.refresh_count = 0
+
+        def request_library_refresh(self) -> None:
+            self.refresh_count += 1
+
+    runtime = Runtime()
+    view = LibraryView.__new__(LibraryView)
+    view.runtime = runtime  # type: ignore[assignment]
+
+    view._force_refresh()
+
+    assert runtime.refresh_count == 1
 
 
 def test_native_app_updates_only_the_active_tab(monkeypatch) -> None:

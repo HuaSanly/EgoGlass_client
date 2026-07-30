@@ -79,6 +79,24 @@ class DiagnosticsView:
                         f"错误 {display.rgb_sink_failures:,}"
                     ),
                     f"显示覆盖: {display.pending_frames_overwritten:,}",
+                    (
+                        f"呈现队列: {display.presentation_queue_depth}  "
+                        f"平滑丢帧 {display.presentation_frames_dropped:,}  "
+                        f"缺帧 {display.presentation_starvations:,}"
+                    ),
+                    f"呈现间隔: {display.presentation_interval_ms:.2f} ms",
+                    (
+                        f"UI 取帧: {display.display_poll_fps:.1f} FPS  "
+                        f"实际呈现: {display.presentation_fps:.1f} FPS"
+                    ),
+                    (
+                        f"RGB 间隔 P95/最大: {display.conversion_gap_p95_ms:.1f}/"
+                        f"{display.conversion_gap_max_ms:.1f} ms"
+                    ),
+                    (
+                        f"PTS 间隔 P95/最大: {display.source_pts_gap_p95_ms:.1f}/"
+                        f"{display.source_pts_gap_max_ms:.1f} ms"
+                    ),
                 )
             )
         if webrtc.last_error:

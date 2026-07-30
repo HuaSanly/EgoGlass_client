@@ -5,6 +5,7 @@ from starlette.testclient import TestClient
 
 import ingest_gateway.app as app_module
 from ingest_gateway.app import create_app
+from ingest_gateway.live_frames import LiveFrameBuffer
 from ingest_gateway.recording import (
     RecordingClipNotFoundError,
     RecordingSessionNotFoundError,
@@ -235,6 +236,29 @@ def test_health_and_removed_fallback_routes() -> None:
     assert health.json()["service"] == "ingest-gateway"
     assert status.status_code == 404
     assert probe.status_code == 404
+
+
+def test_native_display_status_exposes_bounded_presentation_metrics() -> None:
+    frame_buffer = LiveFrameBuffer()
+    app = create_app(
+        live_frame_buffer=frame_buffer,
+        viewer_allowed_hosts=frozenset({"testclient"}),
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/v1/native-display/status")
+
+    assert response.status_code == 200
+    assert response.json()["presentation_queue_depth"] == 0
+    assert response.json()["presentation_frames_dropped"] == 0
+    assert response.json()["presentation_starvations"] == 0
+    assert response.json()["presentation_interval_ms"] == 33.333
+    assert response.json()["display_poll_fps"] == 0.0
+    assert response.json()["presentation_fps"] == 0.0
+    assert response.json()["presentation_frames_presented"] == 0
+    assert response.json()["conversion_gap_p95_ms"] == 0.0
+    assert response.json()["conversion_gap_max_ms"] == 0.0
+    assert response.json()["source_pts_gap_p95_ms"] == 0.0
+    assert response.json()["source_pts_gap_max_ms"] == 0.0
 
 
 def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:

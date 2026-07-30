@@ -294,7 +294,11 @@ class LiveView:
         )
         dpg.set_value(
             "live-drop-metric",
-            f"显示覆盖 {display.pending_frames_overwritten} / 跳过 {surface.source_frames_skipped}",
+            (
+                f"覆盖 {display.pending_frames_overwritten + surface.source_frames_skipped} / "
+                f"平滑丢帧 {display.presentation_frames_dropped} / "
+                f"队列 {display.presentation_queue_depth}"
+            ),
         )
 
     def _update_imu(self, snapshot: RuntimeSnapshot) -> None:

@@ -242,7 +242,7 @@ class LibraryView:
         dpg.configure_item("library-delete-modal", show=False)
 
     def _force_refresh(self) -> None:
-        self._library_identity = None
+        self.runtime.request_library_refresh()
 
     def _clear_detail(self) -> None:
         self._clips = {}

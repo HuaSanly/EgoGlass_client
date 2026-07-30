@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
@@ -456,6 +457,73 @@ def test_recording_request_rejects_unknown_fields() -> None:
         RecordingSessionRenameRequest(display_name="   ")
     with pytest.raises(ValueError):
         RecordingSessionRenameRequest(display_name="厨房\n采集")
+
+
+def test_library_scan_does_not_block_the_media_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        runtime = RecordingRuntime(tmp_path, lambda: asyncio.sleep(0, result=None))
+        started = threading.Event()
+        release = threading.Event()
+        scan_library = runtime._scan_library
+
+        def blocked_scan():
+            started.set()
+            if not release.wait(1.0):
+                raise TimeoutError("test did not release recording library scan")
+            return scan_library()
+
+        monkeypatch.setattr(runtime, "_scan_library", blocked_scan)
+        scan_task = asyncio.create_task(runtime.library())
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=0.2)
+
+        heartbeat_ran = False
+
+        async def heartbeat() -> None:
+            nonlocal heartbeat_ran
+            await asyncio.sleep(0)
+            heartbeat_ran = True
+
+        await asyncio.wait_for(heartbeat(), timeout=0.2)
+        assert heartbeat_ran
+        assert not scan_task.done()
+        release.set()
+        assert (await scan_task).sessions == []
+
+    asyncio.run(scenario())
+
+
+def test_library_scan_serializes_with_recording_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        runtime = RecordingRuntime(tmp_path, lambda: asyncio.sleep(0, result=None))
+        started = threading.Event()
+        release = threading.Event()
+        scan_library = runtime._scan_library
+
+        def blocked_scan():
+            started.set()
+            if not release.wait(1.0):
+                raise TimeoutError("test did not release recording library scan")
+            return scan_library()
+
+        monkeypatch.setattr(runtime, "_scan_library", blocked_scan)
+        scan_task = asyncio.create_task(runtime.library())
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=0.2)
+
+        status_task = asyncio.create_task(runtime.status())
+        await asyncio.sleep(0)
+        assert not status_task.done()
+
+        release.set()
+        assert (await scan_task).sessions == []
+        assert (await status_task).state == "unavailable"
+
+    asyncio.run(scenario())
 
 
 def test_failed_whole_session_delete_leaves_unpublished_tombstone(

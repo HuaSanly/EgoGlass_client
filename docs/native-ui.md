@@ -51,9 +51,12 @@ The overlay identity includes session, stream, and inference frame index, so a
 new result on the same WebRTC connection replaces the previous result.
 
 The Library view reads `RecordingRuntime.library()` through the unified
-snapshot. It shows session quality, clip metadata, rename, replay generation,
-and confirmed session/clip deletion. Opening a clip routes it to the Live
-view's existing replay surface.
+snapshot. The recording directory is scanned once at startup and only again
+when the operator presses Refresh; there is no polling scan. Scans run off the
+media event loop, so hashing stored clips cannot pause WebRTC, IMU, or UI status
+updates. The view shows session quality, clip metadata, rename, replay
+generation, and confirmed session/clip deletion. Opening a clip routes it to
+the Live view's existing replay surface.
 
 The Annotation view uses `src/annotation/AnnotationController` directly. It
 supports manual Episode and phase intervals, whole-clip and fixed-window
@@ -78,7 +81,19 @@ viewer or waits for inference output. `VideoSurface` preserves a stable
 960x540 draw area and letterboxes source coordinates using the result's source
 image dimensions.
 
-WebRTC may change encoded resolution under its balanced congestion policy.
+Decoded RGB frames enter a four-frame maximum presentation queue before the
+native texture. The queue learns cadence from video PTS, starts with about three
+frames of prebuffer, and presents at that cadence instead of copying network
+arrival bursts directly to the screen. This adds about 100 ms of display latency
+at 30 FPS. If the queue grows beyond its target it drops the oldest frame and
+never accumulates latency. Perception still receives the canonical RGB frame
+immediately. Diagnostics report queue depth, smoothing drops, starvation
+events, the learned presentation interval, UI poll FPS, and actual presentation
+FPS. These separate a slow Dear PyGui render loop from receive-side jitter.
+After an underflow, presentation holds the last frame until the target prebuffer
+is rebuilt or the startup wait expires, preventing repeated one-frame restarts.
+
+WebRTC may still change encoded resolution after a source or session change.
 `VideoSurface` owns two raw textures at the active dimensions. It writes only
 the texture that is not currently displayed, then swaps the image binding.
 This prevents the renderer from observing a partially updated RGB buffer. A

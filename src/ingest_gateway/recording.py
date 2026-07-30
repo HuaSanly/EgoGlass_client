@@ -243,6 +243,15 @@ class RecordingRuntime:
             return self._status_locked()
 
     async def library(self) -> RecordingLibrary:
+        """Scan the recording library without blocking the media event loop."""
+
+        async with self._command_lock:
+            return await self._scan_library_in_worker()
+
+    async def _scan_library_in_worker(self) -> RecordingLibrary:
+        return await asyncio.to_thread(self._scan_library)
+
+    def _scan_library(self) -> RecordingLibrary:
         sessions: list[RecordingSession] = []
         if not self._root.exists():
             return RecordingLibrary(sessions=[])
@@ -330,7 +339,7 @@ class RecordingRuntime:
                     updated,
                     capture,
                 )
-                return await self.library()
+                return await self._scan_library_in_worker()
 
             legacy = self._read_legacy_manifest(manifest_path)
             if legacy is None:
@@ -343,7 +352,7 @@ class RecordingRuntime:
                 update={"clips": [item for item in legacy.clips if item.clip_id != clip_id]}
             )
             await self._delete_legacy_clip(completed_path, updated_legacy, legacy)
-            return await self.library()
+            return await self._scan_library_in_worker()
 
     async def delete_session(self, session_id: str) -> RecordingLibrary:
         async with self._command_lock:
@@ -362,7 +371,7 @@ class RecordingRuntime:
                 raise RecordingFailureError(
                     "recording session deletion is incomplete; its tombstone is unpublished"
                 ) from error
-            return await self.library()
+            return await self._scan_library_in_worker()
 
     async def rename_session(self, session_id: str, display_name: str) -> RecordingLibrary:
         async with self._command_lock:
@@ -380,12 +389,12 @@ class RecordingRuntime:
                 self._write_capture_manifest(updated)
                 if session_id == self._session_id:
                     self._session_manifest = updated
-                return await self.library()
+                return await self._scan_library_in_worker()
             legacy = self._read_legacy_manifest(manifest_path)
             if legacy is None:
                 raise RecordingSessionNotFoundError("recording session not found")
             self._write_legacy_manifest(legacy.model_copy(update={"display_name": display_name}))
-            return await self.library()
+            return await self._scan_library_in_worker()
 
     async def close(self) -> None:
         async with self._command_lock:

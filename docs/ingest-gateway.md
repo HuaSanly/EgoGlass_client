@@ -43,6 +43,19 @@ to Dear PyGui and perception. CUDA inference has its own newest-frame queue, so
 it cannot block media reception. Dear PyGui swaps the RGB frame through two raw
 textures without HTTP or image encoding.
 
+The display consumer applies a bounded PTS-driven presentation queue after RGB
+conversion. It absorbs short LAN/RTP delivery bursts with roughly three frames of
+delay, caps storage at four frames, and discards stale frames when necessary.
+At 30 FPS the expected added display latency is about 100 ms. This queue affects
+only visual presentation; recording metadata and online perception retain their
+original receive timing.
+
+`GET /api/v1/native-display/status` is loopback-only and exposes conversion,
+RGB fan-out, presentation depth, smoothing drops, starvation count, and learned
+PTS interval for deterministic live diagnostics. It also separates UI poll FPS
+from actual new-frame presentation FPS and reports recent RGB-arrival and source
+PTS gap percentiles, making render-thread stalls and receive bursts observable.
+
 The live relay itself is also unbuffered, preventing decoded frames from
 accumulating before fan-out. Frames carrying PyAV's corruption flag are
 dropped. `WebRtcStatus` reports cumulative inbound RTP packets, lost packets,

@@ -18,7 +18,7 @@ from perception.runtime import HandTrackingRuntime, PerceptionRuntimeError
 
 from .discovery import DISCOVERY_PORT, LanDiscoveryService
 from .imu_preview import ImuPreviewRuntime
-from .live_frames import LiveFrameBuffer
+from .live_frames import LiveFrameBuffer, LiveFrameStatus
 from .recording import (
     RecordingClipNotFoundError,
     RecordingConflictError,
@@ -138,6 +138,13 @@ def create_app(
     @app.get("/api/v1/webrtc/status", response_model=WebRtcStatus)
     async def webrtc_status() -> WebRtcStatus:
         return await active_webrtc_runtime.status()
+
+    @app.get("/api/v1/native-display/status", response_model=LiveFrameStatus)
+    async def native_display_status(request: Request) -> LiveFrameStatus:
+        _require_loopback(request, viewer_allowed_hosts, "native display")
+        if active_live_frame_buffer is None:
+            raise HTTPException(status_code=404, detail="native display is unavailable")
+        return active_live_frame_buffer.status()
 
     @app.get("/api/v1/webrtc/imu/status", response_model=ImuTelemetryStatus)
     async def imu_telemetry_status(request: Request) -> ImuTelemetryStatus:
