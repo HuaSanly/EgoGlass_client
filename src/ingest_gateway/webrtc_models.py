@@ -249,6 +249,11 @@ class WebRtcStatus(BaseModel):
     height: int | None = Field(default=None, gt=0)
     video_codec: str | None = Field(default=None, pattern=r"^[A-Z0-9.-]+$")
     average_fps: float | None = Field(default=None, ge=0)
+    rtp_packets_received: int = Field(default=0, ge=0)
+    rtp_packets_lost: int = Field(default=0, ge=0)
+    rtp_packet_loss_percent: float = Field(default=0.0, ge=0, le=100)
+    rtp_jitter_ms: float = Field(default=0.0, ge=0)
+    corrupt_frames_dropped: int = Field(default=0, ge=0)
     first_frame_latency_ms: float | None = Field(default=None, ge=0)
     last_frame_pts: int | None = None
     last_frame_time_base_num: int | None = None

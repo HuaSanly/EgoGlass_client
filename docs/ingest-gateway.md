@@ -42,6 +42,13 @@ so RGB conversion or CUDA inference cannot block media reception. The display
 sink converts directly to contiguous RGB on one worker. Dear PyGui uploads the
 newest RGB buffer to a raw texture without HTTP or image encoding.
 
+The live relay itself is also unbuffered, preventing decoded frames from
+accumulating before fan-out. Frames carrying PyAV's corruption flag are
+dropped. `WebRtcStatus` reports cumulative inbound RTP packets, lost packets,
+loss percentage, 90 kHz video jitter converted to milliseconds, and corrupt
+decoded-frame drops. These counters distinguish network/codec damage from RGB
+conversion or UI upload drops.
+
 Decoded aiortc PTS starts from a receiver-relative RTP origin and therefore
 must not be anchored to the first Glass3 metadata message: the encoder can drop
 capture callbacks before its first output frame. The gateway first pairs each

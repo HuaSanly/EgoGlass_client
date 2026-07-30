@@ -19,6 +19,7 @@ from .adapters.webrtc import (
     WebRtcImuChannel,
     WebRtcPeer,
     WebRtcPeerCallbacks,
+    WebRtcReceiverStats,
     WebRtcVideoRecordingSource,
     WebRtcVideoSource,
     create_aiortc_peer,
@@ -218,6 +219,13 @@ class WebRtcSessionRuntime:
         self._display_imu_sink = sink
 
     async def status(self) -> WebRtcStatus:
+        receiver_stats = WebRtcReceiverStats()
+        peer = self._peer
+        if peer is not None:
+            try:
+                receiver_stats = await peer.receiver_stats()
+            except Exception:
+                LOGGER.debug("failed to sample WebRTC receiver stats", exc_info=True)
         async with self._state_lock:
             duration_ns = None
             if self._first_frame_at_ns is not None and self._last_frame_at_ns is not None:
@@ -228,6 +236,12 @@ class WebRtcSessionRuntime:
                     (self._frames_received - 1) * 1_000_000_000 / duration_ns,
                     3,
                 )
+            packet_total = receiver_stats.packets_received + receiver_stats.packets_lost
+            packet_loss_percent = (
+                round(receiver_stats.packets_lost * 100 / packet_total, 3)
+                if packet_total > 0
+                else 0.0
+            )
             matcher = self._matcher
             return WebRtcStatus(
                 phase=self._phase,
@@ -250,6 +264,11 @@ class WebRtcSessionRuntime:
                 height=self._height,
                 video_codec=self._video_codec,
                 average_fps=average_fps,
+                rtp_packets_received=receiver_stats.packets_received,
+                rtp_packets_lost=receiver_stats.packets_lost,
+                rtp_packet_loss_percent=packet_loss_percent,
+                rtp_jitter_ms=receiver_stats.jitter_ms,
+                corrupt_frames_dropped=receiver_stats.corrupt_frames_dropped,
                 first_frame_latency_ms=self._first_frame_latency_ms,
                 last_frame_pts=self._last_frame_pts,
                 last_frame_time_base_num=self._last_frame_time_base_num,

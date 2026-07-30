@@ -34,6 +34,13 @@ UI conversion cannot block WebRTC reception. The UI consumes contiguous RGB
 without network serialization. Slow inference can drop its own pending input
 without stopping the video surface.
 
+The live aiortc relay is unbuffered: if UI bookkeeping briefly falls behind,
+the next callback receives the newest decoded frame instead of replaying an
+old queue. Recording uses its own buffered relay subscription. PyAV frames
+marked corrupt are counted and discarded before either RGB display or
+perception. Receiver packet loss, jitter, and corrupt-frame drops are exposed
+in the diagnostics view.
+
 ## Views
 
 The Live view owns the application's only `VideoSurface` and `ReplayPlayer`.
@@ -61,6 +68,13 @@ Live display always uses gateway-decoded RGB frames. It never reconnects a
 viewer or waits for inference output. `VideoSurface` preserves a stable
 960x540 draw area and letterboxes source coordinates using the result's source
 image dimensions.
+
+WebRTC may change encoded resolution under its balanced congestion policy.
+`VideoSurface` creates a uniquely tagged texture, binds it, and only then
+deletes the previous texture, so a size transition cannot reuse a pending
+Dear PyGui alias. The perception preprocessor accepts proportional transport
+downscales and restores them to the calibrated raster before undistortion and
+inference. A different aspect ratio remains an error.
 
 Replay uses PyAV on one worker. Frame presentation time is `PTS * time_base`;
 wall scheduling applies the selected 0.25x to 2.0x rate. Pause, step, seek, and

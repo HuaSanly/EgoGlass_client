@@ -5,8 +5,13 @@ import logging
 import os
 from pathlib import Path
 
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("GLOG_minloglevel", "2")
+os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
+
 import dearpygui.dearpygui as dpg
 
+from .logging_config import configure_logging
 from .runtime import RuntimeConfig, UnifiedRuntimeHost
 from .theme import bind_application_font, bind_application_theme
 from .views.annotation import AnnotationView
@@ -120,10 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.smoke_test:
         return 0
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging()
     runtime = UnifiedRuntimeHost(
         RuntimeConfig(
             host=args.host,
@@ -134,7 +136,11 @@ def main(argv: list[str] | None = None) -> int:
             enable_discovery=not args.disable_discovery,
         )
     )
-    return NativeApplication(runtime).run()
+    try:
+        return NativeApplication(runtime).run()
+    except KeyboardInterrupt:
+        LOGGER.info("shutdown requested")
+        return 0
 
 
 if __name__ == "__main__":

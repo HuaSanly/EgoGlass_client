@@ -58,6 +58,14 @@ class DiagnosticsView:
             f"设备会话: {webrtc.device_session_id or '--'}",
             f"接收: {webrtc.frames_received:,} 帧  {webrtc.average_fps or 0:.1f} FPS",
             f"画面: {webrtc.width or '--'}x{webrtc.height or '--'}  {webrtc.video_codec or '--'}",
+            (
+                f"RTP: 收到 {webrtc.rtp_packets_received:,}  "
+                f"丢包 {webrtc.rtp_packets_lost:,} ({webrtc.rtp_packet_loss_percent:.2f}%)"
+            ),
+            (
+                f"RTP 抖动: {webrtc.rtp_jitter_ms:.2f} ms  "
+                f"损坏帧丢弃: {webrtc.corrupt_frames_dropped}"
+            ),
             f"元数据: {webrtc.metadata_matched:,}/{webrtc.metadata_received:,}",
             f"待匹配: 帧 {webrtc.pending_frames} / 元数据 {webrtc.pending_metadata}",
             f"时钟跳变: {webrtc.sdk_clock_discontinuities}",

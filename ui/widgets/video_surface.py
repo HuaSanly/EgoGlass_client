@@ -59,7 +59,9 @@ class VideoSurface:
         self.height = height
         self._source_width = source_width
         self._source_height = source_height
-        self._texture_tag = "main-video-texture"
+        self._texture_registry_tag = "main-video-texture-registry"
+        self._texture_generation = 0
+        self._texture_tag = self._next_texture_tag()
         self._image_tag = "main-video-image"
         self._overlay_tag = "main-video-overlay"
         self._drawlist_tag = "main-video-drawlist"
@@ -71,7 +73,7 @@ class VideoSurface:
         self._uploaded_frames = 0
         self._source_frames_skipped = 0
         self._latest_upload_ms: float | None = None
-        with dpg.texture_registry(show=False):
+        with dpg.texture_registry(show=False, tag=self._texture_registry_tag):
             dpg.add_raw_texture(
                 width=source_width,
                 height=source_height,
@@ -189,19 +191,26 @@ class VideoSurface:
         )
 
     def _replace_texture(self, width: int, height: int) -> None:
+        old_texture_tag = self._texture_tag
         self._source_width = width
         self._source_height = height
         self._texture_buffer = np.zeros((height, width, 3), dtype=np.float32)
-        dpg.delete_item(self._texture_tag)
-        with dpg.texture_registry(show=False):
-            dpg.add_raw_texture(
-                width=width,
-                height=height,
-                default_value=self._texture_buffer.ravel(),
-                format=dpg.mvFormat_Float_rgb,
-                tag=self._texture_tag,
-            )
+        self._texture_tag = self._next_texture_tag()
+        dpg.add_raw_texture(
+            width=width,
+            height=height,
+            default_value=self._texture_buffer.ravel(),
+            format=dpg.mvFormat_Float_rgb,
+            tag=self._texture_tag,
+            parent=self._texture_registry_tag,
+        )
         dpg.configure_item(self._image_tag, texture_tag=self._texture_tag)
+        dpg.delete_item(old_texture_tag)
+
+    def _next_texture_tag(self) -> str:
+        tag = f"main-video-texture-{self._texture_generation}"
+        self._texture_generation += 1
+        return tag
 
 
 def _positive_number(value: object) -> float | None:

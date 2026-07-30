@@ -294,6 +294,44 @@ def test_live_pipeline_reuses_decoded_frame_and_windows_imu(tmp_path: Path) -> N
     assert second.session_time_ns == 30_000_000
 
 
+def test_live_pipeline_normalizes_balanced_webrtc_resolution_to_calibration(
+    tmp_path: Path,
+) -> None:
+    calibration = SensorCalibration.load(
+        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90)
+    )
+    pipeline = _pipeline(calibration)
+    transport_scaled = VideoFrame.from_ndarray(
+        np.full((3, 4, 3), 37, dtype=np.uint8),
+        format="bgr24",
+    )
+
+    bundle = pipeline.process_live_frame(
+        transport_scaled,
+        _live_frame_input(0, 20_000_000),
+    )
+
+    assert bundle.image_bgr.shape == (8, 6, 3)
+    assert np.all(bundle.image_bgr == 37)
+    assert bundle.calibration is calibration
+
+
+def test_live_pipeline_rejects_transport_scaling_with_different_aspect_ratio(
+    tmp_path: Path,
+) -> None:
+    calibration = SensorCalibration.load(
+        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90)
+    )
+    pipeline = _pipeline(calibration)
+    invalid = VideoFrame.from_ndarray(
+        np.zeros((4, 4, 3), dtype=np.uint8),
+        format="bgr24",
+    )
+
+    with pytest.raises(SensorPreprocessingError, match="incompatible with calibration"):
+        pipeline.process_live_frame(invalid, _live_frame_input(0, 20_000_000))
+
+
 def test_live_pipeline_applies_nonzero_distortion_map(tmp_path: Path) -> None:
     payload = _calibration_payload(width=32, height=24)
     payload["distortion_coefficients"] = [0.5, 0.1, 0.0, 0.0, 0.0]

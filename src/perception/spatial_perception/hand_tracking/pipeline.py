@@ -165,7 +165,7 @@ class HumanEgoHandTrackingPipeline:
         hamer_hand_count = sum(
             hand.reconstruction_backend is ReconstructionBackend.HAMER for hand in hands
         )
-        LOGGER.info(
+        LOGGER.debug(
             "hand_tracking_frame session_id=%s frame_index=%d detector=%s "
             "hamer_loaded=%s amp_enabled=%s batch_size=%d hamer_hands=%d "
             "fallback_hands=%d prepare_ms=%.3f detector_ms=%.3f "

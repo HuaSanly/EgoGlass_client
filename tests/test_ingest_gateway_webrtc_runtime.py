@@ -12,6 +12,7 @@ from ingest_gateway.adapters.webrtc import (
     WebRtcControlChannel,
     WebRtcImuChannel,
     WebRtcPeerCallbacks,
+    WebRtcReceiverStats,
 )
 from ingest_gateway.webrtc_models import (
     ImuChannelState,
@@ -38,6 +39,7 @@ class FakePeer:
     def __init__(self, callbacks: WebRtcPeerCallbacks) -> None:
         self.callbacks = callbacks
         self.closed = False
+        self.stats = WebRtcReceiverStats()
 
     @property
     def negotiated_video_codec(self) -> str:
@@ -46,6 +48,9 @@ class FakePeer:
     async def accept_offer(self, offer: WebRtcOffer) -> str:
         assert offer.type == "offer"
         return "v=0\r\nanswer-session-description"
+
+    async def receiver_stats(self) -> WebRtcReceiverStats:
+        return self.stats
 
     async def close(self) -> None:
         self.closed = True
@@ -230,6 +235,19 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
         assert source.subscriptions == []
         assert status.first_frame_latency_ms == 120.0
         assert (status.width, status.height) == (1280, 720)
+
+        peers[0].stats = WebRtcReceiverStats(
+            packets_received=980,
+            packets_lost=20,
+            jitter_ms=4.5,
+            corrupt_frames_dropped=3,
+        )
+        transport_status = await runtime.status()
+        assert transport_status.rtp_packets_received == 980
+        assert transport_status.rtp_packets_lost == 20
+        assert transport_status.rtp_packet_loss_percent == 2.0
+        assert transport_status.rtp_jitter_ms == 4.5
+        assert transport_status.corrupt_frames_dropped == 3
 
         await runtime.accept_offer(offer("device-session-0002"), TOKEN)
         replacement_status = await runtime.status()

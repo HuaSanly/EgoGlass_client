@@ -2,9 +2,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import dearpygui.dearpygui as dpg
+import numpy as np
 
 from annotation.store import AnnotationStore
+from ingest_gateway.live_frames import LiveFrame
 from ui.app import NativeApplication
+from ui.widgets.video_surface import VideoSurface
 
 
 def test_native_views_cover_library_annotation_and_diagnostics() -> None:
@@ -53,4 +56,31 @@ def test_every_native_view_builds_in_real_dearpygui_context(tmp_path: Path) -> N
     finally:
         if application.live_view is not None:
             application.live_view.close()
+        dpg.destroy_context()
+
+
+def test_video_surface_replaces_dynamic_resolution_texture_without_reusing_alias() -> None:
+    def frame(index: int, width: int, height: int) -> LiveFrame:
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+        return LiveFrame("session", "connection", index, index, index, image)
+
+    dpg.create_context()
+    try:
+        with dpg.window() as parent:
+            surface = VideoSurface(
+                parent=parent,
+                width=8,
+                height=6,
+                source_width=4,
+                source_height=3,
+            )
+        original_tag = surface._texture_tag
+        assert surface.update_frame(frame(0, 2, 2))
+        second_tag = surface._texture_tag
+        assert second_tag != original_tag
+        assert dpg.does_item_exist(second_tag)
+        assert surface.update_frame(frame(1, 4, 3))
+        assert surface._texture_tag not in {original_tag, second_tag}
+        assert dpg.does_item_exist(surface._texture_tag)
+    finally:
         dpg.destroy_context()

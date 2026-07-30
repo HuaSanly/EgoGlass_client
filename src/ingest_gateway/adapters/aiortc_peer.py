@@ -20,6 +20,7 @@ from .webrtc import (
     WebRtcControlChannel,
     WebRtcImuChannel,
     WebRtcPeerCallbacks,
+    WebRtcReceiverStats,
     WebRtcVideoSource,
 )
 
@@ -87,6 +88,9 @@ class AiortcPeer:
         self._tasks: set[asyncio.Task[None]] = set()
         self._negotiated_video_codec: str | None = None
         self._video_source: AiortcVideoSource | None = None
+        self._corrupt_frames_dropped = 0
+        self._cached_receiver_stats = WebRtcReceiverStats()
+        self._receiver_stats_sampled_at = 0.0
 
         @self._peer.on("connectionstatechange")
         async def on_connectionstatechange() -> None:
@@ -110,7 +114,7 @@ class AiortcPeer:
                 source = AiortcVideoSource(track)
                 self._video_source = source
                 self._schedule(self._callbacks.on_video_source(source))
-                self._schedule(self._consume_video(source.subscribe(buffered=True)))
+                self._schedule(self._consume_video(source.subscribe(buffered=False)))
 
     @property
     def negotiated_video_codec(self) -> str | None:
@@ -128,6 +132,31 @@ class AiortcPeer:
         self._negotiated_video_codec = negotiated_video_codec_from_sdp(local_sdp)
         return local_sdp
 
+    async def receiver_stats(self) -> WebRtcReceiverStats:
+        """Return a low-rate cached view of inbound video RTP health."""
+
+        now = asyncio.get_running_loop().time()
+        if now - self._receiver_stats_sampled_at < 0.5:
+            return self._cached_receiver_stats
+        report = await self._peer.getStats()
+        inbound = [
+            item
+            for item in report.values()
+            if getattr(item, "type", None) == "inbound-rtp"
+            and getattr(item, "kind", None) == "video"
+        ]
+        packets_received = sum(max(0, int(item.packetsReceived)) for item in inbound)
+        packets_lost = sum(max(0, int(item.packetsLost)) for item in inbound)
+        jitter_ticks = max((max(0, int(item.jitter)) for item in inbound), default=0)
+        self._cached_receiver_stats = WebRtcReceiverStats(
+            packets_received=packets_received,
+            packets_lost=packets_lost,
+            jitter_ms=round(jitter_ticks / 90.0, 3),
+            corrupt_frames_dropped=self._corrupt_frames_dropped,
+        )
+        self._receiver_stats_sampled_at = now
+        return self._cached_receiver_stats
+
     async def close(self) -> None:
         for task in tuple(self._tasks):
             task.cancel()
@@ -140,6 +169,9 @@ class AiortcPeer:
         try:
             while True:
                 frame = await track.recv()
+                if bool(getattr(frame, "is_corrupt", False)):
+                    self._corrupt_frames_dropped += 1
+                    continue
                 time_base = getattr(frame, "time_base", None)
                 await self._callbacks.on_video_frame(
                     DecodedVideoFrame(

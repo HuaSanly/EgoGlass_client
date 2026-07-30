@@ -20,6 +20,16 @@ class DecodedVideoFrame:
 
 
 @dataclass(frozen=True)
+class WebRtcReceiverStats:
+    """Cumulative receiver health sampled from the active WebRTC peer."""
+
+    packets_received: int = 0
+    packets_lost: int = 0
+    jitter_ms: float = 0.0
+    corrupt_frames_dropped: int = 0
+
+
+@dataclass(frozen=True)
 class WebRtcVideoRecordingSource:
     connection_session_id: str
     source: WebRtcVideoSource
@@ -65,6 +75,8 @@ class WebRtcPeer(Protocol):
     def negotiated_video_codec(self) -> str | None: ...
 
     async def accept_offer(self, offer: WebRtcOffer) -> str: ...
+
+    async def receiver_stats(self) -> WebRtcReceiverStats: ...
 
     async def close(self) -> None: ...
 

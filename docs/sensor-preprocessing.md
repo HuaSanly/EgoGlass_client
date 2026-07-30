@@ -110,7 +110,10 @@ time-mapping provenance required by VIO and hand tracking.
 The two input paths share all preparation after frame acquisition:
 
 - `process_live_frame()` accepts an aiortc/PyAV `VideoFrame` that the gateway
-  has already decoded. It never decodes or encodes video.
+  has already decoded. It never decodes or encodes video. A proportional
+  WebRTC transport downscale is resized back to the calibrated source raster
+  before rotation and undistortion; upscales and aspect-ratio changes are
+  rejected.
 - `iter_recorded_session()` verifies the completed capture, decodes each MP4
   frame once, checks decoded PTS against the stored exact frame index, and feeds
   the same image preparation and output contract.

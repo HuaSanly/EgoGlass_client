@@ -17,6 +17,12 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     assert "subprocess" not in runtime
     assert "multiprocessing" not in runtime
     assert "add_raw_texture" in video
+    assert "source.subscribe(buffered=False)" in (
+        repository / "src" / "ingest_gateway" / "adapters" / "aiortc_peer.py"
+    ).read_text(encoding="utf-8")
+    assert "rtp_packet_loss_percent" in (
+        repository / "ui" / "views" / "diagnostics.py"
+    ).read_text(encoding="utf-8")
     assert "mvFormat_Float_rgb" in video
     assert "jpeg" not in video.lower()
     assert "mjpg" not in video.lower()

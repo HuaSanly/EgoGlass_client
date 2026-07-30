@@ -735,6 +735,15 @@ class SensorPreprocessingPipeline:
         rotation_degrees: int,
     ) -> _BgrImage:
         image = decoded_frame.to_ndarray(format="bgr24")
+        if (decoded_frame.width, decoded_frame.height) != (
+            self.calibration.source_width,
+            self.calibration.source_height,
+        ):
+            image = cv2.resize(
+                image,
+                (self.calibration.source_width, self.calibration.source_height),
+                interpolation=_CV_INTERPOLATIONS[self.image_config.interpolation],
+            )
         image = {
             0: lambda value: value,
             90: lambda value: cv2.rotate(value, cv2.ROTATE_90_CLOCKWISE),
@@ -778,12 +787,13 @@ class SensorPreprocessingPipeline:
         rotation_degrees: int,
         capture_config_id: str,
     ) -> None:
-        if (width, height) != (
-            self.calibration.source_width,
-            self.calibration.source_height,
-        ):
+        calibrated_width = self.calibration.source_width
+        calibrated_height = self.calibration.source_height
+        same_aspect_ratio = width * calibrated_height == height * calibrated_width
+        no_upscale = width <= calibrated_width and height <= calibrated_height
+        if not same_aspect_ratio or not no_upscale:
             raise SensorPreprocessingError(
-                "decoded frame dimensions do not match calibration"
+                "decoded frame dimensions are incompatible with calibration"
             )
         if rotation_degrees != self.calibration.rotation_degrees:
             raise SensorPreprocessingError("frame rotation does not match calibration")
