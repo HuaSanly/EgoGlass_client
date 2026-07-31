@@ -83,7 +83,9 @@ def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
     assert "scroll.viewport().setStyleSheet(\"background: transparent;\")" in source
     assert "GLViewWidget" in spatial_source
     assert "QPainter" not in spatial_source
-    assert "qfluentwidgets" not in spatial_source
+    assert "StrongBodyLabel" in spatial_source
+    assert "CaptionLabel" in spatial_source
+    assert "QLabel" not in spatial_source
     assert '"PyOpenGL==3.1.0"' in project
     assert '"pyqtgraph==0.14.0"' in project
 

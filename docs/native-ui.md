@@ -37,6 +37,7 @@ annotation business logic remain in their owning `src/` packages.
 Fluent Gallery. Only Home is registered in this iteration. Common controls use
 PyQt-Fluent-Widgets components: `SegmentedWidget`, `HeaderCardWidget`, Fluent
 buttons, `ComboBox`, `Slider`, `InfoBadge`, `ProgressRing`, and `InfoBar`.
+All UI text uses Fluent label components; raw Qt `QLabel` is not used.
 The mode strip combines live/replay selection, source/session context, and the
 compact capture controls for video, recording, and session creation. Offline
 generation uses `StateToolTip` for its real task lifecycle, with `InfoBar`

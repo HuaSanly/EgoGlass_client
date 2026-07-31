@@ -6,8 +6,9 @@ from dataclasses import dataclass
 
 import numpy as np
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 from pyqtgraph.opengl import GLLinePlotItem, GLScatterPlotItem, GLViewWidget
+from qfluentwidgets import CaptionLabel, StrongBodyLabel
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 
@@ -75,13 +76,13 @@ class SpatialSyncCanvas(QWidget):
                 border: 1px solid #182235;
                 border-radius: 10px;
             }
-            QLabel#spatialSyncTitle {
+            StrongBodyLabel#spatialSyncTitle {
                 color: #f8fafc;
                 font-size: 13px;
                 font-weight: 600;
                 letter-spacing: 0px;
             }
-            QLabel#spatialSyncState {
+            CaptionLabel#spatialSyncState {
                 color: #8ea0b7;
                 font-size: 11px;
             }
@@ -98,9 +99,9 @@ class SpatialSyncCanvas(QWidget):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
-        title = QLabel("空间同步", self)
+        title = StrongBodyLabel("空间同步", self)
         title.setObjectName("spatialSyncTitle")
-        self._state_label = QLabel("等待 IMU 与手部位姿", self)
+        self._state_label = CaptionLabel("等待 IMU 与手部位姿", self)
         self._state_label.setObjectName("spatialSyncState")
         header.addWidget(title)
         header.addStretch(1)

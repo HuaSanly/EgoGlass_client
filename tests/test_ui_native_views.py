@@ -320,7 +320,15 @@ def test_spatial_sync_canvas_uses_opengl_not_painter_projection() -> None:
     assert "GLViewWidget" in source
     assert "QPainter" not in source
     assert "paintEvent" not in source
-    assert "qfluentwidgets" not in source
+    assert "StrongBodyLabel" in source
+    assert "CaptionLabel" in source
+
+
+def test_ui_uses_fluent_labels_instead_of_q_label() -> None:
+    ui_root = Path(__file__).parents[1] / "ui"
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in ui_root.rglob("*.py"))
+
+    assert "QLabel" not in sources
 
 
 def test_top_context_badges_show_the_active_source_and_session() -> None:
@@ -427,7 +435,7 @@ def test_canvas_benchmark_runs_directly_from_its_documented_path() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    report = json.loads(result.stdout)
+    report = json.loads(result.stdout[result.stdout.index("{") :])
     assert report["width"] == 640
     assert report["height"] == 480
     assert report["frames"] == 10
