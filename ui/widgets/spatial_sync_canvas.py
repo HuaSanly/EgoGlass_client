@@ -5,8 +5,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 from pyqtgraph.opengl import (
     GLLinePlotItem,
@@ -122,6 +122,18 @@ class SpatialSyncCanvas(QWidget):
                 color: #8ea0b7;
                 font-size: 11px;
             }
+            TransparentToolButton#imuPoseResetButton {
+                background: rgba(255, 255, 255, 0.14);
+                border: 1px solid rgba(255, 255, 255, 0.28);
+                border-radius: 14px;
+            }
+            TransparentToolButton#imuPoseResetButton:hover {
+                background: rgba(255, 255, 255, 0.22);
+                border: 1px solid rgba(255, 255, 255, 0.42);
+            }
+            TransparentToolButton#imuPoseResetButton:pressed {
+                background: rgba(255, 255, 255, 0.30);
+            }
             """
         )
 
@@ -144,7 +156,8 @@ class SpatialSyncCanvas(QWidget):
         header.addWidget(self._state_label)
         self.reset_pose_button = TransparentToolButton()
         self.reset_pose_button.setObjectName("imuPoseResetButton")
-        self.reset_pose_button.setIcon(FluentIcon.SYNC)
+        self.reset_pose_button.setIcon(FluentIcon.SYNC.icon(color=QColor("#f8fafc")))
+        self.reset_pose_button.setIconSize(QSize(15, 15))
         self.reset_pose_button.setToolTip("刷新眼镜姿态")
         self.reset_pose_button.setFixedSize(28, 28)
         self.reset_pose_button.clicked.connect(self.reset_pose_requested.emit)

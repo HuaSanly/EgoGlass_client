@@ -125,6 +125,8 @@ def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
     assert "_hand_to_scene" not in spatial_source
     assert "keypoints_3d_camera_m" in spatial_source
     assert "imuPoseResetButton" in spatial_source
+    assert "QColor(\"#f8fafc\")" in spatial_source
+    assert "rgba(255, 255, 255, 0.14)" in spatial_source
     assert "reset_pose_requested.connect(self.runtime.request_imu_pose_reset)" in source
     assert "QPainter" not in spatial_source
     assert "StrongBodyLabel" in spatial_source

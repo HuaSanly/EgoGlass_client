@@ -346,6 +346,9 @@ def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
         assert home.findChild(type(home.stream_button), "streamControlButton") is home.stream_button
         assert len(home.findChildren(SpatialSyncCanvas)) == 1
         assert home.spatial_canvas.reset_pose_button.objectName() == "imuPoseResetButton"
+        assert home.spatial_canvas.reset_pose_button.size().width() == 28
+        assert home.spatial_canvas.reset_pose_button.iconSize().width() == 15
+        assert "rgba(255, 255, 255, 0.14)" in home.spatial_canvas.styleSheet()
         assert not isinstance(home.spatial_canvas.parent(), HeaderCardWidget)
         assert home.spatial_canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
         assert "background: transparent" in home.sidebar.viewport().styleSheet()
