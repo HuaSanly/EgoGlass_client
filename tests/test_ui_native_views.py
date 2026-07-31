@@ -17,7 +17,11 @@ from ingest_gateway.webrtc_models import StreamControlAction
 from ui.app import MainWindow
 from ui.state import RuntimeSnapshot
 from ui.views.home import HomeView, ViewerMode, _confidence_text
-from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
+from ui.widgets.spatial_sync_canvas import (
+    SpatialSyncCanvas,
+    _camera_points_to_scene,
+    _glasses_frame_mesh,
+)
 from ui.widgets.video_canvas import VideoCanvas, fit_image_geometry
 
 
@@ -367,6 +371,53 @@ def test_spatial_sync_canvas_renders_imu_and_hand_pose(
     assert status.has_right_hand
     assert status.latest_frame_index == 12
     assert canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
+
+
+def test_spatial_sync_canvas_uses_camera_frame_without_side_offsets() -> None:
+    camera_points = np.asarray(
+        [
+            [0.10, 0.00, 0.00],
+            [0.00, 0.20, 0.00],
+            [0.00, 0.00, 0.30],
+        ],
+        dtype=np.float64,
+    )
+
+    scene_points = _camera_points_to_scene(camera_points, (1.0, 0.0, 0.0, 0.0))
+
+    np.testing.assert_allclose(scene_points[0], [0.10, 0.00, 0.00], atol=1e-6)
+    np.testing.assert_allclose(scene_points[1], [0.00, 0.00, -0.20], atol=1e-6)
+    np.testing.assert_allclose(scene_points[2], [0.00, 0.30, 0.00], atol=1e-6)
+
+
+def test_spatial_sync_canvas_draws_both_hands_in_the_same_camera_reference() -> None:
+    canvas = SpatialSyncCanvas()
+    repeated_points = [[0.01 * index, 0.02, 0.40] for index in range(21)]
+    canvas.set_hand_result(
+        {
+            "frame_index": 14,
+            "hands": [
+                {"handedness": "left", "keypoints_3d_camera_m": repeated_points},
+                {"handedness": "right", "keypoints_3d_camera_m": repeated_points},
+            ],
+        }
+    )
+
+    left_points = canvas._left_points.pos
+    right_points = canvas._right_points.pos
+
+    np.testing.assert_allclose(left_points, right_points, atol=1e-6)
+    assert canvas.status().has_left_hand
+    assert canvas.status().has_right_hand
+
+
+def test_spatial_sync_canvas_uses_mesh_glasses_model() -> None:
+    vertices, faces = _glasses_frame_mesh()
+
+    assert vertices.shape[1] == 3
+    assert faces.shape[1] == 3
+    assert len(vertices) > 300
+    assert len(faces) > 300
 
 
 def test_spatial_sync_canvas_ignores_bad_hand_pose_data(

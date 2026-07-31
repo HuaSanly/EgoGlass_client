@@ -50,9 +50,12 @@ direct RGB frame surface:
 - VideoCanvas paints immutable NumPy RGB buffers and bounded same-stream hand data.
 - SpatialSyncCanvas uses pyqtgraph 0.14.0's OpenGL GLViewWidget with the
   environment's explicit PyOpenGL 3.1.0 dependency for the
-  right-side spatial synchronization view, with IMU pose and hand-tracking 3D
-  keypoints rendered as real 3D line and scatter items. pyqtgraph is MIT
-  licensed and compatible with the GPLv3 client.
+  right-side spatial synchronization view. It renders a mesh glasses model,
+  the camera origin, camera XYZ axes, a camera frustum, and hand-tracking 3D
+  keypoints in the rectified camera coordinate system. The IMU preview rotates
+  the whole camera reference frame, so the hands remain camera-relative rather
+  than being independently offset by the UI. pyqtgraph is MIT licensed and
+  compatible with the GPLv3 client.
 
 The same `VideoCanvas` switches between live input and replay. Switching modes
 does not reconnect WebRTC, create another media surface, or stop the current
