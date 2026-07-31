@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 import threading
 from collections import deque
 from types import SimpleNamespace
@@ -24,6 +25,15 @@ class _RecordingStatusStub:
     async def library(self) -> RecordingLibrary:
         self.library_calls += 1
         return self._library
+
+
+class _PerceptionEventsStub:
+    def __init__(self, payloads: tuple[dict[str, object] | None, ...]) -> None:
+        self.payloads = payloads
+
+    async def status_events(self):
+        for payload in self.payloads:
+            yield payload
 
 
 def _runtime_stub(recording: _RecordingStatusStub) -> UnifiedRuntimeHost:
@@ -89,5 +99,39 @@ def test_initial_library_refresh_scans_once_and_caches_the_result() -> None:
 
         assert recording.library_calls == 1
         assert runtime._library is library
+
+    asyncio.run(scenario())
+
+
+def test_perception_result_forwarder_keeps_only_the_newest_unique_result() -> None:
+    async def scenario() -> None:
+        first = {
+            "session_id": "session",
+            "sequence_id": "connection",
+            "frame_index": 10,
+            "hands": [],
+        }
+        latest = {
+            "session_id": "session",
+            "sequence_id": "connection",
+            "frame_index": 12,
+            "hands": [{"handedness": "left"}],
+        }
+        runtime = UnifiedRuntimeHost.__new__(UnifiedRuntimeHost)
+        runtime.perception = _PerceptionEventsStub(
+            (
+                None,
+                {"latest_result": {"frame_index": "invalid"}},
+                {"latest_result": first},
+                {"latest_result": first},
+                {"latest_result": latest},
+            )
+        )
+        runtime._perception_results = queue.Queue(maxsize=1)
+
+        await runtime._forward_perception_results()
+
+        assert runtime.take_latest_perception_result() == latest
+        assert runtime.take_latest_perception_result() is None
 
     asyncio.run(scenario())

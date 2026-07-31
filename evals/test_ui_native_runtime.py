@@ -46,7 +46,7 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     assert "HeaderCardWidget" in home
 
 
-def test_native_video_path_has_rgb_fanout_and_per_frame_overlay() -> None:
+def test_native_video_path_has_rgb_fanout_and_bounded_latest_overlay() -> None:
     repository = Path(__file__).parents[1]
     live_frames = (repository / "src" / "ingest_gateway" / "live_frames.py").read_text(
         encoding="utf-8"
@@ -58,7 +58,8 @@ def test_native_video_path_has_rgb_fanout_and_per_frame_overlay() -> None:
 
     assert "submit_rgb_frame" in live_frames
     assert "self._frame = frame" in video
-    assert "_result_key(result) != self._latest_frame_key" in video
+    assert "maximum_overlay_age_frames: int = 18" in video
+    assert "frame_age > self._maximum_overlay_age_frames" in video
     assert "frame_index" in home
     assert "recent_presentation_fps" in video
     assert "LiveFramePacer" in live_frames
@@ -67,7 +68,44 @@ def test_native_video_path_has_rgb_fanout_and_per_frame_overlay() -> None:
     assert "next_for_display" in (
         repository / "ui" / "runtime.py"
     ).read_text(encoding="utf-8")
+    assert "_forward_perception_results" in (
+        repository / "ui" / "runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "take_latest_perception_result" in home
     assert "self._frame_timer.setInterval(16)" in home
+
+
+def test_live_overlay_survives_normal_inference_frame_delay(
+    qt_application: QApplication,
+) -> None:
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    image.setflags(write=False)
+    canvas = VideoCanvas()
+    canvas.set_frame(LiveFrame("session", "connection", 100, 0, 0, image))
+    canvas.set_overlay(
+        {
+            "session_id": "session",
+            "sequence_id": "connection",
+            "frame_index": 92,
+            "source_image_width_px": 640,
+            "source_image_height_px": 480,
+            "hands": [
+                {
+                    "handedness": "left",
+                    "source_keypoints_2d_px": [],
+                    "source_bbox_xyxy_px": [100, 100, 200, 200],
+                }
+            ],
+        }
+    )
+
+    assert canvas.status().overlay_visible
+    assert canvas.status().overlay_frame_age == 8
+    canvas.set_frame(LiveFrame("session", "connection", 110, 0, 0, image))
+    assert canvas.status().overlay_visible
+    canvas.set_frame(LiveFrame("session", "connection", 111, 0, 0, image))
+    assert not canvas.status().overlay_visible
+    qt_application.processEvents()
 
 
 def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
@@ -96,6 +134,7 @@ def test_fluent_home_renders_without_overlap_at_supported_sizes(
     runtime = SimpleNamespace(
         snapshot=lambda: RuntimeSnapshot(),
         latest_frame=lambda: None,
+        take_latest_perception_result=lambda: None,
         command_results=lambda: (),
         request_library_refresh=lambda: None,
         request_session=lambda _action: None,

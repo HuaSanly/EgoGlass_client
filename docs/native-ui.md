@@ -12,6 +12,7 @@ One `python -m ui` process owns all client modules:
 PyQt main thread
   -> FluentWindow with one Home interface
   -> 16 ms frame timer and 100 ms status timer
+  -> newest hand result drained from a thread-safe single-item queue
   -> direct immutable RGB QImage painting
   -> direct commands to UnifiedRuntimeHost
 
@@ -46,7 +47,7 @@ reserved for terminal success and error feedback.
 Only VideoCanvas uses custom painting because the component library has no
 direct RGB frame surface:
 
-- VideoCanvas paints immutable NumPy RGB buffers and frame-aligned hand data.
+- VideoCanvas paints immutable NumPy RGB buffers and bounded same-stream hand data.
 - SpatialSyncCanvas uses pyqtgraph 0.14.0's OpenGL GLViewWidget with the
   environment's explicit PyOpenGL 3.1.0 dependency for the
   right-side spatial synchronization view, with IMU pose and hand-tracking 3D
@@ -71,8 +72,13 @@ inside the canvas with letterboxing; the UI never crops it to fill the area.
 
 `VideoCanvas` creates `QImage.Format_RGB888` over the immutable, contiguous
 NumPy frame and keeps the `LiveFrame` alive until replacement. No float texture
-copy or encoded preview is introduced. The hand result is painted only when
-its session, connection, and frame index match the displayed frame.
+copy or encoded preview is introduced. New perception results are pushed into a
+single-item thread-safe queue and consumed by the 16 ms frame loop instead of
+waiting for the 100 ms status snapshot. The canvas keeps the newest result for
+the same session and connection for at most 18 source frames. Empty-hand results,
+stream changes, replay switches, future frames, and expired results cannot leave
+a stale skeleton visible. This is a bounded zero-order hold, not interpolation
+or smoothing, and it does not delay the live video.
 
 ## Replay and storage
 

@@ -415,6 +415,10 @@ class HomeView(QWidget):
             self.frame_detail.setText(
                 f"帧 {frame.frame_index:,} · RGB {frame.width}×{frame.height}"
             )
+        if self.viewer_mode is ViewerMode.LIVE:
+            result = self.runtime.take_latest_perception_result()
+            if result is not None:
+                self.canvas.set_overlay(result)
         if self.viewer_mode is ViewerMode.REPLAY:
             self._update_replay_controls(replay_snapshot)
 
@@ -497,8 +501,6 @@ class HomeView(QWidget):
             self.left_confidence.setText("未检测到")
             self.right_confidence.setText("未检测到")
             return
-        if self.viewer_mode is ViewerMode.LIVE:
-            self.canvas.set_overlay(latest)
         self.spatial_canvas.set_hand_result(latest)
         hands = latest.get("hands")
         left = _hand_for_side(hands, "left")
@@ -539,6 +541,11 @@ class HomeView(QWidget):
                     f"丢帧 {display.presentation_frames_dropped} · "
                     f"跳帧 "
                     f"{display.pending_frames_overwritten + canvas.source_frames_skipped}",
+                    (
+                        f"识别覆盖 Δ{canvas.overlay_frame_age} 帧"
+                        if canvas.overlay_visible
+                        else "识别覆盖 --"
+                    ),
                 )
             )
         )

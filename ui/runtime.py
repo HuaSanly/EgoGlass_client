@@ -9,6 +9,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Coroutine
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,7 @@ class UnifiedRuntimeHost:
         self._snapshot_lock = threading.Lock()
         self._snapshot = RuntimeSnapshot()
         self._command_results: queue.SimpleQueue[CommandResult] = queue.SimpleQueue()
+        self._perception_results: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
         self._startup_error: BaseException | None = None
         self._recent_events: deque[str] = deque(maxlen=50)
         self._library: RecordingLibrary | None = None
@@ -135,6 +137,12 @@ class UnifiedRuntimeHost:
 
     def latest_frame(self) -> LiveFrame | None:
         return self.frame_buffer.next_for_display()
+
+    def take_latest_perception_result(self) -> dict[str, object] | None:
+        try:
+            return self._perception_results.get_nowait()
+        except queue.Empty:
+            return None
 
     def command_results(self) -> tuple[CommandResult, ...]:
         results: list[CommandResult] = []
@@ -238,6 +246,7 @@ class UnifiedRuntimeHost:
         )
         self._server = uvicorn.Server(config)
         status_task = asyncio.create_task(self._collect_status())
+        perception_task = asyncio.create_task(self._forward_perception_results())
         library_task = asyncio.create_task(self._initial_library_refresh())
         server_task = asyncio.create_task(self._server.serve())
         while not self._server.started and not server_task.done():
@@ -250,7 +259,13 @@ class UnifiedRuntimeHost:
             await server_task
         finally:
             status_task.cancel()
-            await asyncio.gather(status_task, library_task, return_exceptions=True)
+            perception_task.cancel()
+            await asyncio.gather(
+                status_task,
+                perception_task,
+                library_task,
+                return_exceptions=True,
+            )
 
     async def _initial_library_refresh(self) -> None:
         try:
@@ -314,6 +329,38 @@ class UnifiedRuntimeHost:
                 self._snapshot = snapshot
             await asyncio.sleep(0.1)
 
+    async def _forward_perception_results(self) -> None:
+        last_result_key: tuple[str, str, int] | None = None
+        async for payload in self.perception.status_events():
+            if payload is None:
+                continue
+            result = payload.get("latest_result")
+            if not isinstance(result, dict):
+                continue
+            result_key = _perception_result_key(result)
+            if result_key is None or result_key == last_result_key:
+                continue
+            last_result_key = result_key
+            with suppress(queue.Empty):
+                self._perception_results.get_nowait()
+            self._perception_results.put_nowait(result)
+
     def _record_event(self, detail: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
         self._recent_events.appendleft(f"{timestamp}  {detail}")
+
+
+def _perception_result_key(
+    result: dict[str, object],
+) -> tuple[str, str, int] | None:
+    session_id = result.get("session_id")
+    sequence_id = result.get("sequence_id")
+    frame_index = result.get("frame_index")
+    if (
+        not isinstance(session_id, str)
+        or not isinstance(sequence_id, str)
+        or not isinstance(frame_index, int)
+        or isinstance(frame_index, bool)
+    ):
+        return None
+    return session_id, sequence_id, frame_index

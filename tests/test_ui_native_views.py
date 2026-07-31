@@ -31,12 +31,17 @@ class RuntimeStub:
         self.stream_actions: list[StreamControlAction] = []
         self.recording_actions: list[str] = []
         self.replay_sessions: list[str] = []
+        self.perception_result: dict[str, object] | None = None
 
     def snapshot(self) -> RuntimeSnapshot:
         return self.snapshot_value
 
     def latest_frame(self) -> LiveFrame | None:
         return self.frame
+
+    def take_latest_perception_result(self) -> dict[str, object] | None:
+        result, self.perception_result = self.perception_result, None
+        return result
 
     def command_results(self) -> tuple[object, ...]:
         return ()
@@ -70,10 +75,23 @@ class RuntimeStub:
         self.stop_calls += 1
 
 
-def _frame(index: int, *, width: int = 640, height: int = 480) -> LiveFrame:
+def _frame(
+    index: int,
+    *,
+    width: int = 640,
+    height: int = 480,
+    connection_session_id: str = "connection",
+) -> LiveFrame:
     image = np.zeros((height, width, 3), dtype=np.uint8)
     image.setflags(write=False)
-    return LiveFrame("session", "connection", index, index, index, image)
+    return LiveFrame(
+        "session",
+        connection_session_id,
+        index,
+        index,
+        index,
+        image,
+    )
 
 
 def _imu_pose() -> ImuPoseSnapshot:
@@ -93,7 +111,12 @@ def _imu_pose() -> ImuPoseSnapshot:
     )
 
 
-def _hand_result(*, include_right: bool = True) -> dict[str, object]:
+def _hand_result(
+    *,
+    include_right: bool = True,
+    frame_index: int = 12,
+    sequence_id: str = "connection",
+) -> dict[str, object]:
     points = [[index * 0.01, index * 0.003, 0.35 + index * 0.002] for index in range(21)]
     hands: list[dict[str, object]] = [
         {
@@ -113,8 +136,8 @@ def _hand_result(*, include_right: bool = True) -> dict[str, object]:
         hands.append({**hands[0], "handedness": "right"})
     return {
         "session_id": "session",
-        "sequence_id": "connection",
-        "frame_index": 12,
+        "sequence_id": sequence_id,
+        "frame_index": frame_index,
         "source_image_width_px": 640,
         "source_image_height_px": 480,
         "hands": hands,
@@ -198,34 +221,72 @@ def test_video_canvas_keeps_rgb_frame_alive_and_paints_it(
     assert canvas.status().latest_frame_index == 3
 
 
-def test_overlay_is_painted_only_for_the_displayed_frame(
+def test_overlay_reuses_a_recent_same_stream_result_with_a_finite_age(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas(maximum_overlay_age_frames=3)
+    canvas.resize(960, 720)
+    canvas.set_frame(_frame(10))
+    assert canvas.set_overlay(_hand_result(include_right=False, frame_index=9))
+    recent = canvas.grab().toImage().pixelColor(150, 150)
+    recent_status = canvas.status()
+
+    canvas.set_frame(_frame(13))
+    expired = canvas.grab().toImage().pixelColor(150, 150)
+    expired_status = canvas.status()
+    qt_application.processEvents()
+
+    assert recent.green() > recent.red()
+    assert recent_status.overlay_visible
+    assert recent_status.overlay_frame_age == 1
+    assert expired != recent
+    assert not expired_status.overlay_visible
+    assert expired_status.overlay_frame_age is None
+
+
+def test_overlay_rejects_other_streams_and_clears_on_empty_result(
     qt_application: QApplication,
 ) -> None:
     canvas = VideoCanvas()
     canvas.resize(960, 720)
-    canvas.set_frame(_frame(10))
-    base = {
-        "session_id": "session",
-        "sequence_id": "connection",
-        "source_image_width_px": 640,
-        "source_image_height_px": 480,
-        "hands": [
-            {
-                "handedness": "left",
-                "source_keypoints_2d_px": [],
-                "source_bbox_xyxy_px": [100, 100, 200, 200],
-            }
-        ],
-    }
+    canvas.set_frame(_frame(20))
+    assert canvas.set_overlay(_hand_result(include_right=False, frame_index=19))
+    visible = canvas.grab().toImage().pixelColor(150, 150)
 
-    canvas.set_overlay({**base, "frame_index": 9})
-    mismatch = canvas.grab().toImage().pixelColor(150, 150)
-    canvas.set_overlay({**base, "frame_index": 10})
-    matched = canvas.grab().toImage().pixelColor(150, 150)
+    assert not canvas.set_overlay(
+        _hand_result(
+            include_right=False,
+            frame_index=20,
+            sequence_id="previous-connection",
+        )
+    )
+    assert canvas.status().overlay_visible
+    empty = _hand_result(include_right=False, frame_index=20)
+    empty["hands"] = []
+    assert canvas.set_overlay(empty)
+    cleared = canvas.grab().toImage().pixelColor(150, 150)
     qt_application.processEvents()
 
-    assert mismatch != matched
-    assert matched.green() > matched.red()
+    assert visible.green() > visible.red()
+    assert cleared != visible
+    assert not canvas.status().overlay_visible
+
+
+def test_overlay_waits_for_a_future_result_frame_and_clears_on_reconnect(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas()
+    canvas.set_frame(_frame(30))
+    assert canvas.set_overlay(_hand_result(include_right=False, frame_index=31))
+    assert not canvas.status().overlay_visible
+
+    canvas.set_frame(_frame(31))
+    assert canvas.status().overlay_visible
+
+    canvas.set_frame(_frame(1, connection_session_id="new-connection"))
+    assert not canvas.status().overlay_visible
+    assert canvas.status().latest_overlay_frame_index is None
+    qt_application.processEvents()
 
 
 def test_home_controls_call_runtime_commands() -> None:
@@ -243,6 +304,24 @@ def test_home_controls_call_runtime_commands() -> None:
         assert runtime.recording_actions == ["start"]
         assert runtime.refresh_calls == 1
         assert runtime.session_actions == ["new"]
+    finally:
+        home.close_resources()
+
+
+def test_home_frame_loop_consumes_pushed_perception_result() -> None:
+    runtime = RuntimeStub()
+    runtime.frame = _frame(100)
+    runtime.perception_result = _hand_result(include_right=False, frame_index=92)
+    home = HomeView(runtime)  # type: ignore[arg-type]
+    try:
+        home._update_frame()
+
+        status = home.canvas.status()
+        assert status.latest_frame_index == 100
+        assert status.latest_overlay_frame_index == 92
+        assert status.overlay_frame_age == 8
+        assert status.overlay_visible
+        assert runtime.perception_result is None
     finally:
         home.close_resources()
 
