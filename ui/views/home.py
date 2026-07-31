@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
+    QGridLayout,
     QHBoxLayout,
     QSizePolicy,
     QStackedWidget,
@@ -38,7 +39,7 @@ from ingest_gateway.webrtc_models import StreamControlAction, StreamControlState
 from ui.replay.player import ReplayPlayer, ReplayState
 from ui.runtime import UnifiedRuntimeHost
 from ui.state import RuntimeSnapshot
-from ui.widgets.imu_pose import ImuPoseCanvas
+from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas
 
 
@@ -131,13 +132,11 @@ class HomeView(QWidget):
         self.resolution_badge = InfoBadge("-- × --", level=InfoLevel.INFOAMTION)
         self.fps_badge = InfoBadge("0.0 FPS", level=InfoLevel.INFOAMTION)
         self.inference_badge = InfoBadge("推理 --", level=InfoLevel.INFOAMTION)
-        self.recording_badge = InfoBadge("未录制", level=InfoLevel.INFOAMTION)
         for badge in (
             self.connection_badge,
             self.resolution_badge,
             self.fps_badge,
             self.inference_badge,
-            self.recording_badge,
         ):
             badge.setMinimumHeight(24)
             layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -165,9 +164,27 @@ class HomeView(QWidget):
         layout.addWidget(self.mode_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         self.session_badge = InfoBadge("会话 · --", level=InfoLevel.INFOAMTION)
         layout.addWidget(self.session_badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addStretch(1)
         self.frame_detail = CaptionLabel("等待首帧")
-        layout.addWidget(self.frame_detail)
+        layout.addWidget(self.frame_detail, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addStretch(1)
+
+        self.stream_button = _compact_button("开始视频", FluentIcon.PLAY, primary=True)
+        self.stream_button.setObjectName("streamControlButton")
+        self.stream_button.setProperty("action", "start")
+        self.stream_button.clicked.connect(self._toggle_stream)
+        layout.addWidget(self.stream_button)
+        self.recording_button = _compact_button("开始录制", FluentIcon.VIDEO)
+        self.recording_button.setObjectName("recordingControlButton")
+        self.recording_button.setProperty("action", "start")
+        self.recording_button.clicked.connect(self._toggle_recording)
+        layout.addWidget(self.recording_button)
+        self.session_button = _compact_button("新建会话", FluentIcon.ADD)
+        self.session_button.setObjectName("sessionControlButton")
+        self.session_button.clicked.connect(lambda: self.runtime.request_session("new"))
+        layout.addWidget(self.session_button)
+        self.recording_badge = InfoBadge("未录制", level=InfoLevel.INFOAMTION)
+        self.recording_badge.setMinimumHeight(24)
+        layout.addWidget(self.recording_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         return layout
 
     def _build_video_column(self) -> QWidget:
@@ -224,33 +241,34 @@ class HomeView(QWidget):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(12)
 
-        capture = HeaderCardWidget("采集控制", panel)
-        capture_layout = QVBoxLayout()
-        capture_layout.setSpacing(10)
-        button_row = QHBoxLayout()
-        self.stream_button = _push_button("开始视频", FluentIcon.PLAY, primary=True)
-        self.stream_button.setProperty("action", "start")
-        self.stream_button.clicked.connect(self._toggle_stream)
-        button_row.addWidget(self.stream_button)
-        self.recording_button = _push_button("开始录制", FluentIcon.VIDEO)
-        self.recording_button.setProperty("action", "start")
-        self.recording_button.clicked.connect(self._toggle_recording)
-        button_row.addWidget(self.recording_button)
-        capture_layout.addLayout(button_row)
-        self.session_button = _push_button("新建采集会话", FluentIcon.ADD)
-        self.session_button.clicked.connect(lambda: self.runtime.request_session("new"))
-        capture_layout.addWidget(self.session_button)
+        spatial_card = HeaderCardWidget("空间同步", panel)
+        spatial_layout = QVBoxLayout()
+        spatial_layout.setSpacing(10)
+        self.spatial_canvas = SpatialSyncCanvas(spatial_card)
+        spatial_layout.addWidget(self.spatial_canvas)
+
+        status_grid = QGridLayout()
+        status_grid.setHorizontalSpacing(8)
+        status_grid.setVerticalSpacing(8)
+        self.imu_sync_badge = InfoBadge("IMU · --", level=InfoLevel.INFOAMTION)
+        self.left_pose_badge = InfoBadge("左手 · --", level=InfoLevel.INFOAMTION)
+        self.right_pose_badge = InfoBadge("右手 · --", level=InfoLevel.INFOAMTION)
+        self.link_sync_badge = InfoBadge("链路 · --", level=InfoLevel.INFOAMTION)
+        for index, badge in enumerate(
+            (
+                self.imu_sync_badge,
+                self.left_pose_badge,
+                self.right_pose_badge,
+                self.link_sync_badge,
+            )
+        ):
+            badge.setMinimumHeight(24)
+            status_grid.addWidget(badge, index // 2, index % 2)
+        spatial_layout.addLayout(status_grid)
+
         self.session_label = StrongBodyLabel("尚未创建会话")
         self.recording_detail = CaptionLabel("录制服务准备中")
         self.recording_detail.setWordWrap(True)
-        capture_layout.addWidget(self.session_label)
-        capture_layout.addWidget(self.recording_detail)
-        capture.viewLayout.addLayout(capture_layout)
-        layout.addWidget(capture)
-
-        perception = HeaderCardWidget("手部感知", panel)
-        perception_layout = QVBoxLayout()
-        perception_layout.setSpacing(8)
         self.perception_state = StrongBodyLabel("等待模型")
         self.perception_detail = CaptionLabel("尚未收到识别结果")
         self.perception_detail.setWordWrap(True)
@@ -258,30 +276,21 @@ class HomeView(QWidget):
         self.left_confidence.setWordWrap(True)
         self.right_confidence = BodyLabel("右手\n未检测到")
         self.right_confidence.setWordWrap(True)
-        perception_layout.addWidget(self.perception_state)
-        perception_layout.addWidget(self.perception_detail)
-        perception_layout.addWidget(self.left_confidence)
-        perception_layout.addWidget(self.right_confidence)
-        perception.viewLayout.addLayout(perception_layout)
-        layout.addWidget(perception)
 
-        frame_card = HeaderCardWidget("帧链路", panel)
-        frame_layout = QVBoxLayout()
         self.frame_metrics = BodyLabel("等待视频链路")
         self.frame_metrics.setWordWrap(True)
-        frame_layout.addWidget(self.frame_metrics)
-        frame_card.viewLayout.addLayout(frame_layout)
-        layout.addWidget(frame_card)
 
-        imu_card = HeaderCardWidget("IMU 姿态", panel)
-        imu_layout = QVBoxLayout()
-        self.imu_canvas = ImuPoseCanvas(imu_card)
         self.imu_detail = CaptionLabel("等待 IMU")
         self.imu_detail.setWordWrap(True)
-        imu_layout.addWidget(self.imu_canvas)
-        imu_layout.addWidget(self.imu_detail)
-        imu_card.viewLayout.addLayout(imu_layout)
-        layout.addWidget(imu_card)
+
+        spatial_layout.addWidget(self.perception_state)
+        spatial_layout.addWidget(self.perception_detail)
+        spatial_layout.addWidget(self.imu_detail)
+        spatial_layout.addWidget(self.left_confidence)
+        spatial_layout.addWidget(self.right_confidence)
+        spatial_layout.addWidget(self.frame_metrics)
+        spatial_card.viewLayout.addLayout(spatial_layout)
+        layout.addWidget(spatial_card)
         layout.addStretch(1)
         return panel
 
@@ -437,14 +446,26 @@ class HomeView(QWidget):
         self.perception_detail.setText(detail)
         latest = perception.get("latest_result")
         if not isinstance(latest, dict):
+            self.spatial_canvas.set_hand_result(None)
+            self.left_pose_badge.setText("左手 · 未检测")
+            self.left_pose_badge.setLevel(InfoLevel.INFOAMTION)
+            self.right_pose_badge.setText("右手 · 未检测")
+            self.right_pose_badge.setLevel(InfoLevel.INFOAMTION)
+            self.left_confidence.setText("左手\n未检测到")
+            self.right_confidence.setText("右手\n未检测到")
             return
         if self.viewer_mode is ViewerMode.LIVE:
             self.canvas.set_overlay(latest)
+        self.spatial_canvas.set_hand_result(latest)
         hands = latest.get("hands")
         left = _hand_for_side(hands, "left")
         right = _hand_for_side(hands, "right")
         self.left_confidence.setText(_confidence_text("左手", left))
         self.right_confidence.setText(_confidence_text("右手", right))
+        self.left_pose_badge.setText("左手 · 已同步" if left else "左手 · 未检测")
+        self.left_pose_badge.setLevel(InfoLevel.SUCCESS if left else InfoLevel.INFOAMTION)
+        self.right_pose_badge.setText("右手 · 已同步" if right else "右手 · 未检测")
+        self.right_pose_badge.setLevel(InfoLevel.SUCCESS if right else InfoLevel.INFOAMTION)
         hand_count = len(hands) if isinstance(hands, list) else 0
         self.perception_detail.setText(
             f"结果帧 {latest.get('frame_index', '--')} · 检出 {hand_count} 只手"
@@ -459,6 +480,10 @@ class HomeView(QWidget):
             return
         canvas = self.canvas.status()
         self.fps_badge.setText(f"{canvas.recent_presentation_fps:.1f} FPS")
+        self.link_sync_badge.setText(f"链路 · {display.presentation_fps:.1f} FPS")
+        self.link_sync_badge.setLevel(
+            InfoLevel.SUCCESS if display.presentation_fps >= 28 else InfoLevel.WARNING
+        )
         self.frame_metrics.setText(
             "\n".join(
                 (
@@ -477,10 +502,16 @@ class HomeView(QWidget):
 
     def _update_imu(self, snapshot: RuntimeSnapshot) -> None:
         pose = snapshot.imu_pose
-        self.imu_canvas.set_pose(pose)
+        self.spatial_canvas.set_pose(pose)
         if pose is None or pose.samples_received == 0:
             self.imu_detail.setText("等待 IMU")
+            self.imu_sync_badge.setText("IMU · --")
+            self.imu_sync_badge.setLevel(InfoLevel.INFOAMTION)
             return
+        self.imu_sync_badge.setText(f"IMU · {pose.recent_rate_hz:.1f} Hz")
+        self.imu_sync_badge.setLevel(
+            InfoLevel.SUCCESS if pose.recent_rate_hz >= 80 else InfoLevel.WARNING
+        )
         self.imu_detail.setText(
             f"{pose.recent_rate_hz:.1f} Hz · "
             f"R {pose.roll_degrees:.1f}° · P {pose.pitch_degrees:.1f}° · "
@@ -708,6 +739,22 @@ def _push_button(
     button.setIcon(icon)
     button.setMinimumHeight(36)
     button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    return button
+
+
+def _compact_button(
+    text: str,
+    icon: FluentIcon,
+    *,
+    primary: bool = False,
+) -> PushButton:
+    button = PrimaryPushButton() if primary else PushButton()
+    button.setText(text)
+    button.setIcon(icon)
+    button.setMinimumHeight(34)
+    button.setMaximumHeight(34)
+    button.setMinimumWidth(104)
+    button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return button
 
 

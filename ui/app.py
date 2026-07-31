@@ -26,6 +26,9 @@ class MainWindow(FluentWindow):
 
     def __init__(self, runtime: UnifiedRuntimeHost) -> None:
         super().__init__()
+        application = QApplication.instance()
+        if application is not None:
+            application.setFont(QFont("Microsoft YaHei UI", 10))
         self.runtime = runtime
         self.home_view = HomeView(runtime, self)
         self._shutdown_complete = False

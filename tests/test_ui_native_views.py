@@ -9,11 +9,13 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtWidgets import QApplication
 
+from ingest_gateway.imu_preview import ImuPoseSnapshot
 from ingest_gateway.live_frames import LiveFrame
 from ingest_gateway.webrtc_models import StreamControlAction
 from ui.app import MainWindow
 from ui.state import RuntimeSnapshot
 from ui.views.home import HomeView, ViewerMode, _confidence_text
+from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas, fit_image_geometry
 
 
@@ -72,6 +74,51 @@ def _frame(index: int, *, width: int = 640, height: int = 480) -> LiveFrame:
     return LiveFrame("session", "connection", index, index, index, image)
 
 
+def _imu_pose() -> ImuPoseSnapshot:
+    return ImuPoseSnapshot(
+        session_id="session",
+        quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+        roll_degrees=0.0,
+        pitch_degrees=0.0,
+        yaw_degrees=0.0,
+        accelerometer_mps2=(0.0, 9.8, 0.0),
+        gyroscope_radps=(0.0, 0.0, 0.0),
+        samples_received=120,
+        samples_processed=120,
+        queue_overflow_count=0,
+        recent_rate_hz=100.0,
+        latest_sample_age_ms=8.0,
+    )
+
+
+def _hand_result(*, include_right: bool = True) -> dict[str, object]:
+    points = [[index * 0.01, index * 0.003, 0.35 + index * 0.002] for index in range(21)]
+    hands: list[dict[str, object]] = [
+        {
+            "handedness": "left",
+            "keypoints_3d_camera_m": points,
+            "source_keypoints_2d_px": [],
+            "source_bbox_xyxy_px": [100, 100, 200, 200],
+            "detector_confidence": 0.9,
+            "reconstruction_quality": 0.8,
+            "depth_score": 0.7,
+            "coverage_score": 0.6,
+            "compactness_score": 0.5,
+            "final_confidence": 0.4,
+        }
+    ]
+    if include_right:
+        hands.append({**hands[0], "handedness": "right"})
+    return {
+        "session_id": "session",
+        "sequence_id": "connection",
+        "frame_index": 12,
+        "source_image_width_px": 640,
+        "source_image_height_px": 480,
+        "hands": hands,
+    }
+
+
 def test_fluent_window_registers_only_home_and_one_video_canvas(
     qt_application: QApplication,
 ) -> None:
@@ -84,6 +131,7 @@ def test_fluent_window_registers_only_home_and_one_video_canvas(
         assert window.stackedWidget.count() == 1
         assert window.stackedWidget.widget(0) is window.home_view
         assert len(window.findChildren(VideoCanvas)) == 1
+        assert len(window.findChildren(SpatialSyncCanvas)) == 1
         assert not (Path(__file__).parents[1] / "ui/views/library.py").exists()
         assert not (Path(__file__).parents[1] / "ui/views/annotation.py").exists()
         assert not (Path(__file__).parents[1] / "ui/views/diagnostics.py").exists()
@@ -195,6 +243,65 @@ def test_home_controls_call_runtime_commands() -> None:
         assert runtime.session_actions == ["new"]
     finally:
         home.close_resources()
+
+
+def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
+    home = HomeView(RuntimeStub())  # type: ignore[arg-type]
+    try:
+        sidebar_widgets = set(home.sidebar.findChildren(object))
+        assert home.stream_button not in sidebar_widgets
+        assert home.recording_button not in sidebar_widgets
+        assert home.session_button not in sidebar_widgets
+        assert home.findChild(type(home.stream_button), "streamControlButton") is home.stream_button
+        assert len(home.findChildren(SpatialSyncCanvas)) == 1
+
+        source = (Path(__file__).parents[1] / "ui" / "views" / "home.py").read_text(
+            encoding="utf-8"
+        )
+        assert 'HeaderCardWidget("采集控制"' not in source
+    finally:
+        home.close_resources()
+
+
+def test_spatial_sync_canvas_renders_imu_and_hand_pose(
+    qt_application: QApplication,
+) -> None:
+    canvas = SpatialSyncCanvas()
+    canvas.resize(340, 250)
+    canvas.set_pose(_imu_pose())
+    canvas.set_hand_result(_hand_result())
+
+    pixmap = canvas.grab()
+    qt_application.processEvents()
+    status = canvas.status()
+
+    assert not pixmap.isNull()
+    assert status.has_imu_pose
+    assert status.has_left_hand
+    assert status.has_right_hand
+    assert status.latest_frame_index == 12
+
+
+def test_spatial_sync_canvas_ignores_bad_hand_pose_data(
+    qt_application: QApplication,
+) -> None:
+    canvas = SpatialSyncCanvas()
+    canvas.resize(340, 250)
+    canvas.set_hand_result(
+        {
+            "frame_index": 13,
+            "hands": [{"handedness": "left", "keypoints_3d_camera_m": [[0.0, 1.0]]}],
+        }
+    )
+
+    pixmap = canvas.grab()
+    qt_application.processEvents()
+    status = canvas.status()
+
+    assert not pixmap.isNull()
+    assert not status.has_left_hand
+    assert not status.has_right_hand
+    assert status.latest_frame_index == 13
 
 
 def test_top_context_badges_show_the_active_source_and_session() -> None:

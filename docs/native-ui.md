@@ -37,19 +37,26 @@ annotation business logic remain in their owning `src/` packages.
 Fluent Gallery. Only Home is registered in this iteration. Common controls use
 PyQt-Fluent-Widgets components: `SegmentedWidget`, `HeaderCardWidget`, Fluent
 buttons, `ComboBox`, `Slider`, `InfoBadge`, `ProgressRing`, and `InfoBar`.
-The top context strip always identifies the live/replay source and active
-session. Offline generation uses `StateToolTip` for its real task lifecycle,
-with `InfoBar` reserved for terminal success and error feedback.
+The mode strip combines live/replay selection, source/session context, and the
+compact capture controls for video, recording, and session creation. Offline
+generation uses `StateToolTip` for its real task lifecycle, with `InfoBar`
+reserved for terminal success and error feedback.
 
 Only two widgets use custom painting because the component library has no
 equivalent:
 
 - `VideoCanvas` paints immutable NumPy RGB buffers and frame-aligned hand data.
-- `ImuPoseCanvas` paints the orientation preview from its quaternion.
+- `SpatialSyncCanvas` paints the right-side spatial synchronization view from
+  IMU pose and hand-tracking 3D keypoints.
 
 The same `VideoCanvas` switches between live input and replay. Switching modes
 does not reconnect WebRTC, create another media surface, or stop the current
 stream.
+
+In live mode the right side is a single `空间同步` card. It contains the dark
+grid visualization plus compact IMU, left-hand, right-hand, and frame-link
+status blocks. The old capture, hand, frame, and IMU vertical cards are not part
+of the home page.
 
 ## Four-by-three video
 

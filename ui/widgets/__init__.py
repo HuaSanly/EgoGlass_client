@@ -1,10 +1,11 @@
 """Custom paint surfaces that have no Fluent component equivalent."""
 
-from .imu_pose import ImuPoseCanvas
+from .spatial_sync_canvas import SpatialSyncCanvas, SpatialSyncCanvasStatus
 from .video_canvas import VideoCanvas, VideoCanvasStatus, fit_image_geometry
 
 __all__ = [
-    "ImuPoseCanvas",
+    "SpatialSyncCanvas",
+    "SpatialSyncCanvasStatus",
     "VideoCanvas",
     "VideoCanvasStatus",
     "fit_image_geometry",
