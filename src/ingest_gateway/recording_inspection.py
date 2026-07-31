@@ -35,10 +35,13 @@ def inspect_recording(path: Path) -> Mp4Inspection:
             if codec_name != "h264":
                 raise ValueError(f"expected H.264 video, found {codec_name or 'unknown'}")
             dimensions = (stream.codec_context.width, stream.codec_context.height)
-            if dimensions != (1280, 720):
-                raise ValueError(
-                    f"expected 1280x720 video, found {dimensions[0]}x{dimensions[1]}"
-                )
+            if (
+                min(dimensions) <= 0
+                or max(dimensions) > 8192
+                or dimensions[0] % 2 != 0
+                or dimensions[1] % 2 != 0
+            ):
+                raise ValueError(f"invalid video dimensions {dimensions[0]}x{dimensions[1]}")
             presentation_times: list[Fraction] = []
             for frame in container.decode(stream):
                 if frame.pts is None or frame.time_base is None:

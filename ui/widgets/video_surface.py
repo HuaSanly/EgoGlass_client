@@ -45,6 +45,33 @@ class VideoSurfaceStatus:
     latest_frame_index: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class FittedImageGeometry:
+    minimum: tuple[float, float]
+    maximum: tuple[float, float]
+    scale: float
+
+
+def fit_image_geometry(
+    container_width: int,
+    container_height: int,
+    source_width: float,
+    source_height: float,
+) -> FittedImageGeometry:
+    if min(container_width, container_height, source_width, source_height) <= 0:
+        raise ValueError("image and container dimensions must be positive")
+    scale = min(container_width / source_width, container_height / source_height)
+    rendered_width = source_width * scale
+    rendered_height = source_height * scale
+    offset_x = (container_width - rendered_width) / 2
+    offset_y = (container_height - rendered_height) / 2
+    return FittedImageGeometry(
+        minimum=(offset_x, offset_y),
+        maximum=(offset_x + rendered_width, offset_y + rendered_height),
+        scale=scale,
+    )
+
+
 class VideoSurface:
     """A raw RGB texture and frame-aligned perception overlay on one drawlist."""
 
@@ -54,8 +81,8 @@ class VideoSurface:
         parent: int | str,
         width: int = 960,
         height: int = 540,
-        source_width: int = 1280,
-        source_height: int = 720,
+        source_width: int = 640,
+        source_height: int = 480,
     ) -> None:
         self.width = width
         self.height = height
@@ -69,6 +96,7 @@ class VideoSurface:
         self._image_tag = "main-video-image"
         self._overlay_tag = "main-video-overlay"
         self._drawlist_tag = "main-video-drawlist"
+        geometry = fit_image_geometry(width, height, source_width, source_height)
         self._texture_buffers = (
             np.zeros((source_height, source_width, 3), dtype=np.float32),
             np.zeros((source_height, source_width, 3), dtype=np.float32),
@@ -105,8 +133,8 @@ class VideoSurface:
             )
             dpg.draw_image(
                 self._texture_tag,
-                (0, 0),
-                (width, height),
+                geometry.minimum,
+                geometry.maximum,
                 tag=self._image_tag,
             )
             dpg.add_draw_layer(tag=self._overlay_tag)
@@ -152,9 +180,14 @@ class VideoSurface:
         hands = result.get("hands")
         if source_width is None or source_height is None or not isinstance(hands, list):
             return
-        scale = min(self.width / source_width, self.height / source_height)
-        offset_x = (self.width - source_width * scale) / 2
-        offset_y = (self.height - source_height * scale) / 2
+        geometry = fit_image_geometry(
+            self.width,
+            self.height,
+            source_width,
+            source_height,
+        )
+        offset_x, offset_y = geometry.minimum
+        scale = geometry.scale
         for hand in hands:
             if not isinstance(hand, dict):
                 continue
@@ -225,6 +258,7 @@ class VideoSurface:
         self._texture_tags = (self._next_texture_tag(), self._next_texture_tag())
         self._front_texture_index = 0
         self._texture_tag = self._texture_tags[self._front_texture_index]
+        geometry = fit_image_geometry(self.width, self.height, width, height)
         for texture_tag, texture_buffer in zip(
             self._texture_tags,
             self._texture_buffers,
@@ -238,7 +272,12 @@ class VideoSurface:
                 tag=texture_tag,
                 parent=self._texture_registry_tag,
             )
-        dpg.configure_item(self._image_tag, texture_tag=self._texture_tag)
+        dpg.configure_item(
+            self._image_tag,
+            texture_tag=self._texture_tag,
+            pmin=geometry.minimum,
+            pmax=geometry.maximum,
+        )
         for old_texture_tag in old_texture_tags:
             dpg.delete_item(old_texture_tag)
 

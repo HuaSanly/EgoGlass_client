@@ -9,7 +9,7 @@ from ingest_gateway.live_frames import LiveFrame
 from ui.app import NativeApplication
 from ui.views.library import LibraryView
 from ui.views.live import _perception_result_key
-from ui.widgets.video_surface import VideoSurface
+from ui.widgets.video_surface import VideoSurface, fit_image_geometry
 
 
 def test_native_views_cover_library_annotation_and_diagnostics() -> None:
@@ -128,6 +128,14 @@ def test_video_surface_replaces_dynamic_resolution_texture_without_reusing_alias
         assert surface.status().recent_upload_fps > 0
     finally:
         dpg.destroy_context()
+
+
+def test_video_surface_letterboxes_four_by_three_without_cropping_or_stretching() -> None:
+    geometry = fit_image_geometry(960, 540, 640, 480)
+
+    assert geometry.minimum == (120.0, 0.0)
+    assert geometry.maximum == (840.0, 540.0)
+    assert geometry.scale == 1.125
 
 
 def test_video_surface_swaps_raw_texture_buffers_instead_of_mutating_visible_frame() -> None:

@@ -35,8 +35,8 @@ class PyAvH264Mp4Recorder:
         path: Path,
         track: object,
         *,
-        width: int = 1280,
-        height: int = 720,
+        width: int = 640,
+        height: int = 480,
         fps: int = 30,
         perf_clock: Callable[[], int] = time.perf_counter_ns,
     ) -> None:

@@ -2,7 +2,7 @@
 schema_version: "1.0"
 
 # Relative paths are resolved from this YAML file's directory.
-calibration_file: sensor-calibration.sample.json
+calibration_file: sensor-calibration-640x480-sample.json
 
 recorded:
   # Verify every MP4 against the SHA256 recorded in the session manifest.

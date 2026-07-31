@@ -468,8 +468,8 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
     assert status.status_code == 200
     assert status.json()["detail"] == ""
     assert status.json()["output"] == {
-        "width": 1280,
-        "height": 720,
+        "width": 640,
+        "height": 480,
         "fps": 30,
         "container": "mp4",
         "video_codec": "h264",

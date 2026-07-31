@@ -48,9 +48,9 @@ def _metadata(frame_id: int, source_pts: int) -> tuple[VideoFrameMetadata, Frame
         received_at_elapsed_realtime_ns=callback_ns,
         video_at_monotonic_ns=callback_ns - 50_000,
         rtp_timestamp_90khz=(90_000 + source_pts) & 0xFFFFFFFF,
-        width=1280,
-        height=720,
-        capture_config_id="720p30",
+        width=640,
+        height=480,
+        capture_config_id="640x480p30",
     )
     return metadata, FrameMetadataMatch(
         metadata=metadata,
@@ -72,8 +72,17 @@ class _Source:
 class _Writer:
     next_index = 0
 
-    def __init__(self, path: Path, _track: object) -> None:
+    def __init__(
+        self,
+        path: Path,
+        _track: object,
+        *,
+        width: int,
+        height: int,
+        fps: int,
+    ) -> None:
         self.path = path
+        assert (width, height, fps) == (640, 480, 30)
         self.finished = asyncio.Event()
         index = _Writer.next_index
         _Writer.next_index += 1
@@ -124,8 +133,8 @@ def test_multiclip_collection_keeps_continuous_imu_and_raw_metadata() -> None:
                 result=WebRtcVideoRecordingSource(
                     CONNECTION_ID,
                     _Source(),
-                    1280,
-                    720,
+                    640,
+                    480,
                     1,
                 ),
             ),

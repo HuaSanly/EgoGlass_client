@@ -425,8 +425,17 @@ class _VideoSource:
 
 
 class _Recorder:
-    def __init__(self, path: Path, _track: object) -> None:
+    def __init__(
+        self,
+        path: Path,
+        _track: object,
+        *,
+        width: int,
+        height: int,
+        fps: int,
+    ) -> None:
         self.path = path
+        assert (width, height, fps) == (1280, 720, 30)
         self.frames_received = 1
         self.frame_records = (recorded_frame(0, 0, 0),)
         self.finished = asyncio.Event()

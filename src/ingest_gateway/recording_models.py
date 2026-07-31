@@ -36,8 +36,8 @@ class TimestampAlignmentState(StrEnum):
 class RecordingOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    width: Literal[1280] = 1280
-    height: Literal[720] = 720
+    width: int = Field(default=640, gt=0, le=8192)
+    height: int = Field(default=480, gt=0, le=8192)
     fps: Literal[30] = 30
     container: Literal["mp4"] = "mp4"
     video_codec: Literal["h264"] = "h264"
@@ -230,10 +230,14 @@ class CaptureSourceRevisions(BaseModel):
 class CaptureConfigProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    capture_config_id: str | None = Field(default="720p30", min_length=1, max_length=128)
+    capture_config_id: str | None = Field(
+        default="640x480p30",
+        min_length=1,
+        max_length=128,
+    )
     source: Literal["glasses_negotiated", "client_default", "unknown"] = "client_default"
-    width: int | None = Field(default=1280, ge=1)
-    height: int | None = Field(default=720, ge=1)
+    width: int | None = Field(default=640, ge=1)
+    height: int | None = Field(default=480, ge=1)
     nominal_fps: float | None = Field(default=30.0, gt=0, le=240)
     target_bitrate_bps: int | None = Field(default=8_000_000, ge=1)
 

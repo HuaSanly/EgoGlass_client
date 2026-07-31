@@ -7,6 +7,7 @@ from perception.spatial_perception.hand_tracking import (
     rotated_image_points_to_source,
     source_image_dimensions,
 )
+from ui.widgets.video_surface import fit_image_geometry
 
 
 def test_portrait_hamer_coordinates_align_with_landscape_rgb_surface() -> None:
@@ -38,3 +39,11 @@ def test_native_overlay_consumes_source_coordinate_contract() -> None:
     assert 'hand.get("source_bbox_xyxy_px")' in script
     assert 'result.get("source_image_width_px")' in script
     assert 'result.get("source_image_height_px")' in script
+
+
+def test_four_by_three_video_and_overlay_share_uncropped_display_geometry() -> None:
+    geometry = fit_image_geometry(960, 540, 640, 480)
+
+    assert geometry.minimum == (120.0, 0.0)
+    assert geometry.maximum == (840.0, 540.0)
+    assert geometry.scale == 1.125

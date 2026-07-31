@@ -27,12 +27,14 @@ from .capture_session import (
     read_capture_quality,
 )
 from .recording_models import (
+    CaptureConfigProvenance,
     CaptureQualityCheck,
     CaptureQualityCounts,
     CaptureQualityIssue,
     CaptureSessionClip,
     CaptureSessionLifecycle,
     CaptureSessionManifest,
+    CaptureSessionProvenance,
     CaptureSessionQuality,
     CaptureSessionQualityReport,
     CaptureSessionState,
@@ -40,6 +42,7 @@ from .recording_models import (
     CaptureVideoProfile,
     RecordingClip,
     RecordingLibrary,
+    RecordingOutput,
     RecordingSession,
     RecordingState,
     RecordingStatus,
@@ -48,8 +51,8 @@ from .webrtc_matcher import FrameMetadataMatch
 from .webrtc_models import ImuCapabilities, ImuSample, VideoFrameMetadata
 
 COUNTDOWN_SECONDS = 3.0
-OUTPUT_WIDTH = 1280
-OUTPUT_HEIGHT = 720
+DEFAULT_OUTPUT_WIDTH = 640
+DEFAULT_OUTPUT_HEIGHT = 480
 OUTPUT_FPS = 30
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _TERMINAL_CONNECTION_STATES = {"closed", "disconnected", "failed", "replaced"}
@@ -91,7 +94,17 @@ class RecordingWriter(Protocol):
 
 
 RecordingSourceProvider = Callable[[], Awaitable[WebRtcVideoRecordingSource | None]]
-RecordingWriterFactory = Callable[[Path, object], RecordingWriter]
+
+class RecordingWriterFactory(Protocol):
+    def __call__(
+        self,
+        path: Path,
+        track: object,
+        *,
+        width: int,
+        height: int,
+        fps: int,
+    ) -> RecordingWriter: ...
 
 
 class RecordingRuntime:
@@ -123,7 +136,9 @@ class RecordingRuntime:
         self._recorder: RecordingWriter | None = None
         self._partial_path: Path | None = None
         self._state = RecordingState.UNAVAILABLE
-        self._detail = "Glass3 1280x720 video is not ready"
+        self._detail = "Glass3 video is not ready"
+        self._output_width = DEFAULT_OUTPUT_WIDTH
+        self._output_height = DEFAULT_OUTPUT_HEIGHT
         self._session_id: str | None = None
         self._session_manifest: CaptureSessionManifest | None = None
         self._session_writer: CaptureSessionWriter | None = None
@@ -159,7 +174,7 @@ class RecordingRuntime:
                 raise RecordingConflictError("a recording command is already active")
             source = await self._compatible_source()
             if self._session_id is None:
-                self._create_session_locked()
+                self._create_session_locked(source)
             manifest = self._require_active_manifest()
             now_ms = self._unix_clock_ms()
             clip_id = uuid.uuid4().hex
@@ -172,8 +187,8 @@ class RecordingRuntime:
                             state="preparing",
                             relative_media_path=f"media/{clip_id}.mp4",
                             video_profile=CaptureVideoProfile(
-                                width=OUTPUT_WIDTH,
-                                height=OUTPUT_HEIGHT,
+                                width=source.width,
+                                height=source.height,
                                 nominal_fps=OUTPUT_FPS,
                             ),
                         ),
@@ -520,7 +535,7 @@ class RecordingRuntime:
                 ingest_status,
             )
 
-    def _create_session_locked(self) -> None:
+    def _create_session_locked(self, source: WebRtcVideoRecordingSource) -> None:
         session_id = self._session_id_factory()
         if not _ID_PATTERN.fullmatch(session_id):
             raise RuntimeError("capture session identifier is invalid")
@@ -540,6 +555,15 @@ class RecordingRuntime:
                 started_at_unix_ns=started_at_unix_ns,
             ),
             session_time_origin=CaptureSessionTimeOrigin(),
+            provenance=CaptureSessionProvenance(
+                capture_config=CaptureConfigProvenance(
+                    capture_config_id=None,
+                    source="glasses_negotiated",
+                    width=source.width,
+                    height=source.height,
+                    nominal_fps=OUTPUT_FPS,
+                )
+            ),
             clips=[],
         )
         self._write_capture_manifest(manifest)
@@ -595,9 +619,25 @@ class RecordingRuntime:
                     raise RecordingUnavailableError(
                         "Glass3 WebRTC session changed during the countdown"
                     )
+                manifest = self._require_active_manifest()
+                clip = next(item for item in manifest.clips if item.clip_id == clip_id)
+                expected_dimensions = (
+                    clip.video_profile.width,
+                    clip.video_profile.height,
+                )
+                if (source.width, source.height) != expected_dimensions:
+                    raise RecordingUnavailableError(
+                        "Glass3 video dimensions changed during the countdown"
+                    )
                 track = source.source.subscribe(buffered=True)
                 partial_path = self._partial_file_path(session_id, clip_id)
-                recorder = self._recorder_factory(partial_path, track)
+                recorder = self._recorder_factory(
+                    partial_path,
+                    track,
+                    width=source.width,
+                    height=source.height,
+                    fps=OUTPUT_FPS,
+                )
                 self._partial_path = partial_path
                 self._recorder = recorder
                 try:
@@ -810,14 +850,21 @@ class RecordingRuntime:
         source = await self._source_provider()
         if source is None:
             raise RecordingUnavailableError("Glass3 video is not ready")
-        if (source.width, source.height) != (OUTPUT_WIDTH, OUTPUT_HEIGHT):
+        if (
+            min(source.width, source.height) <= 0
+            or max(source.width, source.height) > 8192
+            or source.width % 2 != 0
+            or source.height % 2 != 0
+        ):
             raise RecordingUnavailableError(
-                "Glass3 video must be 1280x720 before recording can start"
+                f"Glass3 video dimensions are invalid: {source.width}x{source.height}"
             )
         if not _ID_PATTERN.fullmatch(source.connection_session_id):
             raise RecordingUnavailableError("Glass3 session identifier is invalid")
         if source.camera_start_generation < 1:
             raise RecordingUnavailableError("Glass3 camera start generation is invalid")
+        self._output_width = source.width
+        self._output_height = source.height
         return source
 
     async def _refresh_availability_locked(self) -> None:
@@ -857,6 +904,11 @@ class RecordingRuntime:
             recording_starts_at_unix_ms=self._recording_starts_at_unix_ms,
             recording_started_at_unix_ms=self._recording_started_at_unix_ms,
             recording_duration_ms=duration_ms,
+            output=RecordingOutput(
+                width=self._output_width,
+                height=self._output_height,
+                fps=OUTPUT_FPS,
+            ),
         )
 
     def _record_event(
