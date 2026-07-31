@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 from PyQt6.QtWidgets import QApplication
+from pyqtgraph.opengl import GLViewWidget
+from qfluentwidgets import HeaderCardWidget
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 from ingest_gateway.live_frames import LiveFrame
@@ -254,11 +256,16 @@ def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
         assert home.session_button not in sidebar_widgets
         assert home.findChild(type(home.stream_button), "streamControlButton") is home.stream_button
         assert len(home.findChildren(SpatialSyncCanvas)) == 1
+        assert not isinstance(home.spatial_canvas.parent(), HeaderCardWidget)
+        assert home.spatial_canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
+        assert "background: transparent" in home.sidebar.viewport().styleSheet()
 
         source = (Path(__file__).parents[1] / "ui" / "views" / "home.py").read_text(
             encoding="utf-8"
         )
         assert 'HeaderCardWidget("采集控制"' not in source
+        assert 'HeaderCardWidget("空间同步"' not in source
+        assert 'HeaderCardWidget("同步数据"' in source
     finally:
         home.close_resources()
 
@@ -280,6 +287,7 @@ def test_spatial_sync_canvas_renders_imu_and_hand_pose(
     assert status.has_left_hand
     assert status.has_right_hand
     assert status.latest_frame_index == 12
+    assert canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
 
 
 def test_spatial_sync_canvas_ignores_bad_hand_pose_data(
@@ -302,6 +310,17 @@ def test_spatial_sync_canvas_ignores_bad_hand_pose_data(
     assert not status.has_left_hand
     assert not status.has_right_hand
     assert status.latest_frame_index == 13
+
+
+def test_spatial_sync_canvas_uses_opengl_not_painter_projection() -> None:
+    source = (Path(__file__).parents[1] / "ui" / "widgets" / "spatial_sync_canvas.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "GLViewWidget" in source
+    assert "QPainter" not in source
+    assert "paintEvent" not in source
+    assert "qfluentwidgets" not in source
 
 
 def test_top_context_badges_show_the_active_source_and_session() -> None:

@@ -228,8 +228,10 @@ class HomeView(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFixedWidth(380)
         scroll.setStyleSheet("#homeSidebar { border: none; background: transparent; }")
+        scroll.viewport().setStyleSheet("background: transparent;")
 
         self.right_stack = QStackedWidget(scroll)
+        self.right_stack.setStyleSheet("background: transparent;")
         self.right_stack.addWidget(self._build_live_sidebar())
         self.right_stack.addWidget(self._build_replay_sidebar())
         scroll.setWidget(self.right_stack)
@@ -237,60 +239,103 @@ class HomeView(QWidget):
 
     def _build_live_sidebar(self) -> QWidget:
         panel = QWidget(self)
+        panel.setObjectName("liveSpatialPanel")
+        panel.setStyleSheet(
+            """
+            QWidget#liveSpatialPanel {
+                background: transparent;
+            }
+            QWidget#syncMetricBlock {
+                background: #ffffff;
+                border: 1px solid #e6ebf3;
+                border-radius: 8px;
+            }
+            CaptionLabel#syncMetricTitle {
+                color: #64748b;
+                font-size: 11px;
+            }
+            BodyLabel#syncMetricBody {
+                color: #1f2937;
+                font-size: 12px;
+            }
+            StrongBodyLabel#syncSummaryTitle {
+                color: #0f172a;
+                font-size: 13px;
+            }
+            CaptionLabel#syncSummaryDetail {
+                color: #64748b;
+                font-size: 11px;
+            }
+            """
+        )
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(12)
 
-        spatial_card = HeaderCardWidget("空间同步", panel)
-        spatial_layout = QVBoxLayout()
-        spatial_layout.setSpacing(10)
-        self.spatial_canvas = SpatialSyncCanvas(spatial_card)
-        spatial_layout.addWidget(self.spatial_canvas)
+        self.spatial_canvas = SpatialSyncCanvas(panel)
+        layout.addWidget(self.spatial_canvas)
 
-        status_grid = QGridLayout()
-        status_grid.setHorizontalSpacing(8)
-        status_grid.setVerticalSpacing(8)
-        self.imu_sync_badge = InfoBadge("IMU · --", level=InfoLevel.INFOAMTION)
-        self.left_pose_badge = InfoBadge("左手 · --", level=InfoLevel.INFOAMTION)
-        self.right_pose_badge = InfoBadge("右手 · --", level=InfoLevel.INFOAMTION)
-        self.link_sync_badge = InfoBadge("链路 · --", level=InfoLevel.INFOAMTION)
-        for index, badge in enumerate(
-            (
-                self.imu_sync_badge,
-                self.left_pose_badge,
-                self.right_pose_badge,
-                self.link_sync_badge,
-            )
-        ):
-            badge.setMinimumHeight(24)
-            status_grid.addWidget(badge, index // 2, index % 2)
-        spatial_layout.addLayout(status_grid)
+        data_card = HeaderCardWidget("同步数据", panel)
+        data_card.setObjectName("spatialSyncDataCard")
+        data_layout = QVBoxLayout()
+        data_layout.setSpacing(10)
 
-        self.session_label = StrongBodyLabel("尚未创建会话")
-        self.recording_detail = CaptionLabel("录制服务准备中")
-        self.recording_detail.setWordWrap(True)
         self.perception_state = StrongBodyLabel("等待模型")
+        self.perception_state.setObjectName("syncSummaryTitle")
         self.perception_detail = CaptionLabel("尚未收到识别结果")
+        self.perception_detail.setObjectName("syncSummaryDetail")
         self.perception_detail.setWordWrap(True)
-        self.left_confidence = BodyLabel("左手\n未检测到")
-        self.left_confidence.setWordWrap(True)
-        self.right_confidence = BodyLabel("右手\n未检测到")
-        self.right_confidence.setWordWrap(True)
 
+        summary_row = QVBoxLayout()
+        summary_row.setSpacing(2)
+        summary_row.addWidget(self.perception_state)
+        summary_row.addWidget(self.perception_detail)
+        data_layout.addLayout(summary_row)
+
+        self.imu_sync_badge = InfoBadge("--", level=InfoLevel.INFOAMTION)
+        self.left_pose_badge = InfoBadge("--", level=InfoLevel.INFOAMTION)
+        self.right_pose_badge = InfoBadge("--", level=InfoLevel.INFOAMTION)
+        self.link_sync_badge = InfoBadge("--", level=InfoLevel.INFOAMTION)
+        self.imu_detail = BodyLabel("等待 IMU")
+        self.left_confidence = BodyLabel("未检测到")
+        self.right_confidence = BodyLabel("未检测到")
         self.frame_metrics = BodyLabel("等待视频链路")
-        self.frame_metrics.setWordWrap(True)
+        for detail in (
+            self.imu_detail,
+            self.left_confidence,
+            self.right_confidence,
+            self.frame_metrics,
+        ):
+            detail.setObjectName("syncMetricBody")
+            detail.setWordWrap(True)
 
-        self.imu_detail = CaptionLabel("等待 IMU")
-        self.imu_detail.setWordWrap(True)
+        metric_grid = QGridLayout()
+        metric_grid.setHorizontalSpacing(8)
+        metric_grid.setVerticalSpacing(8)
+        metric_grid.addWidget(
+            _sync_metric_block("IMU 姿态", self.imu_sync_badge, self.imu_detail),
+            0,
+            0,
+        )
+        metric_grid.addWidget(
+            _sync_metric_block("左手位姿", self.left_pose_badge, self.left_confidence),
+            0,
+            1,
+        )
+        metric_grid.addWidget(
+            _sync_metric_block("右手位姿", self.right_pose_badge, self.right_confidence),
+            1,
+            0,
+        )
+        metric_grid.addWidget(
+            _sync_metric_block("帧链路", self.link_sync_badge, self.frame_metrics),
+            1,
+            1,
+        )
+        data_layout.addLayout(metric_grid)
 
-        spatial_layout.addWidget(self.perception_state)
-        spatial_layout.addWidget(self.perception_detail)
-        spatial_layout.addWidget(self.imu_detail)
-        spatial_layout.addWidget(self.left_confidence)
-        spatial_layout.addWidget(self.right_confidence)
-        spatial_layout.addWidget(self.frame_metrics)
-        spatial_card.viewLayout.addLayout(spatial_layout)
-        layout.addWidget(spatial_card)
+        data_card.viewLayout.addLayout(data_layout)
+        layout.addWidget(data_card)
         layout.addStretch(1)
         return panel
 
@@ -432,8 +477,6 @@ class HomeView(QWidget):
         self.recording_badge.setLevel(
             InfoLevel.ERROR if active else InfoLevel.INFOAMTION
         )
-        self.session_label.setText(recording.session_id or "尚未创建会话")
-        self.recording_detail.setText(recording.detail or recording.state.value)
         self._live_session_id = recording.session_id
         if self.viewer_mode is ViewerMode.LIVE:
             self._sync_context_badges()
@@ -447,12 +490,12 @@ class HomeView(QWidget):
         latest = perception.get("latest_result")
         if not isinstance(latest, dict):
             self.spatial_canvas.set_hand_result(None)
-            self.left_pose_badge.setText("左手 · 未检测")
+            self.left_pose_badge.setText("--")
             self.left_pose_badge.setLevel(InfoLevel.INFOAMTION)
-            self.right_pose_badge.setText("右手 · 未检测")
+            self.right_pose_badge.setText("--")
             self.right_pose_badge.setLevel(InfoLevel.INFOAMTION)
-            self.left_confidence.setText("左手\n未检测到")
-            self.right_confidence.setText("右手\n未检测到")
+            self.left_confidence.setText("未检测到")
+            self.right_confidence.setText("未检测到")
             return
         if self.viewer_mode is ViewerMode.LIVE:
             self.canvas.set_overlay(latest)
@@ -460,11 +503,11 @@ class HomeView(QWidget):
         hands = latest.get("hands")
         left = _hand_for_side(hands, "left")
         right = _hand_for_side(hands, "right")
-        self.left_confidence.setText(_confidence_text("左手", left))
-        self.right_confidence.setText(_confidence_text("右手", right))
-        self.left_pose_badge.setText("左手 · 已同步" if left else "左手 · 未检测")
+        self.left_confidence.setText(_confidence_body(left))
+        self.right_confidence.setText(_confidence_body(right))
+        self.left_pose_badge.setText("已同步" if left else "--")
         self.left_pose_badge.setLevel(InfoLevel.SUCCESS if left else InfoLevel.INFOAMTION)
-        self.right_pose_badge.setText("右手 · 已同步" if right else "右手 · 未检测")
+        self.right_pose_badge.setText("已同步" if right else "--")
         self.right_pose_badge.setLevel(InfoLevel.SUCCESS if right else InfoLevel.INFOAMTION)
         hand_count = len(hands) if isinstance(hands, list) else 0
         self.perception_detail.setText(
@@ -480,21 +523,21 @@ class HomeView(QWidget):
             return
         canvas = self.canvas.status()
         self.fps_badge.setText(f"{canvas.recent_presentation_fps:.1f} FPS")
-        self.link_sync_badge.setText(f"链路 · {display.presentation_fps:.1f} FPS")
+        self.link_sync_badge.setText(f"{display.presentation_fps:.1f} FPS")
         self.link_sync_badge.setLevel(
             InfoLevel.SUCCESS if display.presentation_fps >= 28 else InfoLevel.WARNING
         )
         self.frame_metrics.setText(
             "\n".join(
                 (
-                    f"接收帧：{display.frames_received:,}",
-                    f"RGB 转换：{display.frames_converted:,} · "
-                    f"{display.latest_conversion_ms or 0:.2f} ms",
-                    f"画布呈现：{canvas.presented_frames:,} · "
-                    f"{canvas.latest_paint_ms or 0:.2f} ms",
-                    f"平滑队列：{display.presentation_queue_depth} · "
-                    f"丢帧 {display.presentation_frames_dropped}",
-                    f"覆盖/跳帧："
+                    f"接收 {display.frames_received:,} · RGB {display.frames_converted:,}",
+                    f"呈现 {canvas.presented_frames:,} · "
+                    f"{display.presentation_fps:.1f} FPS",
+                    f"转换 {display.latest_conversion_ms or 0:.2f} ms · "
+                    f"绘制 {canvas.latest_paint_ms or 0:.2f} ms",
+                    f"队列 {display.presentation_queue_depth} · "
+                    f"丢帧 {display.presentation_frames_dropped} · "
+                    f"跳帧 "
                     f"{display.pending_frames_overwritten + canvas.source_frames_skipped}",
                 )
             )
@@ -505,10 +548,10 @@ class HomeView(QWidget):
         self.spatial_canvas.set_pose(pose)
         if pose is None or pose.samples_received == 0:
             self.imu_detail.setText("等待 IMU")
-            self.imu_sync_badge.setText("IMU · --")
+            self.imu_sync_badge.setText("--")
             self.imu_sync_badge.setLevel(InfoLevel.INFOAMTION)
             return
-        self.imu_sync_badge.setText(f"IMU · {pose.recent_rate_hz:.1f} Hz")
+        self.imu_sync_badge.setText(f"{pose.recent_rate_hz:.1f} Hz")
         self.imu_sync_badge.setLevel(
             InfoLevel.SUCCESS if pose.recent_rate_hz >= 80 else InfoLevel.WARNING
         )
@@ -742,6 +785,28 @@ def _push_button(
     return button
 
 
+def _sync_metric_block(title: str, badge: InfoBadge, detail: BodyLabel) -> QWidget:
+    block = QWidget()
+    block.setObjectName("syncMetricBlock")
+    block.setMinimumHeight(118)
+    block_layout = QVBoxLayout(block)
+    block_layout.setContentsMargins(10, 8, 10, 9)
+    block_layout.setSpacing(5)
+
+    header = QHBoxLayout()
+    header.setContentsMargins(0, 0, 0, 0)
+    header.setSpacing(6)
+    label = CaptionLabel(title)
+    label.setObjectName("syncMetricTitle")
+    header.addWidget(label)
+    header.addStretch(1)
+    badge.setMinimumHeight(22)
+    header.addWidget(badge, 0, Qt.AlignmentFlag.AlignRight)
+    block_layout.addLayout(header)
+    block_layout.addWidget(detail, 1)
+    return block
+
+
 def _compact_button(
     text: str,
     icon: FluentIcon,
@@ -799,6 +864,28 @@ def _confidence_text(label: str, hand: dict[str, object] | None) -> str:
             else f"{name} --"
         )
     return f"{label}\n" + "  ·  ".join(values)
+
+
+def _confidence_body(hand: dict[str, object] | None) -> str:
+    if hand is None:
+        return "未检测到\n等待 3D keypoints"
+    fields = (
+        ("检测", "detector_confidence"),
+        ("重建", "reconstruction_quality"),
+        ("深度", "depth_score"),
+        ("覆盖", "coverage_score"),
+        ("紧致", "compactness_score"),
+        ("最终", "final_confidence"),
+    )
+    values = []
+    for name, field in fields:
+        value = hand.get(field)
+        values.append(
+            f"{name} {float(value):.2f}"
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+            else f"{name} --"
+        )
+    return "\n".join((" · ".join(values[:3]), " · ".join(values[3:])))
 
 
 def _clock(seconds: float) -> str:

@@ -7,10 +7,12 @@ import numpy as np
 import pytest
 from PyQt6.QtCore import QPoint, QRect
 from PyQt6.QtWidgets import QApplication
+from pyqtgraph.opengl import GLViewWidget
 
 from ingest_gateway.live_frames import LiveFrame, LiveFramePacer
 from ui.app import MainWindow
 from ui.state import RuntimeSnapshot
+from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas
 
 
@@ -68,6 +70,24 @@ def test_native_video_path_has_rgb_fanout_and_per_frame_overlay() -> None:
     assert "self._frame_timer.setInterval(16)" in home
 
 
+def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
+    repository = Path(__file__).parents[1]
+    source = (repository / "ui" / "views" / "home.py").read_text(encoding="utf-8")
+    spatial_source = (
+        repository / "ui" / "widgets" / "spatial_sync_canvas.py"
+    ).read_text(encoding="utf-8")
+    project = (repository / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'HeaderCardWidget("空间同步"' not in source
+    assert 'HeaderCardWidget("同步数据"' in source
+    assert "scroll.viewport().setStyleSheet(\"background: transparent;\")" in source
+    assert "GLViewWidget" in spatial_source
+    assert "QPainter" not in spatial_source
+    assert "qfluentwidgets" not in spatial_source
+    assert '"PyOpenGL==3.1.0"' in project
+    assert '"pyqtgraph==0.14.0"' in project
+
+
 def test_fluent_home_renders_without_overlap_at_supported_sizes(
     qt_application: QApplication,
 ) -> None:
@@ -101,6 +121,9 @@ def test_fluent_home_renders_without_overlap_at_supported_sizes(
                 window.home_view.sidebar.size(),
             )
             assert not canvas_rect.intersects(sidebar_rect)
+            spatial = window.home_view.findChild(SpatialSyncCanvas)
+            assert spatial is not None
+            assert spatial.findChild(GLViewWidget, "spatialSyncViewport") is not None
             assert not window.grab().isNull()
     finally:
         window.close()

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import math
-import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
-from PyQt6.QtCore import QLineF, QPointF, QRectF, QSize, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QSizePolicy, QWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from pyqtgraph.opengl import GLLinePlotItem, GLScatterPlotItem, GLViewWidget
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 
@@ -38,6 +37,13 @@ HAND_CONNECTIONS = (
     (14, 17),
 )
 
+_EMPTY_POINTS = np.empty((0, 3), dtype=np.float32)
+_LEFT_COLOR = (0.66, 0.33, 0.96, 1.0)
+_RIGHT_COLOR = (0.98, 0.78, 0.16, 1.0)
+_GRID_COLOR = (0.23, 0.30, 0.43, 0.42)
+_GLASSES_COLOR = (0.96, 0.45, 0.18, 1.0)
+_GLASSES_BODY_COLOR = (0.96, 0.45, 0.18, 0.45)
+
 
 @dataclass(frozen=True, slots=True)
 class SpatialSyncCanvasStatus:
@@ -54,32 +60,147 @@ class _HandPose:
 
 
 class SpatialSyncCanvas(QWidget):
-    """Paint a lightweight spatial sync view from IMU pose and hand 3D points."""
+    """OpenGL spatial view for synchronized glasses pose and hand 3D keypoints."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("spatialSyncCanvas")
-        self.setMinimumSize(320, 230)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMinimumSize(340, 260)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setStyleSheet(
+            """
+            #spatialSyncCanvas {
+                background: #050713;
+                border: 1px solid #182235;
+                border-radius: 10px;
+            }
+            QLabel#spatialSyncTitle {
+                color: #f8fafc;
+                font-size: 13px;
+                font-weight: 600;
+                letter-spacing: 0px;
+            }
+            QLabel#spatialSyncState {
+                color: #8ea0b7;
+                font-size: 11px;
+            }
+            """
+        )
+
         self._pose: ImuPoseSnapshot | None = None
-        self._hand_result: dict[str, object] | None = None
         self._hands: tuple[_HandPose, ...] = ()
         self._latest_frame_index: int | None = None
-        self._latest_paint_ms: float | None = None
 
-    def sizeHint(self) -> QSize:
-        return QSize(340, 250)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 9, 12, 12)
+        root.setSpacing(7)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        title = QLabel("空间同步", self)
+        title.setObjectName("spatialSyncTitle")
+        self._state_label = QLabel("等待 IMU 与手部位姿", self)
+        self._state_label.setObjectName("spatialSyncState")
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self._state_label)
+        root.addLayout(header)
+
+        self.view = GLViewWidget(self)
+        self.view.setObjectName("spatialSyncViewport")
+        self.view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.view.setBackgroundColor("#050713")
+        self.view.opts["fov"] = 43
+        self.view.setCameraPosition(distance=4.4, elevation=24, azimuth=-45)
+        root.addWidget(self.view, 1)
+
+        self._grid_item = GLLinePlotItem(
+            pos=_floor_grid(),
+            color=_GRID_COLOR,
+            width=1,
+            mode="lines",
+            antialias=True,
+        )
+        self._axis_item = GLLinePlotItem(
+            pos=_axis_lines(),
+            color=np.asarray(
+                [
+                    (0.95, 0.18, 0.21, 0.95),
+                    (0.95, 0.18, 0.21, 0.95),
+                    (0.22, 0.82, 0.48, 0.95),
+                    (0.22, 0.82, 0.48, 0.95),
+                    (0.25, 0.65, 1.00, 0.95),
+                    (0.25, 0.65, 1.00, 0.95),
+                ],
+                dtype=np.float32,
+            ),
+            width=2,
+            mode="lines",
+            antialias=True,
+        )
+        self._glasses_item = GLLinePlotItem(
+            pos=_EMPTY_POINTS,
+            color=_GLASSES_COLOR,
+            width=3,
+            mode="lines",
+            antialias=True,
+        )
+        self._glasses_points = GLScatterPlotItem(
+            pos=_EMPTY_POINTS,
+            color=_GLASSES_BODY_COLOR,
+            size=8,
+            pxMode=True,
+        )
+        self._left_lines = GLLinePlotItem(
+            pos=_EMPTY_POINTS,
+            color=_LEFT_COLOR,
+            width=3,
+            mode="lines",
+            antialias=True,
+        )
+        self._left_points = GLScatterPlotItem(
+            pos=_EMPTY_POINTS,
+            color=_LEFT_COLOR,
+            size=5,
+            pxMode=True,
+        )
+        self._right_lines = GLLinePlotItem(
+            pos=_EMPTY_POINTS,
+            color=_RIGHT_COLOR,
+            width=3,
+            mode="lines",
+            antialias=True,
+        )
+        self._right_points = GLScatterPlotItem(
+            pos=_EMPTY_POINTS,
+            color=_RIGHT_COLOR,
+            size=5,
+            pxMode=True,
+        )
+        for item in (
+            self._grid_item,
+            self._axis_item,
+            self._glasses_item,
+            self._glasses_points,
+            self._left_lines,
+            self._left_points,
+            self._right_lines,
+            self._right_points,
+        ):
+            self.view.addItem(item)
 
     def set_pose(self, pose: ImuPoseSnapshot | None) -> None:
         self._pose = pose
-        self.update()
+        self._update_glasses_item()
+        self._update_state_label()
 
     def set_hand_result(self, result: dict[str, object] | None) -> None:
-        self._hand_result = result
         self._hands = _hands_from_result(result)
         frame_index = result.get("frame_index") if isinstance(result, dict) else None
         self._latest_frame_index = frame_index if _is_real_int(frame_index) else None
-        self.update()
+        self._update_hand_items()
+        self._update_state_label()
 
     def status(self) -> SpatialSyncCanvasStatus:
         sides = {hand.side for hand in self._hands}
@@ -90,118 +211,122 @@ class SpatialSyncCanvas(QWidget):
             latest_frame_index=self._latest_frame_index,
         )
 
-    def paintEvent(self, _event: object) -> None:
-        started_ns = time.perf_counter_ns()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        outer = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        path = QPainterPath()
-        path.addRoundedRect(outer, 7, 7)
-        painter.setClipPath(path)
-
-        background = QLinearGradient(outer.topLeft(), outer.bottomRight())
-        background.setColorAt(0.0, QColor("#070914"))
-        background.setColorAt(0.58, QColor("#0b1120"))
-        background.setColorAt(1.0, QColor("#101725"))
-        painter.fillPath(path, background)
-        self._paint_grid(painter, outer)
-        self._paint_axis(painter, outer)
-        self._paint_glasses(painter, outer)
-        self._paint_hands(painter, outer)
-        self._paint_empty_hint(painter, outer)
-
-        painter.setClipping(False)
-        painter.setPen(QPen(QColor("#273247"), 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(outer, 7, 7)
-        painter.end()
-        self._latest_paint_ms = (time.perf_counter_ns() - started_ns) / 1_000_000
-
-    def _paint_grid(self, painter: QPainter, rect: QRectF) -> None:
-        painter.setPen(QPen(QColor(55, 69, 96, 120), 1))
-        for value in np.linspace(-3.0, 3.0, 13):
-            first = _project((value, 0.0, -2.0), rect)
-            second = _project((value, 0.0, 4.0), rect)
-            painter.drawLine(QLineF(first, second))
-            first = _project((-3.0, 0.0, value), rect)
-            second = _project((3.0, 0.0, value), rect)
-            painter.drawLine(QLineF(first, second))
-
-    def _paint_axis(self, painter: QPainter, rect: QRectF) -> None:
-        origin = _project((0.0, 0.0, 0.0), rect)
-        axes = (
-            ((1.0, 0.0, 0.0), QColor("#ef4444")),
-            ((0.0, 0.8, 0.0), QColor("#22c55e")),
-            ((0.0, 0.0, 1.0), QColor("#38bdf8")),
-        )
-        for point, color in axes:
-            painter.setPen(QPen(color, 2.2))
-            painter.drawLine(QLineF(origin, _project(point, rect)))
-
-    def _paint_glasses(self, painter: QPainter, rect: QRectF) -> None:
+    def _update_glasses_item(self) -> None:
         pose = self._pose
         if pose is None or pose.samples_received == 0:
+            self._glasses_item.setData(pos=_EMPTY_POINTS)
+            self._glasses_points.setData(pos=_EMPTY_POINTS)
             return
-        rotation = _quaternion_matrix(pose.quaternion_wxyz)
-        model = np.asarray(
-            [
-                [-0.55, 0.38, 0.0],
-                [0.55, 0.38, 0.0],
-                [0.55, -0.28, 0.0],
-                [-0.55, -0.28, 0.0],
-                [-0.82, 0.28, -0.9],
-                [0.82, 0.28, -0.9],
-            ],
-            dtype=np.float64,
+        points = _glasses_model_points(pose.quaternion_wxyz)
+        self._glasses_item.setData(pos=_line_segments(points, _GLASSES_CONNECTIONS))
+        self._glasses_points.setData(pos=points)
+
+    def _update_hand_items(self) -> None:
+        left = next((hand for hand in self._hands if hand.side == "left"), None)
+        right = next((hand for hand in self._hands if hand.side == "right"), None)
+        self._set_hand_items(left, self._left_lines, self._left_points)
+        self._set_hand_items(right, self._right_lines, self._right_points)
+
+    def _set_hand_items(
+        self,
+        hand: _HandPose | None,
+        lines: GLLinePlotItem,
+        points: GLScatterPlotItem,
+    ) -> None:
+        if hand is None:
+            lines.setData(pos=_EMPTY_POINTS)
+            points.setData(pos=_EMPTY_POINTS)
+            return
+        scene_points = np.asarray(
+            [_hand_to_scene(point, hand.side) for point in hand.points],
+            dtype=np.float32,
         )
-        transformed = (model @ rotation.T) + np.asarray([0.0, 0.78, 1.05])
-        projected = [_project(point, rect) for point in transformed]
+        lines.setData(pos=_line_segments(scene_points, HAND_CONNECTIONS))
+        points.setData(pos=scene_points)
 
-        face = QPainterPath()
-        face.moveTo(projected[0])
-        for point in projected[1:4]:
-            face.lineTo(point)
-        face.closeSubpath()
-        painter.setPen(QPen(QColor("#f59e0b"), 2.0))
-        painter.setBrush(QColor(245, 158, 11, 82))
-        painter.drawPath(face)
-        painter.setPen(QPen(QColor("#94a3b8"), 1.5))
-        painter.drawLine(QLineF(projected[0], projected[4]))
-        painter.drawLine(QLineF(projected[1], projected[5]))
-
-    def _paint_hands(self, painter: QPainter, rect: QRectF) -> None:
-        for hand in self._hands:
-            color = QColor("#a855f7") if hand.side == "left" else QColor("#facc15")
-            points = [_project(_hand_to_scene(point, hand.side), rect) for point in hand.points]
-            painter.setPen(QPen(color, 2.0))
-            for first, second in HAND_CONNECTIONS:
-                painter.drawLine(QLineF(points[first], points[second]))
-            painter.setBrush(color)
-            painter.setPen(QPen(QColor("#f8fafc"), 0.8))
-            for point in points:
-                painter.drawEllipse(point, 2.6, 2.6)
-
-    def _paint_empty_hint(self, painter: QPainter, rect: QRectF) -> None:
+    def _update_state_label(self) -> None:
         status = self.status()
-        if status.has_imu_pose or status.has_left_hand or status.has_right_hand:
-            return
-        painter.setPen(QColor("#64748b"))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "等待 IMU 与手部位姿")
+        parts: list[str] = []
+        if status.has_imu_pose:
+            parts.append("IMU")
+        if status.has_left_hand:
+            parts.append("左手")
+        if status.has_right_hand:
+            parts.append("右手")
+        value = " · ".join(parts) if parts else "等待 IMU 与手部位姿"
+        if status.latest_frame_index is not None:
+            value = f"{value} · F{status.latest_frame_index}"
+        self._state_label.setText(value)
 
 
-def _project(point: Iterable[float], rect: QRectF) -> QPointF:
-    x, y, z = (float(value) for value in point)
-    depth = max(1.0, z + 5.0)
-    scale = min(rect.width(), rect.height()) * 0.82 / depth
-    screen_x = rect.center().x() + x * scale + z * rect.width() * 0.03
-    screen_y = rect.bottom() - rect.height() * 0.18 - y * scale - z * rect.height() * 0.12
-    return QPointF(screen_x, screen_y)
+_GLASSES_CONNECTIONS = (
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (0, 4),
+    (1, 5),
+    (4, 6),
+    (5, 7),
+    (6, 7),
+)
+
+
+def _floor_grid() -> np.ndarray:
+    lines: list[tuple[float, float, float]] = []
+    for value in np.linspace(-1.8, 1.8, 13):
+        lines.extend(((value, -0.7, 0.0), (value, 2.8, 0.0)))
+        lines.extend(((-1.8, value + 1.1, 0.0), (1.8, value + 1.1, 0.0)))
+    return np.asarray(lines, dtype=np.float32)
+
+
+def _axis_lines() -> np.ndarray:
+    return np.asarray(
+        [
+            (0.0, 0.0, 0.02),
+            (0.65, 0.0, 0.02),
+            (0.0, 0.0, 0.02),
+            (0.0, 0.65, 0.02),
+            (0.0, 0.0, 0.02),
+            (0.0, 0.0, 0.65),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _line_segments(
+    points: np.ndarray,
+    connections: Iterable[tuple[int, int]],
+) -> np.ndarray:
+    segments: list[np.ndarray] = []
+    for first, second in connections:
+        segments.extend((points[first], points[second]))
+    return np.asarray(segments, dtype=np.float32)
+
+
+def _glasses_model_points(quaternion: tuple[float, float, float, float]) -> np.ndarray:
+    rotation = _quaternion_matrix(quaternion)
+    model = np.asarray(
+        [
+            (-0.42, -0.03, 0.25),
+            (0.42, -0.03, 0.25),
+            (0.42, -0.03, -0.18),
+            (-0.42, -0.03, -0.18),
+            (-0.64, 0.34, 0.16),
+            (0.64, 0.34, 0.16),
+            (-0.72, 0.86, 0.05),
+            (0.72, 0.86, 0.05),
+        ],
+        dtype=np.float64,
+    )
+    transformed = (model @ rotation.T) + np.asarray([0.0, 0.65, 0.92])
+    return transformed.astype(np.float32)
 
 
 def _hand_to_scene(point: tuple[float, float, float], side: str) -> tuple[float, float, float]:
     x, y, z = point
-    side_offset = -0.55 if side == "left" else 0.55
-    return x * 1.7 + side_offset, -y * 1.7 + 0.45, z * 1.2 + 1.35
+    side_offset = -0.50 if side == "left" else 0.50
+    return x * 1.8 + side_offset, z * 1.25 + 0.9, -y * 1.8 + 0.55
 
 
 def _hands_from_result(result: dict[str, object] | None) -> tuple[_HandPose, ...]:

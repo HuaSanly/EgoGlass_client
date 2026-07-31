@@ -42,21 +42,24 @@ compact capture controls for video, recording, and session creation. Offline
 generation uses `StateToolTip` for its real task lifecycle, with `InfoBar`
 reserved for terminal success and error feedback.
 
-Only two widgets use custom painting because the component library has no
-equivalent:
+Only VideoCanvas uses custom painting because the component library has no
+direct RGB frame surface:
 
-- `VideoCanvas` paints immutable NumPy RGB buffers and frame-aligned hand data.
-- `SpatialSyncCanvas` paints the right-side spatial synchronization view from
-  IMU pose and hand-tracking 3D keypoints.
+- VideoCanvas paints immutable NumPy RGB buffers and frame-aligned hand data.
+- SpatialSyncCanvas uses pyqtgraph 0.14.0's OpenGL GLViewWidget with the
+  environment's explicit PyOpenGL 3.1.0 dependency for the
+  right-side spatial synchronization view, with IMU pose and hand-tracking 3D
+  keypoints rendered as real 3D line and scatter items. pyqtgraph is MIT
+  licensed and compatible with the GPLv3 client.
 
 The same `VideoCanvas` switches between live input and replay. Switching modes
 does not reconnect WebRTC, create another media surface, or stop the current
 stream.
 
-In live mode the right side is a single `空间同步` card. It contains the dark
-grid visualization plus compact IMU, left-hand, right-hand, and frame-link
-status blocks. The old capture, hand, frame, and IMU vertical cards are not part
-of the home page.
+In live mode the right side has two peer sections: a standalone dark space sync
+OpenGL viewport and one `同步数据` Fluent card. The data card contains compact
+IMU, left-hand, right-hand, and frame-link status blocks. The old capture, hand,
+frame, and IMU vertical cards are not part of the home page.
 
 ## Four-by-three video
 
