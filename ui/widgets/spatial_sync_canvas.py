@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 from pyqtgraph.opengl import (
@@ -15,7 +15,7 @@ from pyqtgraph.opengl import (
     GLTextItem,
     GLViewWidget,
 )
-from qfluentwidgets import CaptionLabel, StrongBodyLabel
+from qfluentwidgets import CaptionLabel, FluentIcon, StrongBodyLabel, TransparentToolButton
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 
@@ -97,6 +97,8 @@ class _HandPose:
 class SpatialSyncCanvas(QWidget):
     """OpenGL camera-frame view of the glasses and tracked hands."""
 
+    reset_pose_requested = pyqtSignal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("spatialSyncCanvas")
@@ -140,6 +142,13 @@ class SpatialSyncCanvas(QWidget):
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(self._state_label)
+        self.reset_pose_button = TransparentToolButton()
+        self.reset_pose_button.setObjectName("imuPoseResetButton")
+        self.reset_pose_button.setIcon(FluentIcon.SYNC)
+        self.reset_pose_button.setToolTip("刷新眼镜姿态")
+        self.reset_pose_button.setFixedSize(28, 28)
+        self.reset_pose_button.clicked.connect(self.reset_pose_requested.emit)
+        header.addWidget(self.reset_pose_button)
         root.addLayout(header)
 
         self.view = GLViewWidget(self)

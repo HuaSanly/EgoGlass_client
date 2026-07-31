@@ -103,6 +103,20 @@ def test_initial_library_refresh_scans_once_and_caches_the_result() -> None:
     asyncio.run(scenario())
 
 
+def test_imu_pose_reset_command_resets_preview() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        runtime = UnifiedRuntimeHost.__new__(UnifiedRuntimeHost)
+        runtime.imu_preview = SimpleNamespace(reset_orientation=lambda: calls.append("reset"))
+
+        result = await runtime._reset_imu_pose()
+
+        assert calls == ["reset"]
+        assert result.detail == "IMU pose reset"
+
+    asyncio.run(scenario())
+
+
 def test_perception_result_forwarder_keeps_only_the_newest_unique_result() -> None:
     async def scenario() -> None:
         first = {

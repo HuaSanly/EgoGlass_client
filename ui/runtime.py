@@ -49,6 +49,11 @@ class RuntimeConfig:
             raise ValueError("pairing_token must contain at least 16 characters")
 
 
+@dataclass(frozen=True, slots=True)
+class _CommandDetail:
+    detail: str
+
+
 class UnifiedRuntimeHost:
     """Run gateway, recording, perception, and UI state collection in one process."""
 
@@ -182,6 +187,9 @@ class UnifiedRuntimeHost:
     def request_library_refresh(self) -> None:
         self._track_command("refresh-library", self._refresh_library())
 
+    def request_imu_pose_reset(self) -> None:
+        self._track_command("imu-pose-reset", self._reset_imu_pose())
+
     def media_path(self, session_id: str, clip_id: str) -> concurrent.futures.Future[Path | None]:
         return self.submit(self.recording.media_path(session_id, clip_id))
 
@@ -208,6 +216,10 @@ class UnifiedRuntimeHost:
                 action=action,
             )
         )
+
+    async def _reset_imu_pose(self) -> object:
+        self.imu_preview.reset_orientation()
+        return _CommandDetail("IMU pose reset")
 
     def _track_command(self, name: str, coroutine: Coroutine[Any, Any, Any]) -> None:
         future = self.submit(coroutine)

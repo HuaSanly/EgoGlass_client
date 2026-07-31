@@ -108,6 +108,13 @@ class ImuPreviewRuntime:
                 latest_sample_age_ms=round(age_ms, 3) if age_ms is not None else None,
             )
 
+    def reset_orientation(self) -> None:
+        """Reset the preview orientation while keeping the current IMU stream alive."""
+
+        with self._lock:
+            self._quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+            self._last_gyro_timestamp_ns = None
+
     async def close(self) -> None:
         if self._closed:
             return

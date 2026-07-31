@@ -55,3 +55,26 @@ def test_imu_preview_consumes_ordered_samples_and_produces_finite_pose() -> None
             await runtime.close()
 
     asyncio.run(run())
+
+
+def test_imu_preview_reset_orientation_returns_to_identity_pose() -> None:
+    async def run() -> None:
+        runtime = ImuPreviewRuntime()
+        try:
+            with runtime._lock:
+                runtime._quaternion = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float64)
+                runtime._last_gyro_timestamp_ns = 123
+
+            runtime.reset_orientation()
+            snapshot = runtime.snapshot()
+
+            assert snapshot.quaternion_wxyz == (1.0, 0.0, 0.0, 0.0)
+            assert snapshot.roll_degrees == 0.0
+            assert snapshot.pitch_degrees == 0.0
+            assert snapshot.yaw_degrees == 0.0
+            with runtime._lock:
+                assert runtime._last_gyro_timestamp_ns is None
+        finally:
+            await runtime.close()
+
+    asyncio.run(run())

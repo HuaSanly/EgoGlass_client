@@ -273,6 +273,7 @@ class HomeView(QWidget):
         layout.setSpacing(12)
 
         self.spatial_canvas = SpatialSyncCanvas(panel)
+        self.spatial_canvas.reset_pose_requested.connect(self.runtime.request_imu_pose_reset)
         layout.addWidget(self.spatial_canvas)
 
         data_card = HeaderCardWidget("同步数据", panel)

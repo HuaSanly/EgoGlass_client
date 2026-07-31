@@ -56,6 +56,9 @@ direct RGB frame surface:
   the whole camera reference frame, so the hands remain camera-relative rather
   than being independently offset by the UI. pyqtgraph is MIT licensed and
   compatible with the GPLv3 client.
+  The small refresh button in this viewport resets only the IMU preview
+  orientation to the camera-frame identity; it does not rewrite hand-tracking
+  coordinates or claim a VIO relocalization.
 
 The same `VideoCanvas` switches between live input and replay. Switching modes
 does not reconnect WebRTC, create another media surface, or stop the current

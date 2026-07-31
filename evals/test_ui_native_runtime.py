@@ -124,6 +124,8 @@ def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
     assert "_camera_points_to_scene" in spatial_source
     assert "_hand_to_scene" not in spatial_source
     assert "keypoints_3d_camera_m" in spatial_source
+    assert "imuPoseResetButton" in spatial_source
+    assert "reset_pose_requested.connect(self.runtime.request_imu_pose_reset)" in source
     assert "QPainter" not in spatial_source
     assert "StrongBodyLabel" in spatial_source
     assert "CaptionLabel" in spatial_source
@@ -144,6 +146,7 @@ def test_fluent_home_renders_without_overlap_at_supported_sizes(
         request_session=lambda _action: None,
         request_stream=lambda _action: None,
         request_recording=lambda _action: None,
+        request_imu_pose_reset=lambda: None,
         request_replay_generation=lambda _session_id: None,
         stop=lambda: None,
     )

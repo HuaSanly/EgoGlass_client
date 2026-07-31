@@ -36,6 +36,7 @@ class RuntimeStub:
         self.recording_actions: list[str] = []
         self.replay_sessions: list[str] = []
         self.perception_result: dict[str, object] | None = None
+        self.imu_pose_reset_calls = 0
 
     def snapshot(self) -> RuntimeSnapshot:
         return self.snapshot_value
@@ -64,6 +65,9 @@ class RuntimeStub:
 
     def request_replay_generation(self, session_id: str) -> None:
         self.replay_sessions.append(session_id)
+
+    def request_imu_pose_reset(self) -> None:
+        self.imu_pose_reset_calls += 1
 
     def media_path(self, _session_id: str, _clip_id: str) -> Future[Path | None]:
         future: Future[Path | None] = Future()
@@ -303,11 +307,13 @@ def test_home_controls_call_runtime_commands() -> None:
         home._toggle_recording()
         home.refresh_button.click()
         home.session_button.click()
+        home.spatial_canvas.reset_pose_button.click()
 
         assert runtime.stream_actions == [StreamControlAction.STOP]
         assert runtime.recording_actions == ["start"]
         assert runtime.refresh_calls == 1
         assert runtime.session_actions == ["new"]
+        assert runtime.imu_pose_reset_calls == 1
     finally:
         home.close_resources()
 
@@ -339,6 +345,7 @@ def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
         assert home.session_button not in sidebar_widgets
         assert home.findChild(type(home.stream_button), "streamControlButton") is home.stream_button
         assert len(home.findChildren(SpatialSyncCanvas)) == 1
+        assert home.spatial_canvas.reset_pose_button.objectName() == "imuPoseResetButton"
         assert not isinstance(home.spatial_canvas.parent(), HeaderCardWidget)
         assert home.spatial_canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
         assert "background: transparent" in home.sidebar.viewport().styleSheet()
