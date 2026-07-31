@@ -7,7 +7,7 @@ The runtime uses one Python process and one Conda environment named `egoglass`.
 ## Layout
 
 ```text
-ui/                         # Dear PyGui application and native views
+ui/                         # PyQt Fluent application and native home view
 src/
   annotation/               # Annotation contracts, editor state, and persistence
   ingest_gateway/           # WebRTC ingress, recording, and raw sessions
@@ -17,12 +17,11 @@ src/
 config/                     # Shared client configuration
 tests/                      # Deterministic gate tests
 evals/                      # Periodic quality evaluations and device evidence
-scripts/                    # Setup, launch, build, benchmark, and inspection
-packaging/                  # Windows executable packaging assets
+scripts/                    # Setup, launch, benchmark, and inspection
 docs/                       # Component operation notes
 ```
 
-Dear PyGui owns the main thread. WebRTC and Uvicorn use one asyncio thread;
+PyQt owns the main thread. WebRTC and Uvicorn use one asyncio thread;
 RGB conversion, inference, recording, replay, and IMU orientation use bounded
 workers inside that same process. The native UI calls runtime objects directly.
 HTTP port `8770` remains available for Glass3 signaling and external diagnostics.
@@ -67,13 +66,11 @@ Completed recordings live under ignored path `local-data/recordings/`.
 Annotation revisions are written beneath each session's `annotations/`
 directory and do not modify source MP4 or telemetry files.
 
-Build the local Windows executable with:
+## License
 
-```powershell
-.\scripts\build-desktop.ps1
-```
-
-The ignored output is `dist/EgoGlass/EgoGlass.exe`.
+The client source is licensed under GPLv3 because its native UI links PyQt6
+and PyQt6-Fluent-Widgets. Dependency license details are recorded in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Verification
 

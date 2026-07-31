@@ -46,7 +46,7 @@ The client uses one native Windows Conda environment named `egoglass`, one root
 trees, eval trees, or project manifests.
 
 Non-UI code packages live directly under `src/` and use concise responsibility
-names: `annotation`, `ingest_gateway`, and `perception`. Native Dear PyGui code
+names: `annotation`, `ingest_gateway`, and `perception`. Native PyQt Fluent code
 lives in the repository-root `ui/` package. The `perception` package is the
 independently reusable research and runtime core; its processing stages live
 beneath that package. `annotation` owns validation and persistence while `ui`

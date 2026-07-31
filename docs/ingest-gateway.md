@@ -39,9 +39,9 @@ aiortc is the only component that terminates Glass3 WebRTC and decodes H.264.
 Each decoded `av.VideoFrame` is submitted only to `LiveFrameBuffer`, which
 retains at most the newest pending frame and converts it once to immutable
 contiguous RGB on one worker. The same RGB array is then forwarded in process
-to Dear PyGui and perception. CUDA inference has its own newest-frame queue, so
-it cannot block media reception. Dear PyGui swaps the RGB frame through two raw
-textures without HTTP or image encoding.
+to the PyQt `VideoCanvas` and perception. CUDA inference has its own newest-frame
+queue, so it cannot block media reception. Qt paints the RGB buffer through
+`QImage.Format_RGB888` without HTTP or image encoding.
 
 The display consumer applies a bounded PTS-driven presentation queue after RGB
 conversion. It absorbs short LAN/RTP delivery bursts with roughly three frames of
@@ -73,7 +73,7 @@ and a 1.5x lead over the next cluster before releasing buffered matches. The
 remaining below half of a 30 fps frame. Camera-start generation changes clear
 the pending queues and require a fresh calibration.
 
-## Capture sessions and HD recording
+## Capture sessions and 4:3 recording
 
 The first recording request automatically creates a collection session before
 the server-authoritative three-second countdown. It immediately starts
@@ -90,10 +90,12 @@ cancels a countdown or flushes an active MP4, drains telemetry, checkpoints
 SQLite WAL, writes the final quality report and manifest, and only then
 returns.
 
-Recording accepts only an active 1280x720 Glass3 source. It uses the incoming
-decoded frames at their full dimensions, a nominal 30 FPS H.264 encoder
-profile, and a buffered aiortc `MediaRelay` subscription so the operator
-preview does not consume recording frames. The MP4 is variable-frame-rate: a
+The current Glass3 capture profile is 640x480 at a nominal 30 FPS. Recording
+uses incoming decoded frames at their full dimensions and validates that the
+source dimensions are positive, even, and within the encoder limit. It does not
+resize, crop, or stretch the source. A buffered aiortc `MediaRelay` subscription
+ensures the operator preview does not consume recording frames. The MP4 is
+variable-frame-rate: a
 normal monotonic WebRTC/RTP source PTS is rebased to zero and preserved with a
 90 kHz encoder time base. A missing or non-monotonic source PTS starts a
 continuous segment from the measured adjacent client-receipt interval instead
@@ -143,10 +145,10 @@ next startup, sessions left `active` or `finalizing` are marked `incomplete`,
 SQLite WAL is replayed and checkpointed, and `quality.json` records the unclean
 recovery. Incomplete sessions are never silently treated as training-ready.
 
-The fixed 1280x720 profile applies to new recordings only. Library manifests
-retain each clip's actual dimensions so recordings from earlier profiles,
-including 1920x1080 sessions, remain visible, playable, renameable, and
-deletable after a profile change.
+New Glass3 recordings normally use the 640x480 4:3 profile. Library manifests
+retain every clip's actual dimensions, so recordings from earlier profiles,
+including 1280x720 and 1920x1080 sessions, remain visible and playable after a
+profile change. The native 4:3 canvas letterboxes those non-4:3 recordings.
 
 Deleting a clip is loopback-only. The gateway first moves the MP4 out of its
 published path, atomically removes it from `session.json`, and then deletes the
@@ -169,8 +171,8 @@ conda run -n egoglass python scripts/inspect-recording.py F:\path\to\session\cli
 ~~~
 
 The command exits nonzero unless the file is a finalized, playable MP4 with
-one H.264 1280x720 video stream, at least one decodable frame, and exact,
-strictly increasing frame PTS. It prints the measured average FPS,
+one H.264 video stream using valid even dimensions, at least one decodable
+frame, and exact, strictly increasing frame PTS. It prints the measured average FPS,
 presentation-time span, stream properties, and decoded frame count as JSON on
 success. The measured average is allowed to differ from the nominal 30 FPS
 capture profile.

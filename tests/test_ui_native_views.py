@@ -1,179 +1,308 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from concurrent.futures import Future
 from pathlib import Path
-from types import SimpleNamespace
 
-import dearpygui.dearpygui as dpg
 import numpy as np
+from PyQt6.QtWidgets import QApplication
 
-from annotation.store import AnnotationStore
 from ingest_gateway.live_frames import LiveFrame
-from ui.app import NativeApplication
-from ui.views.library import LibraryView
-from ui.views.live import _perception_result_key
-from ui.widgets.video_surface import VideoSurface, fit_image_geometry
+from ingest_gateway.webrtc_models import StreamControlAction
+from ui.app import MainWindow
+from ui.state import RuntimeSnapshot
+from ui.views.home import HomeView, ViewerMode, _confidence_text
+from ui.widgets.video_canvas import VideoCanvas, fit_image_geometry
 
 
-def test_native_views_cover_library_annotation_and_diagnostics() -> None:
-    repository = Path(__file__).parents[1]
-    app = (repository / "ui" / "app.py").read_text(encoding="utf-8")
-    library = (repository / "ui" / "views" / "library.py").read_text(encoding="utf-8")
-    annotation = (repository / "ui" / "views" / "annotation.py").read_text(
-        encoding="utf-8"
-    )
-    diagnostics = (repository / "ui" / "views" / "diagnostics.py").read_text(
-        encoding="utf-8"
-    )
+class RuntimeStub:
+    def __init__(self) -> None:
+        self.snapshot_value = RuntimeSnapshot()
+        self.frame: LiveFrame | None = None
+        self.stop_calls = 0
+        self.refresh_calls = 0
+        self.session_actions: list[str] = []
+        self.stream_actions: list[StreamControlAction] = []
+        self.recording_actions: list[str] = []
+        self.replay_sessions: list[str] = []
 
-    assert "LibraryView" in app
-    assert "AnnotationView" in app
-    assert "DiagnosticsView" in app
-    assert "self.live_view.open_clip" in library
-    assert "AnnotationController" in annotation
-    assert "self.live_view.open_clip" in annotation
-    assert "add_phase" in annotation
-    assert "controller.publish" in annotation
-    assert "snapshot.recent_events" in diagnostics
+    def snapshot(self) -> RuntimeSnapshot:
+        return self.snapshot_value
 
+    def latest_frame(self) -> LiveFrame | None:
+        return self.frame
 
-def test_native_ui_has_one_video_surface_instance() -> None:
-    repository = Path(__file__).parents[1]
-    ui_sources = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (repository / "ui").rglob("*.py")
-        if path.name != "video_surface.py"
-    )
+    def command_results(self) -> tuple[object, ...]:
+        return ()
 
-    assert ui_sources.count("VideoSurface(") == 1
+    def request_library_refresh(self) -> None:
+        self.refresh_calls += 1
 
+    def request_session(self, action: str) -> None:
+        self.session_actions.append(action)
 
-def test_library_refresh_button_requests_a_real_background_scan() -> None:
-    class Runtime:
-        def __init__(self) -> None:
-            self.refresh_count = 0
+    def request_stream(self, action: StreamControlAction) -> None:
+        self.stream_actions.append(action)
 
-        def request_library_refresh(self) -> None:
-            self.refresh_count += 1
+    def request_recording(self, action: str) -> None:
+        self.recording_actions.append(action)
 
-    runtime = Runtime()
-    view = LibraryView.__new__(LibraryView)
-    view.runtime = runtime  # type: ignore[assignment]
+    def request_replay_generation(self, session_id: str) -> None:
+        self.replay_sessions.append(session_id)
 
-    view._force_refresh()
+    def media_path(self, _session_id: str, _clip_id: str) -> Future[Path | None]:
+        future: Future[Path | None] = Future()
+        future.set_result(None)
+        return future
 
-    assert runtime.refresh_count == 1
+    def replay_video_path(self, *_values: str) -> Future[Path]:
+        future: Future[Path] = Future()
+        future.set_exception(FileNotFoundError("missing replay"))
+        return future
 
-
-def test_native_app_updates_only_the_active_tab(monkeypatch) -> None:
-    class View:
-        def __init__(self) -> None:
-            self.snapshots: list[object] = []
-
-        def update(self, snapshot: object) -> None:
-            self.snapshots.append(snapshot)
-
-    application = NativeApplication(SimpleNamespace())  # type: ignore[arg-type]
-    application.live_view = View()  # type: ignore[assignment]
-    application.library_view = View()  # type: ignore[assignment]
-    application.annotation_view = View()  # type: ignore[assignment]
-    application.diagnostics_view = View()  # type: ignore[assignment]
-    snapshot = object()
-    monkeypatch.setattr(dpg, "get_value", lambda _tag: "live-tab")
-
-    application._update_active_view(snapshot)  # type: ignore[arg-type]
-
-    assert application.live_view.snapshots == [snapshot]  # type: ignore[union-attr]
-    assert application.library_view.snapshots == []  # type: ignore[union-attr]
-    assert application.annotation_view.snapshots == []  # type: ignore[union-attr]
-    assert application.diagnostics_view.snapshots == []  # type: ignore[union-attr]
+    def stop(self) -> None:
+        self.stop_calls += 1
 
 
-def test_every_native_view_builds_in_real_dearpygui_context(tmp_path: Path) -> None:
-    runtime = SimpleNamespace(annotation=AnnotationStore(tmp_path))
-    application = NativeApplication(runtime)  # type: ignore[arg-type]
-    dpg.create_context()
+def _frame(index: int, *, width: int = 640, height: int = 480) -> LiveFrame:
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    image.setflags(write=False)
+    return LiveFrame("session", "connection", index, index, index, image)
+
+
+def test_fluent_window_registers_only_home_and_one_video_canvas(
+    qt_application: QApplication,
+) -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
     try:
-        application._build()
-        assert dpg.does_item_exist("live-tab")
-        assert dpg.does_item_exist("library-tab")
-        assert dpg.does_item_exist("annotation-tab")
-        assert dpg.does_item_exist("diagnostics-tab")
+        window.show()
+        qt_application.processEvents()
+
+        assert window.stackedWidget.count() == 1
+        assert window.stackedWidget.widget(0) is window.home_view
+        assert len(window.findChildren(VideoCanvas)) == 1
+        assert not (Path(__file__).parents[1] / "ui/views/library.py").exists()
+        assert not (Path(__file__).parents[1] / "ui/views/annotation.py").exists()
+        assert not (Path(__file__).parents[1] / "ui/views/diagnostics.py").exists()
     finally:
-        if application.live_view is not None:
-            application.live_view.close()
-        dpg.destroy_context()
+        window.close()
+        qt_application.processEvents()
+    assert runtime.stop_calls == 1
 
 
-def test_video_surface_replaces_dynamic_resolution_texture_without_reusing_alias() -> None:
-    def frame(index: int, width: int, height: int) -> LiveFrame:
-        image = np.zeros((height, width, 3), dtype=np.uint8)
-        return LiveFrame("session", "connection", index, index, index, image)
-
-    dpg.create_context()
+def test_live_and_replay_modes_share_the_same_canvas(
+    qt_application: QApplication,
+) -> None:
+    home = HomeView(RuntimeStub())  # type: ignore[arg-type]
     try:
-        with dpg.window() as parent:
-            surface = VideoSurface(
-                parent=parent,
-                width=8,
-                height=6,
-                source_width=4,
-                source_height=3,
-            )
-        original_tag = surface._texture_tag
-        assert surface.update_frame(frame(0, 2, 2))
-        second_tag = surface._texture_tag
-        assert second_tag != original_tag
-        assert dpg.does_item_exist(second_tag)
-        assert surface.update_frame(frame(1, 4, 3))
-        assert surface._texture_tag not in {original_tag, second_tag}
-        assert dpg.does_item_exist(surface._texture_tag)
-        assert surface.status().recent_upload_fps > 0
+        original_canvas = home.canvas
+        home.set_viewer_mode(ViewerMode.REPLAY)
+        assert home.canvas is original_canvas
+        assert home.replay_controls.isVisible() is False
+        home.show()
+        qt_application.processEvents()
+        assert home.replay_controls.isVisible()
+        assert home.mode_badge.text() == "来源 · 回放"
+        home.set_viewer_mode(ViewerMode.LIVE)
+        assert home.canvas is original_canvas
+        assert not home.replay_controls.isVisible()
+        assert home.mode_badge.text() == "来源 · 实时"
     finally:
-        dpg.destroy_context()
+        home.close_resources()
 
 
-def test_video_surface_letterboxes_four_by_three_without_cropping_or_stretching() -> None:
-    geometry = fit_image_geometry(960, 540, 640, 480)
+def test_four_by_three_canvas_fills_a_four_by_three_area() -> None:
+    geometry = fit_image_geometry(960, 720, 640, 480)
 
-    assert geometry.minimum == (120.0, 0.0)
-    assert geometry.maximum == (840.0, 540.0)
-    assert geometry.scale == 1.125
-
-
-def test_video_surface_swaps_raw_texture_buffers_instead_of_mutating_visible_frame() -> None:
-    def frame(index: int, value: int) -> LiveFrame:
-        image = np.full((3, 4, 3), value, dtype=np.uint8)
-        return LiveFrame("session", "connection", index, index, index, image)
-
-    dpg.create_context()
-    try:
-        with dpg.window() as parent:
-            surface = VideoSurface(
-                parent=parent,
-                width=8,
-                height=6,
-                source_width=4,
-                source_height=3,
-            )
-        initial_tag = surface._texture_tag
-        assert surface.update_frame(frame(0, 51))
-        first_frame_tag = surface._texture_tag
-        first_frame_buffer = surface._texture_buffers[surface._front_texture_index]
-        first_frame_snapshot = first_frame_buffer.copy()
-
-        assert first_frame_tag != initial_tag
-        assert surface.update_frame(frame(1, 204))
-        assert surface._texture_tag == initial_tag
-        np.testing.assert_array_equal(first_frame_buffer, first_frame_snapshot)
-    finally:
-        dpg.destroy_context()
+    assert geometry.minimum == (0.0, 0.0)
+    assert geometry.maximum == (960.0, 720.0)
+    assert geometry.scale == 1.5
 
 
-def test_perception_result_identity_changes_for_each_inference_frame() -> None:
-    first = {
+def test_non_four_by_three_source_is_letterboxed_without_crop_or_stretch() -> None:
+    geometry = fit_image_geometry(960, 720, 1280, 720)
+
+    assert geometry.minimum == (0.0, 90.0)
+    assert geometry.maximum == (960.0, 630.0)
+    assert geometry.scale == 0.75
+
+
+def test_video_canvas_keeps_rgb_frame_alive_and_paints_it(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas()
+    canvas.resize(960, 720)
+    frame = _frame(3)
+
+    assert canvas.set_frame(frame)
+    pixmap = canvas.grab()
+    qt_application.processEvents()
+
+    assert pixmap.size().width() == 960
+    assert pixmap.size().height() == 720
+    assert canvas._frame is frame
+    assert canvas.status().presented_frames == 1
+    assert canvas.status().latest_frame_index == 3
+
+
+def test_overlay_is_painted_only_for_the_displayed_frame(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas()
+    canvas.resize(960, 720)
+    canvas.set_frame(_frame(10))
+    base = {
         "session_id": "session",
         "sequence_id": "connection",
-        "frame_index": 10,
+        "source_image_width_px": 640,
+        "source_image_height_px": 480,
+        "hands": [
+            {
+                "handedness": "left",
+                "source_keypoints_2d_px": [],
+                "source_bbox_xyxy_px": [100, 100, 200, 200],
+            }
+        ],
     }
-    second = {**first, "frame_index": 11}
 
-    assert _perception_result_key(first) == ("session", "connection", 10)
-    assert _perception_result_key(second) == ("session", "connection", 11)
+    canvas.set_overlay({**base, "frame_index": 9})
+    mismatch = canvas.grab().toImage().pixelColor(150, 150)
+    canvas.set_overlay({**base, "frame_index": 10})
+    matched = canvas.grab().toImage().pixelColor(150, 150)
+    qt_application.processEvents()
+
+    assert mismatch != matched
+    assert matched.green() > matched.red()
+
+
+def test_home_controls_call_runtime_commands() -> None:
+    runtime = RuntimeStub()
+    home = HomeView(runtime)  # type: ignore[arg-type]
+    try:
+        home.stream_button.setProperty("action", "stop")
+        home.recording_button.setProperty("action", "start")
+        home._toggle_stream()
+        home._toggle_recording()
+        home.refresh_button.click()
+        home.session_button.click()
+
+        assert runtime.stream_actions == [StreamControlAction.STOP]
+        assert runtime.recording_actions == ["start"]
+        assert runtime.refresh_calls == 1
+        assert runtime.session_actions == ["new"]
+    finally:
+        home.close_resources()
+
+
+def test_top_context_badges_show_the_active_source_and_session() -> None:
+    home = HomeView(RuntimeStub())  # type: ignore[arg-type]
+    try:
+        home._live_session_id = "live-session-1234"
+        home._sync_context_badges()
+        assert home.mode_badge.text() == "来源 · 实时"
+        assert home.session_badge.text() == "会话 · live-ses"
+
+        home._session_labels = {"记录会话": "replay-session-5678"}
+        home.session_combo.addItem("记录会话")
+        home.session_combo.setCurrentText("记录会话")
+        home.set_viewer_mode(ViewerMode.REPLAY)
+        assert home.mode_badge.text() == "来源 · 回放"
+        assert home.session_badge.text() == "会话 · replay-s"
+    finally:
+        home.close_resources()
+
+
+def test_replay_generation_tooltip_tracks_actual_job_completion(
+    qt_application: QApplication,
+) -> None:
+    home = HomeView(RuntimeStub())  # type: ignore[arg-type]
+    try:
+        home.show()
+        running = RuntimeSnapshot(
+            perception={
+                "replay": {
+                    "state": "running",
+                    "detail": "processing 3/10 frames",
+                    "frames_processed": 3,
+                    "frame_total": 10,
+                    "report": None,
+                }
+            }
+        )
+        home._update_replay_job(running)
+        qt_application.processEvents()
+        assert home._replay_state_tooltip is not None
+        assert home._replay_state_tooltip.isVisible()
+
+        complete = RuntimeSnapshot(
+            perception={
+                "replay": {
+                    "state": "complete",
+                    "detail": "annotated replay is ready",
+                    "frames_processed": 10,
+                    "frame_total": 10,
+                    "report": {},
+                }
+            }
+        )
+        home._update_replay_job(complete)
+        assert home._replay_state_tooltip is None
+        assert home.open_result_button.isEnabled()
+    finally:
+        home.close_resources()
+
+
+def test_confidence_text_includes_every_score() -> None:
+    text = _confidence_text(
+        "左手",
+        {
+            "detector_confidence": 0.91,
+            "reconstruction_quality": 0.82,
+            "depth_score": 0.73,
+            "coverage_score": 0.64,
+            "compactness_score": 0.55,
+            "final_confidence": 0.46,
+        },
+    )
+
+    assert text == (
+        "左手\n检测 0.91  ·  重建 0.82  ·  深度 0.73  ·  "
+        "覆盖 0.64  ·  紧致 0.55  ·  最终 0.46"
+    )
+
+
+def test_ui_source_has_no_dearpygui_compatibility_layer() -> None:
+    repository = Path(__file__).parents[1]
+    sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in (repository / "ui").rglob("*.py")
+    )
+
+    assert "dearpygui" not in sources.lower()
+    assert "VideoSurface" not in sources
+
+
+def test_canvas_benchmark_runs_directly_from_its_documented_path() -> None:
+    repository = Path(__file__).parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repository / "scripts" / "benchmark_native_texture.py"),
+            "--frames",
+            "20",
+        ],
+        cwd=repository,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["width"] == 640
+    assert report["height"] == 480
+    assert report["frames"] == 10
+    assert report["effective_fps"] > 0

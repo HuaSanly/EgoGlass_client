@@ -80,8 +80,8 @@ External diagnostics can read these loopback-only endpoints:
 - `GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}`
 
 Live visualization reads the in-process decoded RGB buffer and draws structured
-hand-tracking results on a Dear PyGui layer. The model does not encode a
-separate live preview image.
+hand-tracking results directly on the PyQt `VideoCanvas`. The model does not
+encode a separate live preview image.
 
 Offline replay renders an annotated MP4 for every clip and one `results.jsonl`
 under `<session>/perception/hand-tracking/<run-id>/`. It never overwrites raw

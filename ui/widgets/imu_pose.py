@@ -1,57 +1,52 @@
 from __future__ import annotations
 
-import dearpygui.dearpygui as dpg
 import numpy as np
+from PyQt6.QtCore import QLineF, QRectF, QSize, Qt
+from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtWidgets import QWidget
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 
 
-class ImuPoseWidget:
-    """Project a lightweight glasses wireframe from the latest preview quaternion."""
+class ImuPoseCanvas(QWidget):
+    """Paint the lightweight glasses pose preview from the latest IMU quaternion."""
 
-    def __init__(self, *, parent: int | str, width: int = 320, height: int = 150) -> None:
-        self.width = width
-        self.height = height
-        self._drawlist = "imu-pose-drawlist"
-        self._layer = "imu-pose-layer"
-        with dpg.drawlist(width=width, height=height, parent=parent, tag=self._drawlist):
-            dpg.draw_rectangle(
-                (0, 0),
-                (width, height),
-                color=(48, 56, 59, 255),
-                fill=(12, 15, 16, 255),
-            )
-            dpg.add_draw_layer(tag=self._layer)
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._pose: ImuPoseSnapshot | None = None
+        self.setMinimumHeight(128)
 
-    def update(self, pose: ImuPoseSnapshot | None) -> None:
-        dpg.delete_item(self._layer, children_only=True)
-        if pose is None:
+    def sizeHint(self) -> QSize:
+        return QSize(320, 148)
+
+    def set_pose(self, pose: ImuPoseSnapshot | None) -> None:
+        self._pose = pose
+        self.update()
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#d7dde7"), 1))
+        painter.setBrush(QColor("#f7f9fc"))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
+        if self._pose is None:
+            painter.setPen(QColor("#8a94a3"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "等待 IMU")
             return
-        rotation = _quaternion_matrix(pose.quaternion_wxyz)
+
+        rotation = _quaternion_matrix(self._pose.quaternion_wxyz)
         points = _wireframe_points() @ rotation.T
-        projected = _project(points, self.width, self.height)
+        projected = _project(points, self.width(), self.height())
+        painter.setPen(QPen(QColor("#2f6fed"), 2.2))
         for first, second in _wireframe_edges():
-            dpg.draw_line(
-                tuple(projected[first]),
-                tuple(projected[second]),
-                color=(93, 199, 164, 255),
-                thickness=2.0,
-                parent=self._layer,
-            )
+            painter.drawLine(QLineF(*projected[first], *projected[second]))
+
         origin = np.array([[0.0, 0.0, 0.0]])
         axes = np.array([[0.9, 0.0, 0.0], [0.0, 0.9, 0.0], [0.0, 0.0, 0.9]])
-        axis_points = _project(np.vstack((origin, axes)) @ rotation.T, self.width, self.height)
-        for index, color in enumerate(
-            ((229, 89, 79, 255), (93, 199, 164, 255), (89, 151, 227, 255)),
-            start=1,
-        ):
-            dpg.draw_line(
-                tuple(axis_points[0]),
-                tuple(axis_points[index]),
-                color=color,
-                thickness=2.5,
-                parent=self._layer,
-            )
+        axis_points = _project(np.vstack((origin, axes)) @ rotation.T, self.width(), self.height())
+        for index, color in enumerate(("#dc4c3e", "#16a085", "#2f6fed"), start=1):
+            painter.setPen(QPen(QColor(color), 2.6))
+            painter.drawLine(QLineF(*axis_points[0], *axis_points[index]))
 
 
 def _quaternion_matrix(quaternion: tuple[float, float, float, float]) -> np.ndarray:
@@ -103,10 +98,9 @@ def _wireframe_edges() -> tuple[tuple[int, int], ...]:
     )
 
 
-def _project(points: np.ndarray, width: int, height: int) -> np.ndarray:
+def _project(points: np.ndarray, width: int, height: int) -> list[tuple[float, float]]:
     depth = np.maximum(2.0, points[:, 2] + 5.5)
     scale = min(width, height) * 1.9
-    result = np.empty((len(points), 2), dtype=np.float64)
-    result[:, 0] = width / 2 + points[:, 0] * scale / depth
-    result[:, 1] = height / 2 - points[:, 1] * scale / depth
-    return result
+    x_values = width / 2 + points[:, 0] * scale / depth
+    y_values = height / 2 - points[:, 1] * scale / depth
+    return list(zip(x_values.tolist(), y_values.tolist(), strict=True))

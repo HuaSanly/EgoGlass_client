@@ -33,7 +33,7 @@ class RuntimeSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class CommandResult:
-    """Completed command notification consumed by the Dear PyGui thread."""
+    """Completed command notification consumed by the Qt main thread."""
 
     name: str
     succeeded: bool

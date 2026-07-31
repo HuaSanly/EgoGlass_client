@@ -14,14 +14,15 @@ dependencies:
       - ahrs==0.4.0
       - aiortc>=1.15,<2
       - av>=16,<17
-      - dearpygui==2.3.1
       - fastapi>=0.115,<1
       - httpx2>=2,<3
       - numpy==2.1.1
       - opencv-python-headless>=4.10,<5
       - pydantic>=2.10,<3
       - pyyaml>=6,<7
-      - pyinstaller>=6.12,<7
+      - PyQt6==6.8.1
+      - PyQt6-Qt6==6.8.2
+      - PyQt6-Fluent-Widgets==1.11.2
       - pytest>=8.3,<9
       - ruff>=0.9,<1
       - uvicorn[standard]>=0.34,<1

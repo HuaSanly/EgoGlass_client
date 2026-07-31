@@ -15,7 +15,6 @@ from typing import Any
 
 import uvicorn
 
-from annotation.store import AnnotationStore
 from ingest_gateway.app import create_app
 from ingest_gateway.discovery import DISCOVERY_PORT, LanDiscoveryService
 from ingest_gateway.imu_preview import ImuPreviewRuntime
@@ -67,7 +66,6 @@ class UnifiedRuntimeHost:
             recordings_root,
             lambda: self.webrtc.recording_source(),
         )
-        self.annotation = AnnotationStore(recordings_root)
         self.perception = HandTrackingRuntime(recordings_root=recordings_root)
         self.discovery = (
             LanDiscoveryService(
@@ -175,18 +173,6 @@ class UnifiedRuntimeHost:
 
     def request_library_refresh(self) -> None:
         self._track_command("refresh-library", self._refresh_library())
-
-    def rename_session(self, session_id: str, display_name: str) -> None:
-        self._track_command(
-            "rename-session",
-            self.recording.rename_session(session_id, display_name),
-        )
-
-    def delete_session(self, session_id: str) -> None:
-        self._track_command("delete-session", self.recording.delete_session(session_id))
-
-    def delete_clip(self, session_id: str, clip_id: str) -> None:
-        self._track_command("delete-clip", self.recording.delete_clip(session_id, clip_id))
 
     def media_path(self, session_id: str, clip_id: str) -> concurrent.futures.Future[Path | None]:
         return self.submit(self.recording.media_path(session_id, clip_id))

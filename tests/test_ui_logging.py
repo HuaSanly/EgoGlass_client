@@ -40,6 +40,15 @@ def test_ctrl_c_exits_native_client_without_propagating_traceback(monkeypatch) -
         disable_discovery=True,
     )
 
+    class RuntimeStub:
+        def __init__(self) -> None:
+            self.stop_calls = 0
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    runtime = RuntimeStub()
+
     class InterruptingApplication:
         def __init__(self, _runtime: object) -> None:
             pass
@@ -48,8 +57,9 @@ def test_ctrl_c_exits_native_client_without_propagating_traceback(monkeypatch) -
             raise KeyboardInterrupt
 
     monkeypatch.setattr(app, "parse_args", lambda _argv: args)
-    monkeypatch.setattr(app, "UnifiedRuntimeHost", lambda _config: object())
+    monkeypatch.setattr(app, "UnifiedRuntimeHost", lambda _config: runtime)
     monkeypatch.setattr(app, "NativeApplication", InterruptingApplication)
     monkeypatch.setattr(app, "configure_logging", lambda: None)
 
     assert app.main([]) == 0
+    assert runtime.stop_calls == 1

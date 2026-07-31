@@ -1,150 +1,92 @@
 # Native UI
 
-EgoGlass uses Dear PyGui 2.3.1 as a native Windows operator UI. There is no
-browser, local UI server, WebView, JPEG preview, or MJPEG transport in the
-application path.
+EgoGlass uses PyQt6 6.8.1 and PyQt6-Fluent-Widgets 1.11.2 for its native
+Windows operator interface. There is no browser, WebView, JPEG preview, or
+MJPEG transport in the display path.
 
 ## Runtime ownership
 
 One `python -m ui` process owns all client modules:
 
 ```text
-Dear PyGui main thread
-  -> reads immutable RuntimeSnapshot values
-  -> swaps the newest RGB frame into a double-buffered raw texture
-  -> sends commands directly to UnifiedRuntimeHost
+PyQt main thread
+  -> FluentWindow with one Home interface
+  -> 16 ms frame timer and 100 ms status timer
+  -> direct immutable RGB QImage painting
+  -> direct commands to UnifiedRuntimeHost
 
 asyncio runtime thread
-  -> Uvicorn/FastAPI for Glass3 signaling and diagnostics
+  -> Uvicorn/FastAPI signaling
   -> aiortc WebRTC termination
   -> recording and perception orchestration
-  -> 10 Hz coherent status collection
+  -> coherent status collection
 
 bounded workers
-  -> decoded frame to contiguous RGB conversion
+  -> RGB conversion and bounded PTS pacing
   -> online hand inference
-  -> MP4 recording
-  -> PTS-driven replay decoding
-  -> IMU Madgwick orientation preview
+  -> MP4 recording and replay decoding
+  -> IMU Madgwick preview
 ```
 
-`LiveFrameBuffer` is the only live consumer that reads the decoded
-`av.VideoFrame`. It keeps at most one pending frame, converts it once to an
-immutable contiguous RGB array, and publishes that same array to the UI and
-perception. This avoids concurrent PyAV color conversion on one decoded frame.
-The UI consumes RGB without network serialization. Slow inference can drop its
-own pending input without stopping the video surface.
+The UI owns presentation only. WebRTC, recording, perception, storage, and
+annotation business logic remain in their owning `src/` packages.
 
-The live aiortc relay is unbuffered: if UI bookkeeping briefly falls behind,
-the next callback receives the newest decoded frame instead of replaying an
-old queue. Recording uses its own buffered relay subscription. PyAV frames
-marked corrupt are counted and discarded before either RGB display or
-perception. Receiver packet loss, jitter, and corrupt-frame drops are exposed
-in the diagnostics view.
+## Fluent home interface
 
-## Views
+`FluentWindow` supplies the collapsible left navigation used by the official
+Fluent Gallery. Only Home is registered in this iteration. Common controls use
+PyQt-Fluent-Widgets components: `SegmentedWidget`, `HeaderCardWidget`, Fluent
+buttons, `ComboBox`, `Slider`, `InfoBadge`, `ProgressRing`, and `InfoBar`.
+The top context strip always identifies the live/replay source and active
+session. Offline generation uses `StateToolTip` for its real task lifecycle,
+with `InfoBar` reserved for terminal success and error feedback.
 
-The Live view owns the application's only `VideoSurface` and `ReplayPlayer`.
-It switches the large raw RGB texture between live input and stored replay.
-Hand boxes and keypoints are drawn on a Dear PyGui layer above that texture.
-The overlay identity includes session, stream, and inference frame index, so a
-new result on the same WebRTC connection replaces the previous result.
+Only two widgets use custom painting because the component library has no
+equivalent:
 
-The Library view reads `RecordingRuntime.library()` through the unified
-snapshot. The recording directory is scanned once at startup and only again
-when the operator presses Refresh; there is no polling scan. Scans run off the
-media event loop, so hashing stored clips cannot pause WebRTC, IMU, or UI status
-updates. The view shows session quality, clip metadata, rename, replay
-generation, and confirmed session/clip deletion. Opening a clip routes it to
-the Live view's existing replay surface.
+- `VideoCanvas` paints immutable NumPy RGB buffers and frame-aligned hand data.
+- `ImuPoseCanvas` paints the orientation preview from its quaternion.
 
-The Annotation view uses `src/annotation/AnnotationController` directly. It
-supports manual Episode and phase intervals, whole-clip and fixed-window
-proposals, semantic labels, undo/redo, draft revision checks, and immutable
-publication. Source MP4 and telemetry files remain read-only. The selected
-clip is reviewed on the Live view's same replay surface.
+The same `VideoCanvas` switches between live input and replay. Switching modes
+does not reconnect WebRTC, create another media surface, or stop the current
+stream.
 
-The Diagnostics view shows WebRTC state, input/display rates, metadata pairing,
-IMU rates and gaps, orientation queue overflow, recording state, inference
-latency/drop counts, and the latest runtime command events.
+## Four-by-three video
 
-Only the selected Dear PyGui tab is updated on each render iteration. Hidden
-library, annotation, and diagnostics widgets retain their last snapshot until
-selected, avoiding periodic hidden-widget work on the live video path. The
-Live header reports actual raw-texture swaps per second; RGB conversion FPS
-remains a separate diagnostic.
+The display canvas is always 4:3. It selects the largest 4:3 rectangle inside
+the available workspace, such as 960x720 or 1024x768. The current 640x480
+Glass3 stream fills it without crop or stretch. A non-4:3 recording is fitted
+inside the canvas with letterboxing; the UI never crops it to fill the area.
 
-## Frame and replay behavior
+`VideoCanvas` creates `QImage.Format_RGB888` over the immutable, contiguous
+NumPy frame and keeps the `LiveFrame` alive until replacement. No float texture
+copy or encoded preview is introduced. The hand result is painted only when
+its session, connection, and frame index match the displayed frame.
 
-Live display always uses gateway-decoded RGB frames. It never reconnects a
-viewer or waits for inference output. `VideoSurface` preserves a stable
-960x540 draw area and letterboxes source coordinates using the result's source
-image dimensions.
+## Replay and storage
 
-Decoded RGB frames enter a four-frame maximum presentation queue before the
-native texture. The queue learns cadence from video PTS, starts with about three
-frames of prebuffer, and presents at that cadence instead of copying network
-arrival bursts directly to the screen. This adds about 100 ms of display latency
-at 30 FPS. If the queue grows beyond its target it drops the oldest frame and
-never accumulates latency. Perception still receives the canonical RGB frame
-immediately. Diagnostics report queue depth, smoothing drops, starvation
-events, the learned presentation interval, UI poll FPS, and actual presentation
-FPS. These separate a slow Dear PyGui render loop from receive-side jitter.
-After an underflow, presentation holds the last frame until the target prebuffer
-is rebuilt or the startup wait expires, preventing repeated one-frame restarts.
+Replay uses the existing PyAV worker. Frame time remains `PTS * time_base`,
+with pause, step, seek, and 0.25x to 2.0x playback on the same decoder.
+Recording storage is scanned once at startup and only after the operator
+presses Refresh. Hashing stored clips never runs on a UI timer.
 
-WebRTC may still change encoded resolution after a source or session change.
-`VideoSurface` owns two raw textures at the active dimensions. It writes only
-the texture that is not currently displayed, then swaps the image binding.
-This prevents the renderer from observing a partially updated RGB buffer. A
-resolution transition creates two uniquely tagged replacements before deleting
-the old pair, so it cannot reuse a pending Dear PyGui alias. The perception
-preprocessor accepts proportional transport downscales and restores them to the
-calibrated raster before undistortion and inference. A different aspect ratio
-remains an error.
-
-Replay uses PyAV on one worker. Frame presentation time is `PTS * time_base`;
-wall scheduling applies the selected 0.25x to 2.0x rate. Pause, step, seek, and
-play-to-end use the same decoder. A bad or missing file enters an error state
-without terminating the worker, so a later valid clip can still be opened.
-
-## IMU preview
-
-`ImuPreviewRuntime` uses the maintained Python `ahrs` Madgwick filter on a
-bounded worker. It reports a visualization quaternion, Euler angles, rates,
-sample age, and queue overflow. This orientation is only a UI preview. Future
-VIO remains authoritative for spatial pose.
-
-## Performance gate
-
-Run the native texture benchmark:
-
-```powershell
-conda run -n egoglass python scripts\benchmark_native_texture.py
-```
-
-The current Windows double-buffer test at 1280x720 measured 246.63 effective
-FPS, 4.055 ms mean frame work, 5.253 ms p95 frame work, 1.659 ms mean RGB
-conversion, and 2.229 ms p95 RGB conversion. This remains well below the
-33.3 ms budget of a 30 FPS source. The benchmark creates a real viewport, runs
-a fixed frame count, prints JSON, and closes automatically.
-
-## Run and build
+## Run and verify
 
 ```powershell
 .\scripts\start-client.ps1
-.\scripts\build-desktop.ps1
-```
-
-The launcher checks TCP `8770` and UDP `8771`, then runs exactly one foreground
-Python process. Closing the viewport executes orderly capture finalization and
-worker shutdown. The build script packages `packaging/native-entry.py`, runs
-the executable's `--smoke-test`, and writes ignored output under `dist/EgoGlass/`.
-
-## Verification
-
-```powershell
 conda run -n egoglass python -m pytest
 conda run -n egoglass python -m pytest -q evals
 conda run -n egoglass ruff check src ui tests evals scripts
+conda run -n egoglass python scripts\benchmark_native_texture.py
 ```
+
+The optional 60-second UI soak is:
+
+```powershell
+$env:EGOGLASS_RUN_UI_SOAK = "1"
+conda run -n egoglass python -m pytest -q -s `
+  evals\test_ui_native_runtime.py::test_four_by_three_canvas_sustains_thirty_fps_for_sixty_seconds
+```
+
+Closing the native window finalizes active capture, stops replay and runtime
+workers, and releases the signaling and discovery ports.

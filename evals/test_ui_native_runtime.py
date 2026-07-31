@@ -1,16 +1,26 @@
+import os
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
+from PyQt6.QtCore import QPoint, QRect
+from PyQt6.QtWidgets import QApplication
 
 from ingest_gateway.live_frames import LiveFrame, LiveFramePacer
+from ui.app import MainWindow
+from ui.state import RuntimeSnapshot
+from ui.widgets.video_canvas import VideoCanvas
 
 
 def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     repository = Path(__file__).parents[1]
     runtime = (repository / "ui" / "runtime.py").read_text(encoding="utf-8")
-    video = (repository / "ui" / "widgets" / "video_surface.py").read_text(
+    video = (repository / "ui" / "widgets" / "video_canvas.py").read_text(
         encoding="utf-8"
     )
+    home = (repository / "ui" / "views" / "home.py").read_text(encoding="utf-8")
 
     assert "threading.Thread" in runtime
     assert "uvicorn.Server" in runtime
@@ -20,48 +30,117 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     assert "httpx" not in runtime
     assert "subprocess" not in runtime
     assert "multiprocessing" not in runtime
-    assert "add_raw_texture" in video
+    assert "QImage.Format.Format_RGB888" in video
+    assert "QPainter" in video
     assert "source.subscribe(buffered=False)" in (
         repository / "src" / "ingest_gateway" / "adapters" / "aiortc_peer.py"
     ).read_text(encoding="utf-8")
-    assert "rtp_packet_loss_percent" in (
-        repository / "ui" / "views" / "diagnostics.py"
-    ).read_text(encoding="utf-8")
-    assert "mvFormat_Float_rgb" in video
     assert "jpeg" not in video.lower()
     assert "mjpg" not in video.lower()
     assert "library_refresh_at_ns" not in runtime
     assert "library_task = asyncio.create_task(self._initial_library_refresh())" in runtime
-    assert "self.runtime.request_library_refresh()" in (
-        repository / "ui" / "views" / "library.py"
-    ).read_text(encoding="utf-8")
+    assert "request_library_refresh" in home
+    assert "SegmentedWidget" in home
+    assert "HeaderCardWidget" in home
 
 
-def test_native_video_path_has_rgb_fanout_double_buffering_and_per_frame_overlay() -> None:
+def test_native_video_path_has_rgb_fanout_and_per_frame_overlay() -> None:
     repository = Path(__file__).parents[1]
     live_frames = (repository / "src" / "ingest_gateway" / "live_frames.py").read_text(
         encoding="utf-8"
     )
-    video = (repository / "ui" / "widgets" / "video_surface.py").read_text(
+    video = (repository / "ui" / "widgets" / "video_canvas.py").read_text(
         encoding="utf-8"
     )
-    live_view = (repository / "ui" / "views" / "live.py").read_text(encoding="utf-8")
+    home = (repository / "ui" / "views" / "home.py").read_text(encoding="utf-8")
 
     assert "submit_rgb_frame" in live_frames
-    assert "_texture_buffers" in video
-    assert "_front_texture_index" in video
-    assert "_perception_result_key" in live_view
-    assert "frame_index" in live_view
-    assert "recent_upload_fps" in video
+    assert "self._frame = frame" in video
+    assert "_result_key(result) != self._latest_frame_key" in video
+    assert "frame_index" in home
+    assert "recent_presentation_fps" in video
     assert "LiveFramePacer" in live_frames
     assert "maximum_queue_frames: int = 4" in live_frames
     assert "video_pts_ns" in live_frames
     assert "next_for_display" in (
         repository / "ui" / "runtime.py"
     ).read_text(encoding="utf-8")
-    assert "_update_active_view" in (
-        repository / "ui" / "app.py"
-    ).read_text(encoding="utf-8")
+    assert "self._frame_timer.setInterval(16)" in home
+
+
+def test_fluent_home_renders_without_overlap_at_supported_sizes(
+    qt_application: QApplication,
+) -> None:
+    runtime = SimpleNamespace(
+        snapshot=lambda: RuntimeSnapshot(),
+        latest_frame=lambda: None,
+        command_results=lambda: (),
+        request_library_refresh=lambda: None,
+        request_session=lambda _action: None,
+        request_stream=lambda _action: None,
+        request_recording=lambda _action: None,
+        request_replay_generation=lambda _session_id: None,
+        stop=lambda: None,
+    )
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    try:
+        for width, height in ((1280, 800), (1440, 900), (1920, 1080)):
+            window.resize(width, height)
+            window.show()
+            qt_application.processEvents()
+            canvas = window.home_view.canvas.canvas_geometry()
+            assert canvas.width > 0
+            assert canvas.height > 0
+            assert abs(canvas.width / canvas.height - 4 / 3) < 1e-9
+            canvas_rect = QRect(
+                window.home_view.canvas.mapTo(window, QPoint(0, 0)),
+                window.home_view.canvas.size(),
+            )
+            sidebar_rect = QRect(
+                window.home_view.sidebar.mapTo(window, QPoint(0, 0)),
+                window.home_view.sidebar.size(),
+            )
+            assert not canvas_rect.intersects(sidebar_rect)
+            assert not window.grab().isNull()
+    finally:
+        window.close()
+        qt_application.processEvents()
+
+
+@pytest.mark.skipif(
+    os.environ.get("EGOGLASS_RUN_UI_SOAK") != "1",
+    reason="set EGOGLASS_RUN_UI_SOAK=1 for the 60-second Qt presentation eval",
+)
+def test_four_by_three_canvas_sustains_thirty_fps_for_sixty_seconds(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas()
+    canvas.resize(960, 720)
+    canvas.show()
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    image.setflags(write=False)
+    started = time.perf_counter()
+    frame_index = 0
+    presentation_times_ns: list[int] = []
+    while time.perf_counter() - started < 60:
+        target = started + frame_index / 30
+        remaining = target - time.perf_counter()
+        if remaining > 0:
+            time.sleep(remaining)
+        now_ns = time.perf_counter_ns()
+        presentation_times_ns.append(now_ns)
+        canvas.set_frame(
+            LiveFrame("soak", "soak", frame_index, now_ns, now_ns, image)
+        )
+        canvas.grab()
+        qt_application.processEvents()
+        frame_index += 1
+
+    status = canvas.status()
+    presentation_gaps_ms = np.diff(presentation_times_ns) / 1_000_000
+    assert status.recent_presentation_fps >= 28
+    assert status.latest_paint_ms is not None and status.latest_paint_ms < 100
+    assert np.max(presentation_gaps_ms) < 100
 
 
 def test_pts_pacer_smooths_bursty_lan_arrivals_without_unbounded_latency() -> None:
