@@ -234,6 +234,31 @@ def test_fluent_window_registers_processing_first_and_live_capture_second(
     assert runtime.stop_calls == 1
 
 
+def test_processing_inspector_pivot_click_keeps_selected_page_visible(
+    qt_application: QApplication,
+) -> None:
+    window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
+    try:
+        window.resize(1280, 800)
+        window.show()
+        qt_application.processEvents()
+        view = window.processing_view
+
+        for key in ("layers", "frame", "preset"):
+            view.inspector_pivot.items[key].click()
+            qt_application.processEvents()
+
+            selected_page = view.inspector_pages[key]
+            assert view.inspector_pivot.currentRouteKey() == key
+            assert view.inspector_stack.currentWidget() is selected_page
+            assert selected_page.isVisible()
+            assert selected_page.height() > 0
+            assert sum(page.isVisible() for page in view.inspector_pages.values()) == 1
+    finally:
+        window.close()
+        qt_application.processEvents()
+
+
 def test_window_shutdown_releases_runtime_after_a_view_close_failure(
     qt_application: QApplication,
 ) -> None:

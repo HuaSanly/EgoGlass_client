@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QSizePolicy,
+    QStackedWidget,
     QTableWidgetItem,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -228,6 +229,7 @@ class VideoProcessingView(QWidget):
         root = QVBoxLayout()
         self.inspector_pivot = Pivot(card)
         root.addWidget(self.inspector_pivot)
+        self.inspector_stack = QStackedWidget(card)
         self.inspector_pages: dict[str, QWidget] = {}
         for key, text, builder in (
             ("preset", "处理方案", self._preset_page),
@@ -236,14 +238,11 @@ class VideoProcessingView(QWidget):
         ):
             page = builder(card)
             page.setObjectName(f"processingInspector-{key}")
-            page.setVisible(key == "preset")
             self.inspector_pages[key] = page
-            self.inspector_pivot.addItem(
-                key,
-                text,
-                onClick=lambda selected=key: self._show_inspector_page(selected),
-            )
-            root.addWidget(page, 1)
+            self.inspector_pivot.addItem(key, text)
+            self.inspector_stack.addWidget(page)
+        root.addWidget(self.inspector_stack, 1)
+        self.inspector_pivot.currentItemChanged.connect(self._show_inspector_page)
         self.inspector_pivot.setCurrentItem("preset")
         card.viewLayout.addLayout(root)
         return card
@@ -658,8 +657,9 @@ class VideoProcessingView(QWidget):
             self.replay.set_playback_rate(float(value.removesuffix("x")))
 
     def _show_inspector_page(self, key: str) -> None:
-        for name, page in self.inspector_pages.items():
-            page.setVisible(name == key)
+        page = self.inspector_pages.get(key)
+        if page is not None:
+            self.inspector_stack.setCurrentWidget(page)
 
     def _toggle_tasks(self) -> None:
         visible = not self.task_table.isVisible()

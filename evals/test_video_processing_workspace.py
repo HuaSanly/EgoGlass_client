@@ -87,6 +87,32 @@ def test_processing_workspace_has_no_video_space_pivot() -> None:
     assert "self.spatial_canvas.set_pose(snapshot.imu_pose)" in text
 
 
+def test_processing_inspector_pages_remain_rendered_after_real_pivot_clicks(
+    qt_application: QApplication,
+) -> None:
+    window = MainWindow(_runtime())  # type: ignore[arg-type]
+    try:
+        for width, height in ((1280, 800), (1440, 900), (1920, 1080)):
+            window.resize(width, height)
+            window.show()
+            qt_application.processEvents()
+            view = window.processing_view
+
+            for key in ("preset", "layers", "frame"):
+                view.inspector_pivot.items[key].click()
+                qt_application.processEvents()
+                page = view.inspector_pages[key]
+
+                assert view.inspector_stack.currentWidget() is page
+                assert page.isVisible()
+                assert page.width() > 0
+                assert page.height() > 0
+                assert not page.grab().isNull()
+    finally:
+        window.close()
+        qt_application.processEvents()
+
+
 def test_processing_workspace_shutdown_failure_does_not_leave_runtime_running(
     qt_application: QApplication,
 ) -> None:
