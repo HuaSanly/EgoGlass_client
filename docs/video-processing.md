@@ -97,6 +97,26 @@ is viewable only when its `results.sqlite` exists and passes the result-store
 schema check. Missing or corrupt stores remain unavailable instead of appearing
 as selectable playback results.
 
+## Video hall and navigation
+
+Video Processing opens in a session-grouped hall rather than immediately
+allocating a decoder. Each clip card displays an in-memory first-frame
+thumbnail and the number of viewable runs that cover that clip. Session-wide
+runs count for every clip; clip-scoped runs count only for their matching clip.
+Incomplete sessions stay visible but disabled.
+
+Opening a clip loads the complete session and positions playback at that clip.
+The workbench selects the newest valid run by completion time, with Raw Video
+always available. Result changes only replace the result-store query; video is
+not decoded again. The 2D overlay and 3D hand pose use the same
+`clip_id + frame_index + session_time_ns` identity. Returning to the hall or
+switching navigation unloads the active decoder.
+
+The Pipeline page owns queued and historical jobs, including cancel and retry.
+System Settings persists the default preset and automatic-enqueue policy in
+`jobs.sqlite3`. The workbench's Process Current Video command always submits
+the current clip with that persisted default.
+
 ## Verification
 
 ```powershell
@@ -105,7 +125,9 @@ conda run -n egoglass python -m pytest -q `
   tests\test_video_processing_service.py `
   tests\test_video_processing_runner.py `
   tests\test_video_processing_export.py `
-  tests\test_ui_replay_player.py
+  tests\test_ui_replay_player.py `
+  tests\test_ui_video_hall.py `
+  tests\test_ui_native_views.py
 conda run -n egoglass python -m pytest -q `
   evals\test_video_processing_contract.py `
   evals\test_video_processing_pipeline.py `

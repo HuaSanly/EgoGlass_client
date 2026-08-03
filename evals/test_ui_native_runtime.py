@@ -47,7 +47,9 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     assert "library_refresh_at_ns" not in runtime
     assert "library_task = asyncio.create_task(self._initial_library_refresh())" in runtime
     assert "request_library_refresh" in processing
-    assert "CommandBar" in processing
+    assert "VideoHall" in processing
+    assert "VideoThumbnailService" in processing
+    assert "self.replay.open_session" in processing
     assert "SegmentedWidget" not in home
     assert "HeaderCardWidget" in home
     assert 'TitleLabel("EgoGlass")' in home

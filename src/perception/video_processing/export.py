@@ -33,7 +33,7 @@ class ExportSummary:
 
     @property
     def detail(self) -> str:
-        return f"已导出 {self.frame_count} 帧到 {self.path.name}"
+        return f"已导出 {self.frame_count} 帧到 {self.path}"
 
 
 class _H264Writer:

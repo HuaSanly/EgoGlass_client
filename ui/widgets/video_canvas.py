@@ -105,6 +105,8 @@ class VideoCanvas(QWidget):
         self._image: QImage | None = None
         self._overlay: dict[str, object] | None = None
         self._comparison_overlay: dict[str, object] | None = None
+        self._primary_overlay_enabled = True
+        self._comparison_overlay_enabled = True
         self._latest_frame_key: tuple[str, str, int] | None = None
         self._pending_presentation = False
         self._presented_frames = 0
@@ -170,6 +172,14 @@ class VideoCanvas(QWidget):
 
     def set_comparison_overlay(self, result: dict[str, object] | None) -> bool:
         return self._set_result_overlay("comparison", result)
+
+    def set_primary_overlay_enabled(self, enabled: bool) -> None:
+        self._primary_overlay_enabled = bool(enabled)
+        self.update()
+
+    def set_comparison_overlay_enabled(self, enabled: bool) -> None:
+        self._comparison_overlay_enabled = bool(enabled)
+        self.update()
 
     def _set_result_overlay(
         self,
@@ -271,8 +281,16 @@ class VideoCanvas(QWidget):
             self._presented_at_ns.append(finished_ns)
 
     def _paint_overlays(self, painter: QPainter, canvas: FittedImageGeometry) -> None:
-        primary = self._active_overlay(self._overlay)
-        comparison = self._active_overlay(self._comparison_overlay)
+        primary = (
+            self._active_overlay(self._overlay)
+            if self._primary_overlay_enabled
+            else None
+        )
+        comparison = (
+            self._active_overlay(self._comparison_overlay)
+            if self._comparison_overlay_enabled
+            else None
+        )
         if comparison is None:
             if primary is not None:
                 self._paint_result_overlay(painter, canvas, primary[0])

@@ -11,8 +11,9 @@ One `python -m ui` process owns the whole client:
 ```text
 PyQt main thread
   -> FluentWindow navigation
-  -> default VideoProcessingView
-  -> secondary HomeView for live capture
+  -> VideoProcessingView with hall and workbench states
+  -> ProcessingPipelineView and ProcessingSettingsView
+  -> HomeView for live capture
   -> 16 ms frame timers and 100 ms state timers
 
 asyncio runtime thread
@@ -31,18 +32,22 @@ bounded workers
 The UI owns presentation and commands only. WebRTC, recording, preprocessing,
 hand tracking, and processing history remain in their owning `src/` packages.
 
-## Video processing workspace
+## Video hall and processing workspace
 
-`VideoProcessingView` is the first navigation page. Its `CommandBar` exposes
-manual library refresh, processing preset selection, start, cancel, retry, and
-annotated-video export. The recording library is scanned once at startup and
-again only after Refresh.
+The sidebar order is Video Processing, Pipeline, Live Capture, and System
+Settings. Video Processing opens in the video hall. Sessions remain grouped,
+including incomplete sessions whose cards are disabled. Each clip card shows a
+real asynchronously decoded first frame, capture time, duration, format, frame
+count, file size, processing state, and viewable-result count. Two bounded
+thumbnail workers only inspect exact `media/<clip-id>.mp4` or legacy
+`<clip-id>.mp4` paths. The recording library is scanned once at startup and
+again only after the operator presses Refresh.
 
-The workspace has three always-visible columns:
-
-- a Fluent `TreeWidget` containing completed sessions and clips;
-- one central 4:3 `VideoCanvas` with playback controls;
-- one right-side OpenGL `SpatialSyncCanvas` above a Fluent result inspector.
+Selecting a card opens the workbench, indexes the complete session, and seeks
+to that clip. The workbench keeps one central 4:3 `VideoCanvas` and one
+right-side OpenGL `SpatialSyncCanvas` visible together. Returning to the hall
+or navigating away calls `ReplayPlayer.unload()` so the active decoder and RGB
+frame are released.
 
 Video and space are not Pivot pages. A single immutable `PlaybackFrame` carries
 `clip_id`, `frame_index`, `pts_ns`, `session_time_ns`, and RGB. The same
@@ -50,10 +55,21 @@ Video and space are not Pivot pages. A single immutable `PlaybackFrame` carries
 with the same clip, frame, and session-time identity, so seeking, stepping, and
 cross-clip playback update both views together.
 
-The result inspector selects one primary run and an optional A/B run. Both
-overlays reuse the one decoded RGB frame. The canvas draws a split comparison;
-it never starts a second decoder. The task table is collapsible and shows
-state, progress, elapsed time, and the failure detail retained by SQLite.
+The result selector lists Raw Video plus completed, schema-valid session and
+clip runs that cover the current clip. The newest valid result is selected by
+default. An optional A/B selector only lists another run covering that clip.
+Switching either selector changes structured-result queries without reopening
+the decoder. The canvas draws a split comparison over one RGB frame. Export is
+explicit and reports the output path in an `InfoBar`.
+
+The real session clip spans form a clickable timeline below the video. Slice
+candidate and marker regions are visibly read-only placeholders: they expose no
+editor, annotation store, or file-write path until a slicing algorithm exists.
+
+Pipeline owns task progress, cancel, retry, elapsed time, and failure history.
+System Settings owns the persisted default preset and the disabled-by-default
+automatic enqueue switch. These controls are no longer embedded in the video
+workbench.
 
 `SpatialSyncCanvas` uses pyqtgraph's `GLViewWidget` and PyOpenGL. It renders the
 glasses mesh, camera origin, camera XYZ axes, frustum, recorded IMU orientation,
@@ -62,7 +78,7 @@ camera frame, not a VIO world pose.
 
 ## Live capture
 
-`HomeView` is the second navigation page. It contains stream, recording,
+`HomeView` is the third navigation page. It contains stream, recording,
 session, and optional live-inference controls. Live inference is off by default
 and is disabled while an offline GPU job is active. Model memory changes owner
 only after the previous inference worker drains. Preview and recording keep
@@ -94,6 +110,15 @@ conda run -n egoglass python -m pytest
 conda run -n egoglass python -m pytest -q evals
 conda run -n egoglass ruff check src ui tests evals scripts
 conda run -n egoglass python scripts\benchmark_native_texture.py
+```
+
+The local-recording replay soak loops a real session if it is shorter than 30
+seconds and verifies at least 300 presented frames:
+
+```powershell
+$env:EGOGLASS_RUN_REPLAY_SOAK = "1"
+conda run -n egoglass python -m pytest -q -s `
+  evals\test_video_processing_workspace.py::test_existing_recording_plays_continuously_for_thirty_seconds
 ```
 
 The optional 30-second presentation soak is:

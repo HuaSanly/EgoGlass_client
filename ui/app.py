@@ -17,6 +17,8 @@ from qfluentwidgets import FluentIcon, FluentWindow, Theme, setTheme, setThemeCo
 from .logging_config import configure_logging
 from .runtime import RuntimeConfig, UnifiedRuntimeHost
 from .views.home import HomeView
+from .views.processing_pipeline import ProcessingPipelineView
+from .views.processing_settings import ProcessingSettingsView
 from .views.video_processing import VideoProcessingView
 
 LOGGER = logging.getLogger(__name__)
@@ -32,7 +34,9 @@ class MainWindow(FluentWindow):
             application.setFont(QFont("Microsoft YaHei UI", 10))
         self.runtime = runtime
         self.processing_view = VideoProcessingView(runtime, self)
+        self.pipeline_view = ProcessingPipelineView(runtime, self)
         self.home_view = HomeView(runtime, self)
+        self.settings_view = ProcessingSettingsView(runtime, self)
         self._shutdown_complete = False
 
         self.setWindowTitle("EgoGlass")
@@ -42,7 +46,9 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setAcrylicEnabled(True)
         self.navigationInterface.setExpandWidth(220)
         self.addSubInterface(self.processing_view, FluentIcon.MOVIE, "视频处理")
+        self.addSubInterface(self.pipeline_view, FluentIcon.HISTORY, "流水线")
         self.addSubInterface(self.home_view, FluentIcon.CAMERA, "实时采集")
+        self.addSubInterface(self.settings_view, FluentIcon.SETTING, "系统设置")
 
     def shutdown(self) -> None:
         if self._shutdown_complete:
@@ -51,7 +57,9 @@ class MainWindow(FluentWindow):
         errors: list[Exception] = []
         for operation in (
             self.processing_view.close_resources,
+            self.pipeline_view.close_resources,
             self.home_view.close_resources,
+            self.settings_view.close_resources,
             self.runtime.stop,
         ):
             try:

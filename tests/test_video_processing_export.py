@@ -8,8 +8,14 @@ import av
 from perception.sensor_preprocessing import (
     CaptureSessionReader,
 )
-from perception.video_processing import ProcessingResultStore, export_annotated_clip
+from perception.video_processing import ExportSummary, ProcessingResultStore, export_annotated_clip
 from tests.test_sensor_preprocessing_pipeline import CLIP_ID, _recorded_session
+
+
+def test_export_summary_reports_the_full_output_path(tmp_path: Path) -> None:
+    output = tmp_path / "exports" / "annotated.mp4"
+
+    assert ExportSummary(output, 42).detail == f"已导出 42 帧到 {output}"
 
 
 def test_annotated_export_reuses_original_frames_and_structured_results(

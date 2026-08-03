@@ -15,20 +15,27 @@ from qfluentwidgets import HeaderCardWidget, SimpleCardWidget, TitleLabel
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 from ingest_gateway.live_frames import LiveFrame
-from ingest_gateway.recording_models import CaptureSessionState
+from ingest_gateway.recording_models import (
+    CaptureSessionState,
+    RecordingClip,
+    RecordingLibrary,
+    RecordingSession,
+)
 from ingest_gateway.webrtc_models import StreamControlAction
 from perception.sensor_preprocessing import RecordedImuPose
 from perception.video_processing import (
     ProcessingJob,
     ProcessingJobState,
     ProcessingPreset,
+    ProcessingRunInfo,
+    ProcessingRunState,
     ProcessingServiceSnapshot,
 )
 from ui.app import MainWindow
 from ui.replay.player import PlaybackFrame, ReplayState
 from ui.state import RuntimeSnapshot
 from ui.views.home import HomeView, _confidence_body
-from ui.views.video_processing import _Selection
+from ui.views.video_processing import _processing_states, _result_counts, _Selection
 from ui.widgets.spatial_sync_canvas import (
     SpatialSyncCanvas,
     _camera_points_to_scene,
@@ -49,11 +56,14 @@ class RuntimeStub:
         self.recording_actions: list[str] = []
         self.perception_result: dict[str, object] | None = None
         self.imu_pose_reset_calls = 0
-        self.processing_requests: list[tuple[str, str | None, str]] = []
+        self.processing_requests: list[tuple[str, str | None, str | None]] = []
         self.processing_cancels: list[str] = []
         self.processing_retries: list[str] = []
         self.processing_exports: list[tuple[str, str, str]] = []
         self.processing_auto_queue: list[bool] = []
+        self.processing_default_presets: list[str] = []
+        self.runs_by_session: dict[str, tuple[ProcessingRunInfo, ...]] = {}
+        self.session_paths: dict[str, Path] = {}
 
     def snapshot(self) -> RuntimeSnapshot:
         return self.snapshot_value
@@ -88,7 +98,7 @@ class RuntimeStub:
         session_id: str,
         *,
         clip_id: str | None = None,
-        preset_id: str,
+        preset_id: str | None,
     ) -> None:
         self.processing_requests.append((session_id, clip_id, preset_id))
 
@@ -104,15 +114,18 @@ class RuntimeStub:
     def request_processing_auto_queue(self, enabled: bool) -> None:
         self.processing_auto_queue.append(enabled)
 
+    def request_processing_default_preset(self, preset_id: str) -> None:
+        self.processing_default_presets.append(preset_id)
+
     def request_live_inference(self, _enabled: bool) -> None:
         return None
 
-    def session_directory(self, _session_id: str) -> Path:
-        return Path("missing-session")
+    def session_directory(self, session_id: str) -> Path:
+        return self.session_paths.get(session_id, Path("missing-session"))
 
-    def processing_runs(self, _session_id: str) -> Future[tuple[dict[str, object], ...]]:
-        future: Future[tuple[dict[str, object], ...]] = Future()
-        future.set_result(())
+    def processing_runs(self, session_id: str) -> Future[tuple[ProcessingRunInfo, ...]]:
+        future: Future[tuple[ProcessingRunInfo, ...]] = Future()
+        future.set_result(self.runs_by_session.get(session_id, ()))
         return future
 
     def processing_result(self, *_values: object) -> Future[dict[str, object] | None]:
@@ -193,7 +206,93 @@ def _hand_result(
     }
 
 
-def test_fluent_window_registers_processing_first_and_live_capture_second(
+def _recording_library(
+    *,
+    complete: bool = True,
+    include_incomplete: bool = False,
+) -> RecordingLibrary:
+    session_id = "1" * 32
+    clip_id = "2" * 32
+    clip = RecordingClip(
+        clip_id=clip_id,
+        recorded_at_unix_ms=1_700_000_000_000,
+        ended_at_unix_ms=1_700_000_003_000,
+        duration_ms=3_000,
+        width=640,
+        height=480,
+        fps=30,
+        file_size_bytes=4096,
+        frame_count=90,
+        media_url=f"/api/v1/recordings/media/{session_id}/{clip_id}",
+    )
+    sessions = [
+        RecordingSession(
+            session_id=session_id,
+            display_name="示例会话",
+            started_at_unix_ms=1_700_000_000_000,
+            ended_at_unix_ms=1_700_000_003_000,
+            state=(
+                CaptureSessionState.COMPLETE
+                if complete
+                else CaptureSessionState.INCOMPLETE
+            ),
+            clips=[clip],
+        )
+    ]
+    if include_incomplete:
+        other_session_id = "3" * 32
+        other_clip_id = "4" * 32
+        sessions.append(
+            RecordingSession(
+                session_id=other_session_id,
+                display_name="未完成会话",
+                started_at_unix_ms=1_700_000_010_000,
+                state=CaptureSessionState.INCOMPLETE,
+                clips=[
+                    RecordingClip(
+                        clip_id=other_clip_id,
+                        recorded_at_unix_ms=1_700_000_010_000,
+                        ended_at_unix_ms=1_700_000_011_000,
+                        duration_ms=1_000,
+                        width=640,
+                        height=480,
+                        fps=30,
+                        file_size_bytes=2048,
+                        frame_count=30,
+                        media_url=(
+                            f"/api/v1/recordings/media/{other_session_id}/"
+                            f"{other_clip_id}"
+                        ),
+                    )
+                ],
+            )
+        )
+    return RecordingLibrary(sessions=sessions)
+
+
+def _processing_run(
+    run_id: str,
+    *,
+    clip_id: str | None = None,
+    completed_at_unix_ns: int = 2_000_000_000,
+) -> ProcessingRunInfo:
+    return ProcessingRunInfo(
+        run_id=run_id,
+        session_id="session",
+        clip_id=clip_id,
+        preset=ProcessingPreset(),
+        state=ProcessingRunState.COMPLETED,
+        input_frame_count=100,
+        inferred_frame_count=90,
+        detected_hand_count=72,
+        started_at_unix_ns=1_000_000_000,
+        completed_at_unix_ns=completed_at_unix_ns,
+        results_path=Path("results.sqlite"),
+        is_viewable=True,
+    )
+
+
+def test_fluent_window_registers_four_processing_first_routes(
     qt_application: QApplication,
 ) -> None:
     runtime = RuntimeStub()
@@ -202,24 +301,26 @@ def test_fluent_window_registers_processing_first_and_live_capture_second(
         window.show()
         qt_application.processEvents()
 
-        assert window.stackedWidget.count() == 2
+        assert window.stackedWidget.count() == 4
         assert window.stackedWidget.widget(0) is window.processing_view
-        assert window.stackedWidget.widget(1) is window.home_view
+        assert window.stackedWidget.widget(1) is window.pipeline_view
+        assert window.stackedWidget.widget(2) is window.home_view
+        assert window.stackedWidget.widget(3) is window.settings_view
         assert window.stackedWidget.currentWidget() is window.processing_view
+        assert window.processing_view.showing_hall
         assert len(window.processing_view.findChildren(VideoCanvas)) == 1
         assert len(window.processing_view.findChildren(SpatialSyncCanvas)) == 1
-        assert window.processing_view.canvas.isVisible()
-        assert window.processing_view.spatial_canvas.isVisible()
-        assert window.processing_view.findChild(QWidget, "processingTimeline") is None
-        assert not hasattr(window.processing_view, "timeline_bars")
+        assert not window.processing_view.canvas.isVisible()
+        assert window.processing_view.findChild(QWidget, "processingInspector") is None
         headers = [
-            window.processing_view.task_table.horizontalHeaderItem(column).text()
-            for column in range(window.processing_view.task_table.columnCount())
+            window.pipeline_view.table.horizontalHeaderItem(column).text()
+            for column in range(window.pipeline_view.table.columnCount())
         ]
         assert headers == [
+            "任务",
             "会话",
             "范围",
-            "方案",
+            "处理方案",
             "状态",
             "进度",
             "耗时",
@@ -234,7 +335,7 @@ def test_fluent_window_registers_processing_first_and_live_capture_second(
     assert runtime.stop_calls == 1
 
 
-def test_processing_inspector_pivot_click_keeps_selected_page_visible(
+def test_video_processing_opens_in_hall_without_inspector_or_task_table(
     qt_application: QApplication,
 ) -> None:
     window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
@@ -243,17 +344,14 @@ def test_processing_inspector_pivot_click_keeps_selected_page_visible(
         window.show()
         qt_application.processEvents()
         view = window.processing_view
+        source = (Path(__file__).parents[1] / "ui" / "views" / "video_processing.py").read_text(
+            encoding="utf-8"
+        )
 
-        for key in ("layers", "frame", "preset"):
-            view.inspector_pivot.items[key].click()
-            qt_application.processEvents()
-
-            selected_page = view.inspector_pages[key]
-            assert view.inspector_pivot.currentRouteKey() == key
-            assert view.inspector_stack.currentWidget() is selected_page
-            assert selected_page.isVisible()
-            assert selected_page.height() > 0
-            assert sum(page.isVisible() for page in view.inspector_pages.values()) == 1
+        assert view.stack.currentWidget() is view.hall
+        assert view.hall.isVisible()
+        assert "处理检查器" not in source
+        assert not hasattr(view, "task_table")
     finally:
         window.close()
         qt_application.processEvents()
@@ -312,12 +410,17 @@ def test_processing_video_and_space_views_consume_the_same_playback_frame(
     result = _hand_result(frame_index=12)
     try:
         view = window.processing_view
-        view._selection = _Selection("session", None)
-        view._run_ids = {"主结果": "run-primary", "对比结果": "run-comparison"}
-        view.primary_run_combo.addItem("主结果")
-        view.primary_run_combo.setCurrentText("主结果")
-        view.comparison_run_combo.addItem("对比结果")
-        view.comparison_run_combo.setCurrentText("对比结果")
+        view._selection = _Selection("session", "connection")
+        view.stack.setCurrentWidget(view.workbench)
+        view.workbench.set_context("session", "同步测试", "connection")
+        view.workbench.set_runs(
+            (
+                _processing_run("run-primary", completed_at_unix_ns=3_000_000_000),
+                _processing_run("run-comparison"),
+            ),
+            "connection",
+        )
+        view.workbench.comparison_combo.setCurrentIndex(1)
 
         def completed_result(*_values: object) -> Future[dict[str, object]]:
             future: Future[dict[str, object]] = Future()
@@ -342,15 +445,15 @@ def test_processing_video_and_space_views_consume_the_same_playback_frame(
         assert view.spatial_canvas.status().latest_frame_index == 12
         assert view.spatial_canvas.status().has_imu_pose
         assert view.spatial_canvas.status().has_left_hand
-        assert "100.0 Hz" in view.frame_imu.text()
         assert view.canvas._comparison_overlay is result
         assert view.findChildren(VideoCanvas) == [view.canvas]
+        assert view.findChildren(SpatialSyncCanvas) == [view.spatial_canvas]
     finally:
         window.close()
         qt_application.processEvents()
 
 
-def test_processing_command_bar_calls_persistent_job_commands() -> None:
+def test_workbench_processes_current_clip_and_exports_selected_result() -> None:
     runtime = RuntimeStub()
     window = MainWindow(runtime)  # type: ignore[arg-type]
     image = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -358,95 +461,258 @@ def test_processing_command_bar_calls_persistent_job_commands() -> None:
     frame = PlaybackFrame("session", "clip", 7, 7_000_000, 107_000_000, image)
     view = window.processing_view
     try:
-        view._selection = _Selection("session", None)
-        view.refresh_action.trigger()
-        view.start_action.trigger()
-
-        running = ProcessingJob(
-            "running-job",
-            "session",
-            None,
-            ProcessingPreset(),
-            ProcessingJobState.RUNNING,
-            1,
-            2,
-            run_id="run-active",
-            started_at_unix_ns=1,
-        )
-        runtime.snapshot_value = RuntimeSnapshot(
-            processing=ProcessingServiceSnapshot(1, running.job_id, False, (running,))
-        )
-        view.cancel_action.trigger()
-
-        failed = ProcessingJob(
-            "failed-job",
-            "session",
-            None,
-            ProcessingPreset(),
-            ProcessingJobState.FAILED,
-            1,
-            3,
-            detail="model failed",
-            started_at_unix_ns=1,
-            finished_at_unix_ns=3,
-        )
-        view._update_tasks((failed,))
-        view.task_table.selectRow(0)
-        view.retry_action.trigger()
-
+        view._selection = _Selection("session", "clip")
+        view.stack.setCurrentWidget(view.workbench)
+        view.workbench.set_context("session", "测试会话", "clip")
+        view.workbench.set_runs((_processing_run("run-complete"),), "clip")
+        view.workbench.process_button.click()
         view.replay._update(frame=frame)  # type: ignore[attr-defined]
-        view._run_ids = {"结果": "run-complete"}
-        view.primary_run_combo.addItem("结果")
-        view.primary_run_combo.setCurrentText("结果")
-        view.export_action.trigger()
+        view.workbench.export_button.click()
 
-        assert runtime.refresh_calls == 1
-        assert runtime.processing_requests == [
-            ("session", None, "hand-tracking-quality")
-        ]
-        assert runtime.processing_cancels == ["running-job"]
-        assert runtime.processing_retries == ["failed-job"]
+        assert runtime.processing_requests == [("session", "clip", None)]
         assert runtime.processing_exports == [("session", "run-complete", "clip")]
     finally:
         window.close()
 
 
-def test_processing_tree_excludes_incomplete_or_empty_sessions(
+def test_pipeline_page_owns_cancel_and_retry_commands() -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    running = ProcessingJob(
+        "running-job",
+        "session",
+        "clip",
+        ProcessingPreset(),
+        ProcessingJobState.RUNNING,
+        1,
+        2,
+        run_id="run-active",
+        started_at_unix_ns=1,
+    )
+    failed = ProcessingJob(
+        "failed-job",
+        "session",
+        "clip",
+        ProcessingPreset(),
+        ProcessingJobState.FAILED,
+        1,
+        3,
+        detail="model failed",
+        started_at_unix_ns=1,
+        finished_at_unix_ns=3,
+    )
+    try:
+        runtime.snapshot_value = RuntimeSnapshot(
+            processing=ProcessingServiceSnapshot(1, running.job_id, False, (running, failed))
+        )
+        window.pipeline_view._update_status()
+        window.pipeline_view.table.selectRow(0)
+        window.pipeline_view.cancel_button.click()
+        window.pipeline_view.table.selectRow(1)
+        window.pipeline_view.retry_button.click()
+
+        assert runtime.processing_cancels == ["running-job"]
+        assert runtime.processing_retries == ["failed-job"]
+    finally:
+        window.close()
+
+
+def test_hall_keeps_incomplete_sessions_visible_but_disabled(
     qt_application: QApplication,
 ) -> None:
     window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
     view = window.processing_view
-    complete_clip = SimpleNamespace(clip_id="clip", duration_ms=1_000)
-    library = SimpleNamespace(
-        sessions=[
-            SimpleNamespace(
-                session_id="complete",
-                display_name="完整",
-                state=CaptureSessionState.COMPLETE,
-                clips=[complete_clip],
-            ),
-            SimpleNamespace(
-                session_id="incomplete",
-                display_name="未完成",
-                state=CaptureSessionState.INCOMPLETE,
-                clips=[],
-            ),
-            SimpleNamespace(
-                session_id="empty",
-                display_name="空会话",
-                state=CaptureSessionState.COMPLETE,
-                clips=[],
-            ),
-        ]
-    )
+    library = _recording_library(include_incomplete=True)
     try:
-        view._refresh_tree(library)  # type: ignore[arg-type]
+        view.hall.set_library(library)
+        complete = view.hall.cards[("1" * 32, "2" * 32)]
+        incomplete = view.hall.cards[("3" * 32, "4" * 32)]
 
-        assert view.session_tree.topLevelItemCount() == 1
-        assert view.session_tree.topLevelItem(0).text(0) == "完整"
+        assert complete.isEnabled()
+        assert not incomplete.isEnabled()
+        assert "暂不可用" in incomplete.availability_badge.text()
     finally:
         window.close()
         qt_application.processEvents()
+
+
+def test_hall_result_counts_include_session_and_matching_clip_runs() -> None:
+    library = _recording_library()
+    session = library.sessions[0]
+    clip_id = session.clips[0].clip_id
+    runs = (
+        _processing_run("session-run"),
+        _processing_run("clip-run", clip_id=clip_id),
+        _processing_run("other-run", clip_id="9" * 32),
+    )
+
+    assert _result_counts(runs, session) == {clip_id: 2}
+
+
+def test_hall_processing_state_maps_the_latest_applicable_job() -> None:
+    session = _recording_library().sessions[0]
+    clip_id = session.clips[0].clip_id
+    running = ProcessingJob(
+        "job",
+        session.session_id,
+        clip_id,
+        ProcessingPreset(),
+        ProcessingJobState.RUNNING,
+        1,
+        2,
+    )
+
+    assert _processing_states((running,), session) == {clip_id: "处理中"}
+
+
+def test_workbench_selects_latest_valid_result_and_filters_ab_by_clip() -> None:
+    window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
+    try:
+        workbench = window.processing_view.workbench
+        runs = (
+            _processing_run("older", completed_at_unix_ns=2_000_000_000),
+            _processing_run(
+                "other-clip",
+                clip_id="other",
+                completed_at_unix_ns=5_000_000_000,
+            ),
+            _processing_run(
+                "newer",
+                clip_id="clip",
+                completed_at_unix_ns=4_000_000_000,
+            ),
+        )
+
+        workbench.set_runs(runs, "clip")
+
+        assert workbench.result_combo.count() == 3
+        assert workbench.primary_run_id == "newer"
+        assert workbench.comparison_combo.findData("other-clip") == -1
+        assert workbench.comparison_combo.findData("older") >= 0
+        workbench.result_combo.setCurrentIndex(0)
+        assert workbench.primary_run_id is None
+    finally:
+        window.close()
+
+
+def test_entering_and_leaving_workbench_opens_once_then_unloads_decoder() -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    view = window.processing_view
+    library = _recording_library()
+    session = library.sessions[0]
+    clip = session.clips[0]
+    calls: list[tuple[object, ...]] = []
+    try:
+        view._sessions = {session.session_id: session}
+        view.replay.open_session = (  # type: ignore[method-assign]
+            lambda path, clip_id=None: calls.append(("open", path, clip_id))
+        )
+        view.replay.pause = lambda: calls.append(("pause",))  # type: ignore[method-assign]
+        view.replay.unload = lambda: calls.append(("unload",))  # type: ignore[method-assign]
+
+        view.open_workbench(session.session_id, clip.clip_id)
+        assert view.stack.currentWidget() is view.workbench
+        view.show_hall()
+
+        assert calls == [
+            ("open", Path("missing-session"), clip.clip_id),
+            ("pause",),
+            ("unload",),
+        ]
+        assert view.stack.currentWidget() is view.hall
+        assert view.canvas.status().latest_frame_index is None
+    finally:
+        window.close()
+
+
+def test_processing_settings_bind_persisted_defaults() -> None:
+    runtime = RuntimeStub()
+    runtime.snapshot_value = RuntimeSnapshot(
+        processing=ProcessingServiceSnapshot(
+            revision=5,
+            active_job_id=None,
+            auto_enqueue_on_session_complete=True,
+            jobs=(),
+            default_preset_id="hand-tracking-balanced",
+        )
+    )
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    try:
+        settings = window.settings_view
+        settings._update_status()
+        assert settings.preset_combo.currentData() == "hand-tracking-balanced"
+        assert settings.auto_switch.isChecked()
+
+        settings.preset_combo.setCurrentIndex(
+            settings.preset_combo.findData("hand-tracking-preview")
+        )
+        settings.auto_switch.setChecked(False)
+
+        assert runtime.processing_default_presets == ["hand-tracking-preview"]
+        assert runtime.processing_auto_queue == [False]
+    finally:
+        window.close()
+
+
+def test_run_index_refresh_is_not_lost_while_an_older_query_is_in_flight() -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    view = window.processing_view
+    session = _recording_library().sessions[0]
+    first: Future[tuple[ProcessingRunInfo, ...]] = Future()
+    second: Future[tuple[ProcessingRunInfo, ...]] = Future()
+    futures = iter((first, second))
+    runtime.processing_runs = lambda _session_id: next(futures)  # type: ignore[method-assign]
+    try:
+        view._sessions = {session.session_id: session}
+        view._request_runs(session.session_id)
+        view._request_runs(session.session_id, force=True)
+        first.set_result((_processing_run("old"),))
+        view._resolve_run_futures()
+        second.set_result((_processing_run("new"),))
+        view._resolve_run_futures()
+
+        assert [run.run_id for run in view._runs[session.session_id]] == ["new"]
+        assert not view._pending_run_refreshes
+    finally:
+        window.close()
+
+
+def test_result_queries_keep_at_most_one_in_flight_request_per_layer() -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    view = window.processing_view
+    calls: list[tuple[object, ...]] = []
+    first: Future[dict[str, object] | None] = Future()
+    second: Future[dict[str, object] | None] = Future()
+    futures = iter((first, second))
+
+    def query(*values: object) -> Future[dict[str, object] | None]:
+        calls.append(values)
+        return next(futures)
+
+    runtime.processing_result = query  # type: ignore[method-assign]
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    image.setflags(write=False)
+    frame_one = PlaybackFrame("session", "clip", 1, 1, 1, image)
+    frame_two = PlaybackFrame("session", "clip", 2, 2, 2, image)
+    try:
+        view.stack.setCurrentWidget(view.workbench)
+        view.workbench.set_runs((_processing_run("run"),), "clip")
+        view._query_results(frame_one)
+        view._query_results(frame_two)
+        assert len(calls) == 1
+
+        view.replay._update(frame=frame_two)  # type: ignore[attr-defined]
+        first.set_result(None)
+        view._resolve_result_queries(("session", "clip", 2, 2))
+
+        assert len(calls) == 2
+        assert calls[-1][3:] == (2, 2)
+        second.set_result(None)
+    finally:
+        window.close()
 
 
 def test_home_header_only_shows_egoglass_title() -> None:

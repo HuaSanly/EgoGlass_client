@@ -3,54 +3,25 @@ from __future__ import annotations
 import concurrent.futures
 from dataclasses import dataclass
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import (
-    QHBoxLayout,
-    QHeaderView,
-    QSizePolicy,
-    QStackedWidget,
-    QTableWidgetItem,
-    QTreeWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
-from qfluentwidgets import (
-    Action,
-    BodyLabel,
-    CaptionLabel,
-    ComboBox,
-    CommandBar,
-    FluentIcon,
-    HeaderCardWidget,
-    InfoBar,
-    Pivot,
-    SimpleCardWidget,
-    Slider,
-    StrongBodyLabel,
-    SwitchButton,
-    TableWidget,
-    TitleLabel,
-    TransparentToolButton,
-    TreeWidget,
-)
+from PyQt6.QtCore import QEvent, QTimer
+from PyQt6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
+from qfluentwidgets import InfoBar
 
-from ingest_gateway.recording_models import CaptureSessionState, RecordingLibrary
+from ingest_gateway.recording_models import RecordingLibrary, RecordingSession
 from perception.video_processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo
-from ui.replay.player import PlaybackFrame, ReplayPlayer, ReplaySnapshot, ReplayState
+from ui.replay.player import PlaybackFrame, ReplayPlayer, ReplayState
 from ui.runtime import UnifiedRuntimeHost
-from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
-from ui.widgets.status_indicator import InfoLevel, StatusIndicator
-from ui.widgets.video_canvas import VideoCanvas
+from ui.video_processing import ProcessingWorkbench, VideoHall, VideoThumbnailService
 
 
 @dataclass(frozen=True, slots=True)
 class _Selection:
     session_id: str
-    clip_id: str | None
+    clip_id: str
 
 
 class VideoProcessingView(QWidget):
-    """Primary stored-session processing and synchronized inspection workspace."""
+    """Coordinate the video hall, one reusable decoder, and result overlays."""
 
     def __init__(
         self,
@@ -61,11 +32,19 @@ class VideoProcessingView(QWidget):
         self.setObjectName("videoProcessingView")
         self.runtime = runtime
         self.replay = ReplayPlayer()
+        self.thumbnails = VideoThumbnailService(workers=2)
         self._selection: _Selection | None = None
-        self._library_signature: tuple[tuple[str, tuple[str, ...]], ...] = ()
+        self._library: RecordingLibrary | None = None
+        self._library_signature: tuple[object, ...] = ()
+        self._sessions: dict[str, RecordingSession] = {}
         self._last_frame_key: tuple[str, str, int, int] | None = None
         self._last_processing_revision = -1
-        self._run_future: concurrent.futures.Future[tuple[ProcessingRunInfo, ...]] | None = None
+        self._last_replay_error: str | None = None
+        self._run_futures: dict[
+            str, concurrent.futures.Future[tuple[ProcessingRunInfo, ...]]
+        ] = {}
+        self._pending_run_refreshes: set[str] = set()
+        self._runs: dict[str, tuple[ProcessingRunInfo, ...]] = {}
         self._result_futures: dict[
             str,
             tuple[
@@ -73,11 +52,8 @@ class VideoProcessingView(QWidget):
                 concurrent.futures.Future[dict[str, object] | None],
             ],
         ] = {}
-        self._run_ids: dict[str, str] = {}
-        self._task_row_ids: list[str] = []
-        self._seeking = False
-
         self._build_ui()
+
         self._frame_timer = QTimer(self)
         self._frame_timer.setInterval(16)
         self._frame_timer.timeout.connect(self._update_frame)
@@ -87,446 +63,236 @@ class VideoProcessingView(QWidget):
         self._status_timer.timeout.connect(self._update_status)
         self._status_timer.start()
 
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.stack = QStackedWidget(self)
+        self.hall = VideoHall(self.stack)
+        self.workbench = ProcessingWorkbench(self.replay, self.stack)
+        self.stack.addWidget(self.hall)
+        self.stack.addWidget(self.workbench)
+        self.stack.setCurrentWidget(self.hall)
+        root.addWidget(self.stack)
+
+        self.hall.refreshRequested.connect(self._refresh_library)
+        self.hall.clipActivated.connect(self.open_workbench)
+        self.workbench.backRequested.connect(self.show_hall)
+        self.workbench.processRequested.connect(self._process_current_clip)
+        self.workbench.exportRequested.connect(self._export_current_result)
+        self.workbench.resultSelectionChanged.connect(self._clear_result_queries)
+        self.workbench.comparisonSelectionChanged.connect(self._clear_result_queries)
+
+        # Stable compatibility handles for render tests and canvas consumers.
+        self.canvas = self.workbench.canvas
+        self.spatial_canvas = self.workbench.spatial_canvas
+
+    @property
+    def showing_hall(self) -> bool:
+        return self.stack.currentWidget() is self.hall
+
     def close_resources(self) -> None:
         self._frame_timer.stop()
         self._status_timer.stop()
+        self.thumbnails.close()
         self.replay.close()
 
-    def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(24, 18, 24, 18)
-        root.setSpacing(12)
+    def show_hall(self) -> None:
+        self.replay.pause()
+        self.replay.unload()
+        self._selection = None
+        self._last_frame_key = None
+        self._last_replay_error = None
+        self._result_futures.clear()
+        self.workbench.clear_media()
+        self.stack.setCurrentWidget(self.hall)
 
-        heading = QHBoxLayout()
-        heading.addWidget(TitleLabel("视频处理", self))
-        heading.addStretch(1)
-        self.workspace_status = StatusIndicator(
-            "等待会话",
-            FluentIcon.MOVIE,
-            self,
-            level=InfoLevel.INFOAMTION,
+    def open_workbench(self, session_id: str, clip_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            self._show_error("录像库中找不到所选会话")
+            return
+        self._selection = _Selection(session_id, clip_id)
+        self._last_frame_key = None
+        self._last_replay_error = None
+        self.workbench.set_context(
+            session_id,
+            session.display_name or session_id[:8],
+            clip_id,
         )
-        heading.addWidget(self.workspace_status)
-        root.addLayout(heading)
-        root.addWidget(self._build_command_bar())
+        self.workbench.set_runs(self._runs.get(session_id, ()), clip_id)
+        self.stack.setCurrentWidget(self.workbench)
+        try:
+            self.replay.open_session(self.runtime.session_directory(session_id), clip_id)
+        except Exception as error:
+            self.show_hall()
+            self._show_error(str(error))
+            return
+        self._request_runs(session_id, force=True)
+        self._clear_result_queries()
 
-        workspace = QHBoxLayout()
-        workspace.setSpacing(12)
-        workspace.addWidget(self._build_session_browser(), 0)
-        workspace.addWidget(self._build_video_column(), 1)
-        workspace.addWidget(self._build_inspection_column(), 0)
-        root.addLayout(workspace, 1)
-        root.addWidget(self._build_task_panel())
+    def hideEvent(self, event: QEvent) -> None:
+        if not self.showing_hall:
+            self.show_hall()
+        super().hideEvent(event)
 
-    def _build_command_bar(self) -> CommandBar:
-        bar = CommandBar(self)
-        self.refresh_action = Action(
-            FluentIcon.SYNC,
-            "刷新会话",
-            triggered=self.runtime.request_library_refresh,
+    def _refresh_library(self) -> None:
+        self.thumbnails.invalidate()
+        self.runtime.request_library_refresh()
+
+    def _update_status(self) -> None:
+        snapshot = self.runtime.snapshot()
+        if snapshot.library is not None:
+            self._apply_library(snapshot.library)
+        processing = snapshot.processing
+        if processing is not None and processing.revision != self._last_processing_revision:
+            self._last_processing_revision = processing.revision
+            affected = {
+                job.session_id
+                for job in processing.jobs
+                if job.run_id is not None or job.state.value in {"completed", "failed"}
+            }
+            for session_id in affected:
+                if session_id in self._sessions:
+                    self._request_runs(session_id, force=True)
+            for session_id, session in self._sessions.items():
+                self.hall.set_processing_states(
+                    session_id,
+                    _processing_states(processing.jobs, session),
+                )
+        self._resolve_run_futures()
+        self._resolve_thumbnails()
+        if self.isVisible():
+            self._drain_command_results()
+
+    def _apply_library(self, library: RecordingLibrary) -> None:
+        signature = tuple(
+            (
+                session.session_id,
+                session.state.value,
+                tuple(
+                    (
+                        clip.clip_id,
+                        clip.file_size_bytes,
+                        clip.frame_count,
+                        clip.duration_ms,
+                    )
+                    for clip in session.clips
+                ),
+            )
+            for session in library.sessions
         )
-        self.start_action = Action(FluentIcon.PLAY, "开始处理", triggered=self._start_processing)
-        self.cancel_action = Action(
-            FluentIcon.CANCEL,
-            "取消任务",
-            triggered=self._cancel_processing,
-        )
-        self.retry_action = Action(FluentIcon.SYNC, "重试", triggered=self._retry_processing)
-        self.export_action = Action(FluentIcon.SAVE, "导出标注视频", triggered=self._export_result)
-        bar.addAction(self.refresh_action)
-        bar.addSeparator()
-        bar.addAction(self.start_action)
-        bar.addAction(self.cancel_action)
-        bar.addAction(self.retry_action)
-        bar.addSeparator()
-        bar.addAction(self.export_action)
-        self.preset_combo = ComboBox(bar)
-        self.preset_combo.setMinimumWidth(176)
-        for text in ("手部追踪 · 质量优先", "手部追踪 · 均衡", "手部追踪 · 快速预览"):
-            self.preset_combo.addItem(text)
-        bar.addWidget(self.preset_combo)
-        return bar
+        if signature == self._library_signature:
+            return
+        self._library_signature = signature
+        self._library = library
+        self._sessions = {session.session_id: session for session in library.sessions}
+        self.hall.set_library(library)
+        for session in library.sessions:
+            if not session.clips:
+                continue
+            try:
+                session_path = self.runtime.session_directory(session.session_id)
+            except Exception:
+                continue
+            for clip in session.clips:
+                self.thumbnails.request(
+                    session.session_id,
+                    clip.clip_id,
+                    session_path,
+                )
+            self._request_runs(session.session_id)
 
-    def _build_session_browser(self) -> QWidget:
-        card = HeaderCardWidget("会话与片段", self)
-        card.setFixedWidth(230)
-        layout = QVBoxLayout()
-        layout.setSpacing(8)
-        self.session_tree = TreeWidget(card)
-        self.session_tree.setHeaderHidden(True)
-        self.session_tree.setMinimumHeight(420)
-        self.session_tree.currentItemChanged.connect(self._select_tree_item)
-        layout.addWidget(self.session_tree, 1)
-        self.session_hint = CaptionLabel("启动和手动刷新时扫描录像库", card)
-        self.session_hint.setWordWrap(True)
-        layout.addWidget(self.session_hint)
-        card.viewLayout.addLayout(layout)
-        return card
+    def _request_runs(self, session_id: str, *, force: bool = False) -> None:
+        if session_id in self._run_futures:
+            if force:
+                self._pending_run_refreshes.add(session_id)
+            return
+        if not force and session_id in self._runs:
+            self.hall.set_result_counts(
+                session_id,
+                _result_counts(self._runs[session_id], self._sessions[session_id]),
+            )
+            return
+        future = self.runtime.processing_runs(session_id)
+        if isinstance(future, concurrent.futures.Future):
+            self._run_futures[session_id] = future
 
-    def _build_video_column(self) -> QWidget:
-        column = QWidget(self)
-        column.setObjectName("processingVideoColumn")
-        column.setMinimumWidth(500)
-        layout = QVBoxLayout(column)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        self.canvas = VideoCanvas(column)
-        layout.addWidget(self.canvas, 1)
-        layout.addWidget(self._build_transport())
-        return column
+    def _resolve_run_futures(self) -> None:
+        for session_id, future in tuple(self._run_futures.items()):
+            if not future.done():
+                continue
+            del self._run_futures[session_id]
+            try:
+                runs = future.result()
+            except Exception as error:
+                if self._selection is not None and self._selection.session_id == session_id:
+                    self._show_error(str(error))
+                if session_id in self._pending_run_refreshes:
+                    self._pending_run_refreshes.remove(session_id)
+                    self._request_runs(session_id, force=True)
+                continue
+            self._runs[session_id] = runs
+            session = self._sessions.get(session_id)
+            if session is not None:
+                self.hall.set_result_counts(session_id, _result_counts(runs, session))
+            selection = self._selection
+            if (
+                selection is not None
+                and selection.session_id == session_id
+                and not self.showing_hall
+            ):
+                self.workbench.set_runs(runs, selection.clip_id)
+            if session_id in self._pending_run_refreshes:
+                self._pending_run_refreshes.remove(session_id)
+                self._request_runs(session_id, force=True)
 
-    def _build_transport(self) -> SimpleCardWidget:
-        card = SimpleCardWidget(self)
-        card.setObjectName("processingTransport")
-        row = QHBoxLayout(card)
-        row.setContentsMargins(12, 8, 12, 8)
-        row.setSpacing(8)
-        self.play_button = TransparentToolButton(FluentIcon.PLAY, card)
-        self.play_button.setToolTip("播放或暂停")
-        self.play_button.clicked.connect(self._toggle_playback)
-        row.addWidget(self.play_button)
-        self.step_button = TransparentToolButton(FluentIcon.RIGHT_ARROW, card)
-        self.step_button.setToolTip("前进一帧")
-        self.step_button.clicked.connect(self.replay.step)
-        row.addWidget(self.step_button)
-        self.position_slider = Slider(Qt.Orientation.Horizontal, card)
-        self.position_slider.setRange(0, 1)
-        self.position_slider.sliderPressed.connect(self._begin_seek)
-        self.position_slider.sliderReleased.connect(self._finish_seek)
-        row.addWidget(self.position_slider, 1)
-        self.time_label = BodyLabel("00:00.000 / 00:00.000", card)
-        row.addWidget(self.time_label)
-        self.rate_combo = ComboBox(card)
-        for value in ("0.25x", "0.5x", "1.0x", "1.5x", "2.0x"):
-            self.rate_combo.addItem(value)
-        self.rate_combo.setCurrentText("1.0x")
-        self.rate_combo.currentTextChanged.connect(self._set_rate)
-        self.rate_combo.setFixedWidth(82)
-        row.addWidget(self.rate_combo)
-        return card
-
-    def _build_inspection_column(self) -> QWidget:
-        column = QWidget(self)
-        column.setObjectName("processingInspectionColumn")
-        column.setFixedWidth(360)
-        layout = QVBoxLayout(column)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        self.spatial_canvas = SpatialSyncCanvas(column)
-        self.spatial_canvas.setMinimumSize(360, 270)
-        self.spatial_canvas.setMaximumHeight(330)
-        self.spatial_canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding,
-        )
-        self.spatial_canvas.reset_pose_button.setVisible(False)
-        layout.addWidget(self.spatial_canvas, 1)
-        layout.addWidget(self._build_inspector(), 1)
-        return column
-
-    def _build_inspector(self) -> HeaderCardWidget:
-        card = HeaderCardWidget("处理检查器", self)
-        root = QVBoxLayout()
-        self.inspector_pivot = Pivot(card)
-        root.addWidget(self.inspector_pivot)
-        self.inspector_stack = QStackedWidget(card)
-        self.inspector_pages: dict[str, QWidget] = {}
-        for key, text, builder in (
-            ("preset", "处理方案", self._preset_page),
-            ("layers", "结果图层", self._layers_page),
-            ("frame", "当前帧", self._frame_page),
-        ):
-            page = builder(card)
-            page.setObjectName(f"processingInspector-{key}")
-            self.inspector_pages[key] = page
-            self.inspector_pivot.addItem(key, text)
-            self.inspector_stack.addWidget(page)
-        root.addWidget(self.inspector_stack, 1)
-        self.inspector_pivot.currentItemChanged.connect(self._show_inspector_page)
-        self.inspector_pivot.setCurrentItem("preset")
-        card.viewLayout.addLayout(root)
-        return card
-
-    def _preset_page(self, parent: QWidget) -> QWidget:
-        page = QWidget(parent)
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(10)
-        self.preset_detail = BodyLabel("逐帧执行传感器预处理与手部识别。", page)
-        self.preset_detail.setWordWrap(True)
-        layout.addWidget(self.preset_detail)
-        auto_row = QHBoxLayout()
-        auto_row.addWidget(BodyLabel("会话完成后自动入队", page))
-        auto_row.addStretch(1)
-        self.auto_queue_switch = SwitchButton(page)
-        self.auto_queue_switch.setChecked(False)
-        self.auto_queue_switch.checkedChanged.connect(
-            self.runtime.request_processing_auto_queue
-        )
-        auto_row.addWidget(self.auto_queue_switch)
-        layout.addLayout(auto_row)
-        layout.addStretch(1)
-        return page
-
-    def _layers_page(self, parent: QWidget) -> QWidget:
-        page = QWidget(parent)
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(8)
-        layout.addWidget(CaptionLabel("主结果", page))
-        self.primary_run_combo = ComboBox(page)
-        self.primary_run_combo.currentTextChanged.connect(self._clear_result_queries)
-        layout.addWidget(self.primary_run_combo)
-        layout.addWidget(CaptionLabel("A/B 对比", page))
-        self.comparison_run_combo = ComboBox(page)
-        self.comparison_run_combo.addItem("关闭对比")
-        self.comparison_run_combo.currentTextChanged.connect(self._clear_result_queries)
-        layout.addWidget(self.comparison_run_combo)
-        self.layer_status = CaptionLabel("当前会话没有处理结果", page)
-        self.layer_status.setWordWrap(True)
-        layout.addWidget(self.layer_status)
-        layout.addStretch(1)
-        return page
-
-    def _frame_page(self, parent: QWidget) -> QWidget:
-        page = QWidget(parent)
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(7)
-        self.frame_identity = StrongBodyLabel("未载入帧", page)
-        self.frame_timing = BodyLabel("PTS --\n会话时间 --", page)
-        self.frame_timing.setWordWrap(True)
-        self.frame_result = CaptionLabel("未查询到结构化结果", page)
-        self.frame_result.setWordWrap(True)
-        self.frame_imu = CaptionLabel("IMU --", page)
-        self.frame_imu.setWordWrap(True)
-        layout.addWidget(self.frame_identity)
-        layout.addWidget(self.frame_timing)
-        layout.addWidget(self.frame_imu)
-        layout.addWidget(self.frame_result)
-        layout.addStretch(1)
-        return page
-
-    def _build_task_panel(self) -> SimpleCardWidget:
-        card = SimpleCardWidget(self)
-        card.setObjectName("processingTaskPanel")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(6)
-        header = QHBoxLayout()
-        header.addWidget(StrongBodyLabel("处理任务", card))
-        header.addStretch(1)
-        self.task_summary = CaptionLabel("暂无任务", card)
-        header.addWidget(self.task_summary)
-        self.task_toggle = TransparentToolButton(FluentIcon.DOWN, card)
-        self.task_toggle.setToolTip("展开或折叠任务列表")
-        self.task_toggle.clicked.connect(self._toggle_tasks)
-        header.addWidget(self.task_toggle)
-        layout.addLayout(header)
-        self.task_table = TableWidget(card)
-        self.task_table.setColumnCount(7)
-        self.task_table.setHorizontalHeaderLabels(
-            ["会话", "范围", "方案", "状态", "进度", "耗时", "说明 / 失败原因"]
-        )
-        self.task_table.verticalHeader().setVisible(False)
-        self.task_table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
-        self.task_table.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
-        self.task_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.task_table.setMaximumHeight(180)
-        self.task_table.setVisible(False)
-        layout.addWidget(self.task_table)
-        return card
+    def _resolve_thumbnails(self) -> None:
+        for result in self.thumbnails.take_completed():
+            self.hall.set_thumbnail(result.session_id, result.clip_id, result.image)
 
     def _update_frame(self) -> None:
+        if self.showing_hall:
+            return
         snapshot = self.replay.snapshot()
-        self._sync_transport(snapshot)
+        self.workbench.set_replay(snapshot)
+        if (
+            snapshot.state is ReplayState.ERROR
+            and snapshot.error
+            and snapshot.error != self._last_replay_error
+        ):
+            self._last_replay_error = snapshot.error
+            self._show_error(snapshot.error)
         frame = snapshot.frame
         if frame is None:
             return
         key = (frame.session_id, frame.clip_id, frame.frame_index, frame.session_time_ns)
         if key != self._last_frame_key:
             self._last_frame_key = key
+            selection = self._selection
+            if selection is None or selection.clip_id != frame.clip_id:
+                session = self._sessions.get(frame.session_id)
+                self._selection = _Selection(frame.session_id, frame.clip_id)
+                if session is not None:
+                    self.workbench.set_context(
+                        frame.session_id,
+                        session.display_name or frame.session_id[:8],
+                        frame.clip_id,
+                    )
+                self.workbench.set_runs(self._runs.get(frame.session_id, ()), frame.clip_id)
             self.canvas.set_frame(frame)
             self.spatial_canvas.set_pose(snapshot.imu_pose)
             self._query_results(frame)
-            self._update_frame_inspector(frame, snapshot)
         self._resolve_result_queries(key)
 
-    def _update_status(self) -> None:
-        snapshot = self.runtime.snapshot()
-        if snapshot.library is not None:
-            self._refresh_tree(snapshot.library)
-        processing = snapshot.processing
-        if processing is not None and processing.revision != self._last_processing_revision:
-            self._last_processing_revision = processing.revision
-            self.auto_queue_switch.blockSignals(True)
-            self.auto_queue_switch.setChecked(
-                processing.auto_enqueue_on_session_complete
-            )
-            self.auto_queue_switch.blockSignals(False)
-            self._update_tasks(processing.jobs)
-        self._resolve_runs()
-        if self.isVisible():
-            self._drain_command_results()
-
-    def _refresh_tree(self, library: RecordingLibrary) -> None:
-        sessions = tuple(
-            session
-            for session in library.sessions
-            if session.state is CaptureSessionState.COMPLETE and session.clips
-        )
-        signature = tuple(
-            (session.session_id, tuple(clip.clip_id for clip in session.clips))
-            for session in sessions
-        )
-        if signature == self._library_signature:
-            return
-        self._library_signature = signature
-        selected = self._selection
-        self.session_tree.clear()
-        restore: QTreeWidgetItem | None = None
-        for session in sessions:
-            title = session.display_name or session.session_id[:8]
-            item = QTreeWidgetItem([title])
-            item.setData(0, Qt.ItemDataRole.UserRole, (session.session_id, None))
-            item.setToolTip(0, session.session_id)
-            self.session_tree.addTopLevelItem(item)
-            for index, clip in enumerate(session.clips, start=1):
-                child = QTreeWidgetItem([f"片段 {index} · {clip.duration_ms / 1000:.1f}s"])
-                child.setData(0, Qt.ItemDataRole.UserRole, (session.session_id, clip.clip_id))
-                item.addChild(child)
-                if selected == _Selection(session.session_id, clip.clip_id):
-                    restore = child
-            if selected == _Selection(session.session_id, None):
-                restore = item
-            item.setExpanded(True)
-        if restore is None and self.session_tree.topLevelItemCount() > 0:
-            restore = self.session_tree.topLevelItem(0)
-        if restore is not None:
-            self.session_tree.setCurrentItem(restore)
-        else:
-            self._selection = None
-            self.workspace_status.setText("没有可处理的完整会话")
-            self.workspace_status.setLevel(InfoLevel.INFOAMTION)
-
-    def _select_tree_item(
-        self,
-        item: QTreeWidgetItem | None,
-        _previous: QTreeWidgetItem | None,
-    ) -> None:
-        if item is None:
-            return
-        value = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(value, tuple) or len(value) != 2:
-            return
-        session_id, clip_id = value
-        if not isinstance(session_id, str) or (
-            clip_id is not None and not isinstance(clip_id, str)
-        ):
-            return
-        self._selection = _Selection(session_id, clip_id)
-        try:
-            session_path = self.runtime.session_directory(session_id)
-            self.replay.open_session(session_path, clip_id)
-        except Exception as error:
-            self._show_error(str(error))
-            return
-        self.workspace_status.setText(
-            f"{session_id[:8]} · {'完整会话' if clip_id is None else clip_id[:8]}"
-        )
-        self.workspace_status.setLevel(InfoLevel.SUCCESS)
-        self._run_future = self.runtime.processing_runs(session_id)
-        self._clear_result_queries()
-
-    def _start_processing(self) -> None:
-        if self._selection is None:
-            self._show_error("请先选择一个会话或片段")
-            return
-        preset_ids = (
-            "hand-tracking-quality",
-            "hand-tracking-balanced",
-            "hand-tracking-preview",
-        )
-        self.runtime.request_processing(
-            self._selection.session_id,
-            clip_id=self._selection.clip_id,
-            preset_id=preset_ids[max(0, self.preset_combo.currentIndex())],
-        )
-
-    def _cancel_processing(self) -> None:
-        job_id = self._selected_job_id(active_fallback=True)
-        if job_id is not None:
-            self.runtime.request_processing_cancel(job_id)
-
-    def _retry_processing(self) -> None:
-        job_id = self._selected_job_id(active_fallback=False)
-        if job_id is not None:
-            self.runtime.request_processing_retry(job_id)
-
-    def _export_result(self) -> None:
-        frame = self.replay.snapshot().frame
-        selection = self._selection
-        run_id = self._run_ids.get(self.primary_run_combo.currentText())
-        if frame is None or selection is None or run_id is None:
-            self._show_error("请先选择已完成的处理结果和视频片段")
-            return
-        self.runtime.request_processing_export(
-            selection.session_id,
-            run_id,
-            frame.clip_id,
-        )
-
-    def _selected_job_id(self, *, active_fallback: bool) -> str | None:
-        row = self.task_table.currentRow()
-        if 0 <= row < len(self._task_row_ids):
-            return self._task_row_ids[row]
-        processing = self.runtime.snapshot().processing
-        return processing.active_job_id if active_fallback and processing is not None else None
-
-    def _update_tasks(self, jobs: tuple[ProcessingJob, ...]) -> None:
-        self._task_row_ids = [job.job_id for job in jobs]
-        self.task_table.setRowCount(len(jobs))
-        for row, job in enumerate(jobs):
-            values = (
-                job.session_id[:8],
-                "完整会话" if job.clip_id is None else job.clip_id[:8],
-                job.preset.display_name,
-                _job_state_text(job.state),
-                f"{job.progress_current}/{job.progress_total}",
-                _duration_text(job.elapsed_seconds),
-                job.detail,
-            )
-            for column, value in enumerate(values):
-                self.task_table.setItem(row, column, QTableWidgetItem(value))
-        active = next(
-            (job for job in jobs if job.state in {
-                ProcessingJobState.PREPARING,
-                ProcessingJobState.RUNNING,
-                ProcessingJobState.CANCELING,
-            }),
-            None,
-        )
-        self.task_summary.setText(
-            "暂无任务"
-            if not jobs
-            else (
-                f"{_job_state_text(active.state)} · "
-                f"{active.progress_current}/{active.progress_total}"
-                if active is not None
-                else f"共 {len(jobs)} 个历史任务"
-            )
-        )
     def _query_results(self, frame: PlaybackFrame) -> None:
-        selection = self._selection
-        if selection is None:
-            return
-        for layer, combo in (
-            ("primary", self.primary_run_combo),
-            ("comparison", self.comparison_run_combo),
+        for layer, run_id in (
+            ("primary", self.workbench.primary_run_id),
+            ("comparison", self.workbench.comparison_run_id),
         ):
-            label = combo.currentText()
-            run_id = self._run_ids.get(label)
-            if run_id is None or (layer == "comparison" and label == "关闭对比"):
+            if run_id is None:
+                continue
+            existing = self._result_futures.get(layer)
+            if existing is not None and not existing[1].done():
                 continue
             key = (frame.session_id, frame.clip_id, frame.frame_index, frame.session_time_ns)
             self._result_futures[layer] = (
@@ -541,131 +307,66 @@ class VideoProcessingView(QWidget):
             )
 
     def _resolve_result_queries(self, frame_key: tuple[str, str, int, int]) -> None:
-        for layer, item in tuple(self._result_futures.items()):
-            key, future = item
+        refresh_current_frame = False
+        for layer, (key, future) in tuple(self._result_futures.items()):
             if not future.done():
                 continue
             del self._result_futures[layer]
             try:
                 result = future.result()
             except Exception as error:
-                self.layer_status.setText(str(error))
+                self._show_error(str(error))
                 continue
             if key != frame_key:
+                refresh_current_frame = True
                 continue
             if layer == "primary":
                 self.canvas.set_overlay(result)
                 self.spatial_canvas.set_hand_result(result)
-                self.frame_result.setText(_result_summary(result))
             else:
                 self.canvas.set_comparison_overlay(result)
-
-    def _clear_result_queries(self, _value: str = "") -> None:
-        self._result_futures.clear()
-        self.canvas.set_overlay(None)
-        self.canvas.set_comparison_overlay(None)
-        self.spatial_canvas.set_hand_result(None)
-        if self._last_frame_key is not None:
+        if refresh_current_frame:
             frame = self.replay.snapshot().frame
             if frame is not None:
                 self._query_results(frame)
 
-    def _resolve_runs(self) -> None:
-        future = self._run_future
-        if future is None or not future.done():
+    def _clear_result_queries(self) -> None:
+        self._result_futures.clear()
+        self.canvas.set_overlay(None)
+        self.canvas.set_comparison_overlay(None)
+        self.spatial_canvas.set_hand_result(None)
+        frame = self.replay.snapshot().frame
+        if frame is not None and not self.showing_hall:
+            self._query_results(frame)
+
+    def _process_current_clip(self) -> None:
+        selection = self._selection
+        if selection is None:
+            self._show_error("当前没有可处理的视频片段")
             return
-        self._run_future = None
-        try:
-            runs = future.result()
-        except Exception as error:
-            self.layer_status.setText(str(error))
+        self.runtime.request_processing(
+            selection.session_id,
+            clip_id=selection.clip_id,
+            preset_id=None,
+        )
+
+    def _export_current_result(self) -> None:
+        selection = self._selection
+        frame = self.replay.snapshot().frame
+        run_id = self.workbench.primary_run_id
+        if selection is None or frame is None or run_id is None:
+            self._show_error("请先选择可查看的处理结果")
             return
-        self._run_ids.clear()
-        self.primary_run_combo.clear()
-        self.comparison_run_combo.clear()
-        self.comparison_run_combo.addItem("关闭对比")
-        for run in runs:
-            if not run.is_viewable:
-                continue
-            label = f"{run.preset.display_name} · {run.run_id[-8:]}"
-            self._run_ids[label] = run.run_id
-            self.primary_run_combo.addItem(label)
-            self.comparison_run_combo.addItem(label)
-        self.layer_status.setText(
-            f"可用运行 {len(self._run_ids)} 个" if self._run_ids else "当前会话没有处理结果"
+        self.runtime.request_processing_export(
+            selection.session_id,
+            run_id,
+            frame.clip_id,
         )
-        self._clear_result_queries()
-
-    def _update_frame_inspector(
-        self,
-        frame: PlaybackFrame,
-        snapshot: ReplaySnapshot,
-    ) -> None:
-        self.frame_identity.setText(f"{frame.clip_id[:8]} · F{frame.frame_index}")
-        self.frame_timing.setText(
-            f"PTS {frame.pts_ns / 1_000_000:.3f} ms\n"
-            f"会话时间 {frame.session_time_ns / 1_000_000_000:.6f} s"
-        )
-        pose = snapshot.imu_pose
-        self.frame_imu.setText(
-            "IMU --"
-            if pose is None
-            else (
-                f"IMU {pose.recent_rate_hz:.1f} Hz · "
-                f"R {pose.roll_degrees:.1f}° · P {pose.pitch_degrees:.1f}° · "
-                f"Y {pose.yaw_degrees:.1f}°"
-            )
-        )
-    def _sync_transport(self, snapshot: ReplaySnapshot) -> None:
-        replay = snapshot
-        self.play_button.setIcon(
-            FluentIcon.PAUSE if replay.state is ReplayState.PLAYING else FluentIcon.PLAY
-        )
-        maximum = max(1, round(replay.duration_seconds * 1000))
-        value = min(maximum, round(replay.position_seconds * 1000))
-        if not self._seeking:
-            self.position_slider.blockSignals(True)
-            self.position_slider.setRange(0, maximum)
-            self.position_slider.setValue(value)
-            self.position_slider.blockSignals(False)
-        self.time_label.setText(
-            f"{_clock(replay.position_seconds)} / {_clock(replay.duration_seconds)}"
-        )
-        if replay.state is ReplayState.ERROR and replay.error:
-            self.workspace_status.setText("回放失败")
-            self.workspace_status.setLevel(InfoLevel.ERROR)
-
-    def _toggle_playback(self) -> None:
-        if self.replay.snapshot().state is ReplayState.PLAYING:
-            self.replay.pause()
-        else:
-            self.replay.play()
-
-    def _begin_seek(self) -> None:
-        self._seeking = True
-
-    def _finish_seek(self) -> None:
-        self._seeking = False
-        self.replay.seek(self.position_slider.value() / 1000)
-
-    def _set_rate(self, value: str) -> None:
-        if value:
-            self.replay.set_playback_rate(float(value.removesuffix("x")))
-
-    def _show_inspector_page(self, key: str) -> None:
-        page = self.inspector_pages.get(key)
-        if page is not None:
-            self.inspector_stack.setCurrentWidget(page)
-
-    def _toggle_tasks(self) -> None:
-        visible = not self.task_table.isVisible()
-        self.task_table.setVisible(visible)
-        self.task_toggle.setIcon(FluentIcon.UP if visible else FluentIcon.DOWN)
 
     def _drain_command_results(self) -> None:
         for result in self.runtime.command_results():
             if result.succeeded:
-                InfoBar.success("操作完成", result.detail, duration=1800, parent=self.window())
+                InfoBar.success("操作完成", result.detail, duration=3000, parent=self.window())
             else:
                 self._show_error(result.detail)
 
@@ -673,8 +374,21 @@ class VideoProcessingView(QWidget):
         InfoBar.error("操作失败", detail, duration=4500, parent=self.window())
 
 
-def _job_state_text(state: ProcessingJobState) -> str:
+def _result_counts(
+    runs: tuple[ProcessingRunInfo, ...],
+    session: RecordingSession,
+) -> dict[str, int]:
     return {
+        clip.clip_id: sum(run.covers_clip(clip.clip_id) for run in runs)
+        for clip in session.clips
+    }
+
+
+def _processing_states(
+    jobs: tuple[ProcessingJob, ...],
+    session: RecordingSession,
+) -> dict[str, str]:
+    labels = {
         ProcessingJobState.QUEUED: "等待",
         ProcessingJobState.PREPARING: "校验",
         ProcessingJobState.RUNNING: "处理中",
@@ -683,32 +397,18 @@ def _job_state_text(state: ProcessingJobState) -> str:
         ProcessingJobState.FAILED: "失败",
         ProcessingJobState.INTERRUPTED: "中断",
         ProcessingJobState.CANCELED: "已取消",
-    }[state]
-
-
-def _result_summary(result: dict[str, object] | None) -> str:
-    if result is None:
-        return "当前帧没有手部结果"
-    hands = result.get("hands")
-    count = len(hands) if isinstance(hands, list) else 0
-    duration = result.get("inference_duration_ns")
-    duration_text = (
-        f"{duration / 1_000_000:.1f} ms"
-        if isinstance(duration, int) and not isinstance(duration, bool)
-        else "--"
-    )
-    return f"检测手部 {count} · 推理 {duration_text}"
-
-
-def _clock(seconds: float) -> str:
-    milliseconds = max(0, round(seconds * 1000))
-    minutes, remainder = divmod(milliseconds, 60_000)
-    whole_seconds, millis = divmod(remainder, 1000)
-    return f"{minutes:02d}:{whole_seconds:02d}.{millis:03d}"
-
-
-def _duration_text(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, remainder = divmod(round(seconds), 60)
-    return f"{minutes:d}m {remainder:02d}s"
+    }
+    states: dict[str, str] = {}
+    for clip in session.clips:
+        job = next(
+            (
+                item
+                for item in jobs
+                if item.session_id == session.session_id
+                and (item.clip_id is None or item.clip_id == clip.clip_id)
+            ),
+            None,
+        )
+        if job is not None:
+            states[clip.clip_id] = labels[job.state]
+    return states
