@@ -23,7 +23,6 @@ from qfluentwidgets import (
     HeaderCardWidget,
     InfoBar,
     Pivot,
-    ProgressBar,
     SimpleCardWidget,
     Slider,
     StrongBodyLabel,
@@ -173,7 +172,6 @@ class VideoProcessingView(QWidget):
         self.canvas = VideoCanvas(column)
         layout.addWidget(self.canvas, 1)
         layout.addWidget(self._build_transport())
-        layout.addWidget(self._build_timeline())
         return column
 
     def _build_transport(self) -> SimpleCardWidget:
@@ -204,36 +202,6 @@ class VideoProcessingView(QWidget):
         self.rate_combo.currentTextChanged.connect(self._set_rate)
         self.rate_combo.setFixedWidth(82)
         row.addWidget(self.rate_combo)
-        return card
-
-    def _build_timeline(self) -> SimpleCardWidget:
-        card = SimpleCardWidget(self)
-        card.setObjectName("processingTimeline")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 9, 14, 10)
-        layout.setSpacing(5)
-        header = QHBoxLayout()
-        header.addWidget(StrongBodyLabel("共享时间轴", card))
-        header.addStretch(1)
-        self.frame_label = CaptionLabel("未载入帧", card)
-        header.addWidget(self.frame_label)
-        layout.addLayout(header)
-        self.timeline_bars: dict[str, ProgressBar] = {}
-        for key, title in (
-            ("video", "视频"),
-            ("imu", "IMU"),
-            ("hands", "手部"),
-            ("task", "处理"),
-        ):
-            row = QHBoxLayout()
-            label = CaptionLabel(title, card)
-            label.setFixedWidth(34)
-            row.addWidget(label)
-            bar = ProgressBar(card, useAni=False)
-            bar.setRange(0, 1000)
-            row.addWidget(bar, 1)
-            self.timeline_bars[key] = bar
-            layout.addLayout(row)
         return card
 
     def _build_inspection_column(self) -> QWidget:
@@ -549,9 +517,6 @@ class VideoProcessingView(QWidget):
                 else f"共 {len(jobs)} 个历史任务"
             )
         )
-        if active is not None and active.progress_total > 0:
-            self.timeline_bars["task"].setValue(round(active.progress_fraction * 1000))
-
     def _query_results(self, frame: PlaybackFrame) -> None:
         selection = self._selection
         if selection is None:
@@ -592,7 +557,6 @@ class VideoProcessingView(QWidget):
             if layer == "primary":
                 self.canvas.set_overlay(result)
                 self.spatial_canvas.set_hand_result(result)
-                self.timeline_bars["hands"].setValue(1000 if result is not None else 0)
                 self.frame_result.setText(_result_summary(result))
             else:
                 self.canvas.set_comparison_overlay(result)
@@ -657,8 +621,6 @@ class VideoProcessingView(QWidget):
                 f"Y {pose.yaw_degrees:.1f}°"
             )
         )
-        self.frame_label.setText(f"{frame.clip_id[:8]} · F{frame.frame_index}")
-
     def _sync_transport(self, snapshot: ReplaySnapshot) -> None:
         replay = snapshot
         self.play_button.setIcon(
@@ -674,9 +636,6 @@ class VideoProcessingView(QWidget):
         self.time_label.setText(
             f"{_clock(replay.position_seconds)} / {_clock(replay.duration_seconds)}"
         )
-        progress = round(value / maximum * 1000)
-        self.timeline_bars["video"].setValue(progress)
-        self.timeline_bars["imu"].setValue(progress if replay.imu_pose is not None else 0)
         if replay.state is ReplayState.ERROR and replay.error:
             self.workspace_status.setText("回放失败")
             self.workspace_status.setLevel(InfoLevel.ERROR)

@@ -210,6 +210,8 @@ def test_fluent_window_registers_processing_first_and_live_capture_second(
         assert len(window.processing_view.findChildren(SpatialSyncCanvas)) == 1
         assert window.processing_view.canvas.isVisible()
         assert window.processing_view.spatial_canvas.isVisible()
+        assert window.processing_view.findChild(QWidget, "processingTimeline") is None
+        assert not hasattr(window.processing_view, "timeline_bars")
         headers = [
             window.processing_view.task_table.horizontalHeaderItem(column).text()
             for column in range(window.processing_view.task_table.columnCount())

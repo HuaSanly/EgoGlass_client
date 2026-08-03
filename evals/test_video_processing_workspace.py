@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from PyQt6.QtCore import QPoint, QRect
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from ui.app import MainWindow
 from ui.replay.player import PlaybackFrame, ReplayState
@@ -60,20 +60,17 @@ def test_processing_workspace_keeps_video_and_space_visible_at_supported_sizes(
                 view.inspector_pivot.mapTo(window, QPoint(0, 0)),
                 view.inspector_pivot.size(),
             )
-            timeline_rect = QRect(
-                view.timeline_bars["video"].mapTo(window, QPoint(0, 0)),
-                view.timeline_bars["video"].size(),
-            )
             geometry = view.canvas.canvas_geometry()
 
             assert view.isVisible()
             assert view.canvas.isVisible()
             assert view.spatial_canvas.isVisible()
             assert not video_rect.intersects(spatial_rect)
-            assert not timeline_rect.intersects(spatial_rect)
             assert spatial_rect.top() < inspector_rect.top()
             assert abs(geometry.width / geometry.height - 4 / 3) < 1e-9
             assert not window.grab().isNull()
+            assert view.findChild(QWidget, "processingTimeline") is None
+            assert not hasattr(view, "timeline_bars")
     finally:
         window.close()
         qt_application.processEvents()

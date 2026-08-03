@@ -41,8 +41,7 @@ again only after Refresh.
 The workspace has three always-visible columns:
 
 - a Fluent `TreeWidget` containing completed sessions and clips;
-- one central 4:3 `VideoCanvas`, playback controls, and video/IMU/hand/task
-  timeline;
+- one central 4:3 `VideoCanvas` with playback controls;
 - one right-side OpenGL `SpatialSyncCanvas` above a Fluent result inspector.
 
 Video and space are not Pivot pages. A single immutable `PlaybackFrame` carries
