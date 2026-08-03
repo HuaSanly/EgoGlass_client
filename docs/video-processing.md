@@ -79,6 +79,12 @@ decoded frame against the recorded MP4 PTS index and publishes a typed
 Recorded IMU is fused once while opening and queried at the same
 `session_time_ns` as the frame.
 
+Session playback always indexes every complete clip and exposes their relative
+time spans. An optional initial clip selects the first displayed frame without
+discarding the rest of the session timeline. `unload()` releases the active
+decoder and frame buffers when the operator returns to the video hall while
+keeping the replay worker available for the next selection.
+
 The UI queries one primary run and one optional comparison run for each frame.
 Both overlays and the OpenGL hand pose share one decoded RGB frame. Seeking and
 single-frame stepping therefore cannot advance video, IMU, and results

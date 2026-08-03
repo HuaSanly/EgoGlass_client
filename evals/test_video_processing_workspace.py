@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,6 +86,30 @@ def test_processing_workspace_has_no_video_space_pivot() -> None:
     assert "self.canvas" in text
     assert "self.spatial_canvas" in text
     assert "self.spatial_canvas.set_pose(snapshot.imu_pose)" in text
+
+
+def test_replay_unload_contract_clears_media_identity() -> None:
+    from ui.replay.player import ReplayPlayer, ReplaySnapshot
+
+    player = ReplayPlayer()
+    try:
+        player._update(  # type: ignore[attr-defined]
+            state=ReplayState.PAUSED,
+            path=Path("session"),
+            session_id="session",
+            clip_id="clip",
+            duration_seconds=3.0,
+        )
+        player.unload()
+        deadline = time.monotonic() + 1.0
+        while player.snapshot().state is not ReplayState.EMPTY:
+            if time.monotonic() >= deadline:
+                raise AssertionError("replay unload did not become empty")
+            time.sleep(0.005)
+
+        assert player.snapshot() == ReplaySnapshot(revision=player.snapshot().revision)
+    finally:
+        player.close()
 
 
 def test_processing_inspector_pages_remain_rendered_after_real_pivot_clicks(

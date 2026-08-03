@@ -11,6 +11,7 @@ from ui.replay.player import (
     PlaybackFrame,
     ReplayPlayer,
     ReplayState,
+    _clip_spans,
     _index_standalone_file,
     _IndexedClip,
     _IndexedFrame,
@@ -170,3 +171,91 @@ def test_session_seek_opens_only_the_target_clip(tmp_path: Path) -> None:
 
     assert frame.clip_id == "second"
     assert frame.session_time_ns == 1_200_000_000
+
+
+def test_clip_spans_are_relative_to_the_complete_session_timeline(tmp_path: Path) -> None:
+    path = tmp_path / "clip.mp4"
+    _write_video(path)
+    frames = _index_standalone_file(path).clips[0].frames
+    shifted = tuple(
+        _IndexedFrame(
+            frame.frame_index,
+            frame.pts,
+            frame.time_base,
+            frame.session_time_ns + 1_000_000_000,
+        )
+        for frame in frames
+    )
+    index = _SessionIndex(
+        "session",
+        tmp_path,
+        (_IndexedClip("first", path, frames), _IndexedClip("second", path, shifted)),
+        0,
+        1_400_000_000,
+    )
+
+    spans = _clip_spans(index)
+
+    values = [
+        (span.clip_id, span.start_seconds, span.end_seconds, span.frame_count)
+        for span in spans
+    ]
+    assert values == [
+        ("first", 0.0, 0.4, 5),
+        ("second", 1.0, 1.4, 5),
+    ]
+
+
+def test_replay_opens_complete_session_at_requested_clip_and_unloads(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first_path = tmp_path / "first.mp4"
+    second_path = tmp_path / "second.mp4"
+    _write_video(first_path)
+    _write_video(second_path)
+    first = _index_standalone_file(first_path).clips[0].frames
+    second = tuple(
+        _IndexedFrame(
+            frame.frame_index,
+            frame.pts,
+            frame.time_base,
+            frame.session_time_ns + 1_000_000_000,
+        )
+        for frame in _index_standalone_file(second_path).clips[0].frames
+    )
+    index = _SessionIndex(
+        "session",
+        tmp_path,
+        (_IndexedClip("first", first_path, first), _IndexedClip("second", second_path, second)),
+        0,
+        1_400_000_000,
+    )
+    monkeypatch.setattr("ui.replay.player._index_capture_session", lambda _path, _clip: index)
+    player = ReplayPlayer()
+    try:
+        player.open_session(tmp_path, "second")
+        _wait_for(
+            player,
+            lambda snapshot: snapshot.state is ReplayState.PAUSED
+            and snapshot.frame is not None
+            and snapshot.frame.clip_id == "second",
+        )
+        opened = player.snapshot()
+        assert [span.clip_id for span in opened.clips] == ["first", "second"]
+        assert opened.position_seconds == 1.0
+
+        player.unload()
+        _wait_for(player, lambda snapshot: snapshot.state is ReplayState.EMPTY)
+        unloaded = player.snapshot()
+        assert unloaded.path is None
+        assert unloaded.frame is None
+        assert unloaded.clips == ()
+
+        player.open(first_path)
+        _wait_for(
+            player,
+            lambda snapshot: snapshot.state is ReplayState.PAUSED and snapshot.frame is not None,
+        )
+    finally:
+        player.close()

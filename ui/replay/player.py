@@ -53,6 +53,14 @@ class PlaybackFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class PlaybackClipSpan:
+    clip_id: str
+    start_seconds: float
+    end_seconds: float
+    frame_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReplaySnapshot:
     revision: int = 0
     state: ReplayState = ReplayState.EMPTY
@@ -63,6 +71,7 @@ class ReplaySnapshot:
     position_seconds: float = 0.0
     session_time_ns: int | None = None
     playback_rate: float = 1.0
+    clips: tuple[PlaybackClipSpan, ...] = ()
     frame: PlaybackFrame | None = None
     imu_pose: RecordedImuPose | None = None
     error: str | None = None
@@ -219,10 +228,22 @@ class ReplayPlayer:
 
         self._commands.put(_Command("open-file", path.expanduser().resolve()))
 
-    def open_session(self, session_directory: Path, clip_id: str | None = None) -> None:
+    def open_session(
+        self,
+        session_directory: Path,
+        initial_clip_id: str | None = None,
+    ) -> None:
         self._commands.put(
-            _Command("open-session", (session_directory.expanduser().resolve(), clip_id))
+            _Command(
+                "open-session",
+                (session_directory.expanduser().resolve(), initial_clip_id),
+            )
         )
+
+    def unload(self) -> None:
+        """Release the active decoder while keeping the replay worker reusable."""
+
+        self._commands.put(_Command("unload"))
 
     def play(self) -> None:
         self._commands.put(_Command("play"))
@@ -311,6 +332,11 @@ class ReplayPlayer:
         step_requested: bool,
     ) -> tuple[_SessionDecoder | None, bool, bool]:
         try:
+            if command.name == "unload":
+                if decoder is not None:
+                    decoder.close()
+                self._reset_snapshot()
+                return None, False, False
             if command.name in {"open-file", "open-session"}:
                 if decoder is not None:
                     decoder.close()
@@ -322,12 +348,12 @@ class ReplayPlayer:
                     value = command.value
                     if not isinstance(value, tuple) or len(value) != 2:
                         raise TypeError("invalid session-open command")
-                    path, clip_id = value
+                    path, initial_clip_id = value
                     if not isinstance(path, Path) or (
-                        clip_id is not None and not isinstance(clip_id, str)
+                        initial_clip_id is not None and not isinstance(initial_clip_id, str)
                     ):
                         raise TypeError("invalid session-open command")
-                    index = _index_capture_session(path, clip_id)
+                    index = _index_capture_session(path, None)
                 decoder = _SessionDecoder(index)
                 self._update(
                     state=ReplayState.PAUSED,
@@ -336,8 +362,20 @@ class ReplayPlayer:
                     clip_id=(index.clips[0].clip_id if len(index.clips) == 1 else None),
                     duration_seconds=index.duration_ns / 1_000_000_000,
                     position_seconds=0.0,
+                    clips=_clip_spans(index),
                     imu_pose=None,
                 )
+                if command.name == "open-session" and initial_clip_id is not None:
+                    target = next(
+                        (clip for clip in index.clips if clip.clip_id == initial_clip_id),
+                        None,
+                    )
+                    if target is None:
+                        raise KeyError(f"unknown complete clip {initial_clip_id!r}")
+                    frame = decoder.seek(target.frames[0].session_time_ns)
+                    self._publish_frame(frame, index)
+                    self._update(state=ReplayState.PAUSED)
+                    return decoder, False, False
                 return decoder, False, True
             if command.name == "play" and decoder is not None:
                 if self.snapshot().state is ReplayState.ENDED:
@@ -404,6 +442,22 @@ class ReplayPlayer:
                     "revision": self._snapshot.revision + 1,
                 }
             )
+
+    def _reset_snapshot(self) -> None:
+        with self._lock:
+            self._snapshot = ReplaySnapshot(revision=self._snapshot.revision + 1)
+
+
+def _clip_spans(index: _SessionIndex) -> tuple[PlaybackClipSpan, ...]:
+    return tuple(
+        PlaybackClipSpan(
+            clip.clip_id,
+            (clip.frames[0].session_time_ns - index.origin_session_time_ns) / 1_000_000_000,
+            (clip.frames[-1].session_time_ns - index.origin_session_time_ns) / 1_000_000_000,
+            len(clip.frames),
+        )
+        for clip in index.clips
+    )
 
 
 def _index_capture_session(session_path: Path, clip_id: str | None) -> _SessionIndex:
