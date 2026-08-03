@@ -576,7 +576,7 @@ class HomeView(QWidget):
             self.imu_sync_badge.setText("--")
             self.imu_sync_badge.setLevel(InfoLevel.INFOAMTION)
             return
-        self.imu_sync_badge.setText(f"{pose.recent_rate_hz:.1f} Hz")
+        self.imu_sync_badge.setText("已同步")
         self.imu_sync_badge.setLevel(
             InfoLevel.SUCCESS if pose.recent_rate_hz >= 80 else InfoLevel.WARNING
         )

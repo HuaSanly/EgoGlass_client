@@ -9,9 +9,13 @@ from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
+from ahrs.common.orientation import acc2q
 from ahrs.filters import Madgwick
 
 from .webrtc_models import ImuSample, ImuSensorType
+
+_RATE_WINDOW_NS = 2_000_000_000
+_INITIAL_ACCELEROMETER_SAMPLES = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,15 +51,20 @@ class ImuPreviewRuntime:
         self._lock = threading.Lock()
         self._filter = Madgwick(frequency=100.0, beta=beta)
         self._quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self._reference_quaternion: np.ndarray | None = None
+        self._orientation_initialized = False
         self._session_id: str | None = None
         self._accelerometer: tuple[float, float, float] | None = None
+        self._accelerometer_window: deque[np.ndarray] = deque(
+            maxlen=_INITIAL_ACCELEROMETER_SAMPLES
+        )
         self._gyroscope: tuple[float, float, float] | None = None
         self._last_gyro_timestamp_ns: int | None = None
         self._latest_received_at_ns: int | None = None
         self._samples_received = 0
         self._samples_processed = 0
         self._queue_overflow_count = 0
-        self._processed_at_ns: deque[int] = deque(maxlen=400)
+        self._gyroscope_timing: deque[tuple[int, int]] = deque(maxlen=400)
         self._closed = False
         self._worker = threading.Thread(
             target=self._run,
@@ -83,12 +92,14 @@ class ImuPreviewRuntime:
     def snapshot(self) -> ImuPoseSnapshot:
         now_ns = time.perf_counter_ns()
         with self._lock:
-            cutoff_ns = now_ns - 2_000_000_000
-            recent = tuple(value for value in self._processed_at_ns if value >= cutoff_ns)
-            rate_hz = 0.0
-            if len(recent) > 1 and recent[-1] > recent[0]:
-                rate_hz = (len(recent) - 1) * 1_000_000_000 / (recent[-1] - recent[0])
-            quaternion = tuple(float(value) for value in self._quaternion)
+            rate_hz = self._recent_gyroscope_rate_hz(now_ns)
+            quaternion = tuple(
+                float(value)
+                for value in _relative_quaternion(
+                    self._reference_quaternion,
+                    self._quaternion,
+                )
+            )
             roll, pitch, yaw = _quaternion_to_euler_degrees(quaternion)
             age_ms = None
             if self._latest_received_at_ns is not None:
@@ -109,11 +120,14 @@ class ImuPreviewRuntime:
             )
 
     def reset_orientation(self) -> None:
-        """Reset the preview orientation while keeping the current IMU stream alive."""
+        """Use the current fused pose as the preview's new relative origin."""
 
         with self._lock:
-            self._quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-            self._last_gyro_timestamp_ns = None
+            self._reference_quaternion = (
+                _normalized_quaternion(self._quaternion)
+                if self._orientation_initialized
+                else None
+            )
 
     async def close(self) -> None:
         if self._closed:
@@ -139,25 +153,85 @@ class ImuPreviewRuntime:
                 return
             sample = queued.sample
             with self._lock:
-                self._session_id = queued.session_id
+                if self._session_id != queued.session_id:
+                    self._begin_session(queued.session_id)
                 self._latest_received_at_ns = queued.received_at_client_monotonic_ns
                 if sample.sensor_type is ImuSensorType.ACCELEROMETER:
                     self._accelerometer = sample.values
+                    self._accelerometer_window.append(
+                        np.asarray(sample.values, dtype=np.float64)
+                    )
                 else:
                     self._gyroscope = sample.values
+                    self._record_gyroscope_timing(
+                        sample.sensor_event_monotonic_ns,
+                        queued.received_at_client_monotonic_ns,
+                    )
                     self._update_orientation(sample)
                 self._samples_processed += 1
-                self._processed_at_ns.append(time.perf_counter_ns())
+
+    def _begin_session(self, session_id: str) -> None:
+        self._session_id = session_id
+        self._quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self._reference_quaternion = None
+        self._orientation_initialized = False
+        self._accelerometer = None
+        self._accelerometer_window.clear()
+        self._gyroscope = None
+        self._last_gyro_timestamp_ns = None
+        self._gyroscope_timing.clear()
+
+    def _record_gyroscope_timing(
+        self,
+        sensor_timestamp_ns: int,
+        received_at_client_monotonic_ns: int,
+    ) -> None:
+        if (
+            self._gyroscope_timing
+            and sensor_timestamp_ns <= self._gyroscope_timing[-1][0]
+        ):
+            return
+        self._gyroscope_timing.append(
+            (sensor_timestamp_ns, received_at_client_monotonic_ns)
+        )
+
+    def _recent_gyroscope_rate_hz(self, now_ns: int) -> float:
+        if not self._gyroscope_timing:
+            return 0.0
+        latest_sensor_ns, latest_received_ns = self._gyroscope_timing[-1]
+        if now_ns - latest_received_ns > _RATE_WINDOW_NS:
+            return 0.0
+        cutoff_ns = latest_sensor_ns - _RATE_WINDOW_NS
+        recent = tuple(
+            sensor_ns
+            for sensor_ns, _received_ns in self._gyroscope_timing
+            if sensor_ns >= cutoff_ns
+        )
+        if len(recent) < 2 or recent[-1] <= recent[0]:
+            return 0.0
+        return (len(recent) - 1) * 1_000_000_000 / (recent[-1] - recent[0])
 
     def _update_orientation(self, gyroscope: ImuSample) -> None:
-        if self._accelerometer is None:
-            self._last_gyro_timestamp_ns = gyroscope.sensor_event_monotonic_ns
-            return
+        current_ns = gyroscope.sensor_event_monotonic_ns
         previous_ns = self._last_gyro_timestamp_ns
-        self._last_gyro_timestamp_ns = gyroscope.sensor_event_monotonic_ns
-        if previous_ns is None or gyroscope.sensor_event_monotonic_ns <= previous_ns:
+        if previous_ns is not None and current_ns <= previous_ns:
             return
-        delta_seconds = (gyroscope.sensor_event_monotonic_ns - previous_ns) / 1_000_000_000
+        self._last_gyro_timestamp_ns = current_ns
+        if self._accelerometer is None:
+            return
+        if previous_ns is None:
+            return
+        if not self._orientation_initialized:
+            if len(self._accelerometer_window) < _INITIAL_ACCELEROMETER_SAMPLES:
+                return
+            initial = acc2q(np.mean(tuple(self._accelerometer_window), axis=0))
+            if not np.isfinite(initial).all():
+                return
+            self._quaternion = _normalized_quaternion(initial)
+            self._reference_quaternion = self._quaternion.copy()
+            self._orientation_initialized = True
+            return
+        delta_seconds = (current_ns - previous_ns) / 1_000_000_000
         if not 0.0001 <= delta_seconds <= 0.2:
             return
         updated = self._filter.updateIMU(
@@ -167,7 +241,42 @@ class ImuPreviewRuntime:
             dt=delta_seconds,
         )
         if updated is not None and np.isfinite(updated).all():
-            self._quaternion = np.asarray(updated, dtype=np.float64)
+            self._quaternion = _normalized_quaternion(updated)
+
+
+def _relative_quaternion(
+    reference: np.ndarray | None,
+    current: np.ndarray,
+) -> np.ndarray:
+    if reference is None:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    reference_inverse = _normalized_quaternion(reference).copy()
+    reference_inverse[1:] *= -1.0
+    return _normalized_quaternion(
+        _quaternion_product(reference_inverse, _normalized_quaternion(current))
+    )
+
+
+def _normalized_quaternion(quaternion: np.ndarray) -> np.ndarray:
+    values = np.asarray(quaternion, dtype=np.float64)
+    norm = float(np.linalg.norm(values))
+    if not math.isfinite(norm) or norm <= 0.0:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    return values / norm
+
+
+def _quaternion_product(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    lw, lx, ly, lz = left
+    rw, rx, ry, rz = right
+    return np.array(
+        (
+            lw * rw - lx * rx - ly * ry - lz * rz,
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+        ),
+        dtype=np.float64,
+    )
 
 
 def _quaternion_to_euler_degrees(

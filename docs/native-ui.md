@@ -29,6 +29,15 @@ bounded workers
   -> IMU Madgwick preview
 ```
 
+The IMU row reports the gyroscope pose-update cadence, not the combined count
+of accelerometer and gyroscope messages. Both Glass3 sensors are requested at a
+10,000 microsecond period, while the displayed rate remains approximately
+100 Hz. Madgwick keeps its gravity-referenced internal orientation; a short
+accelerometer window initializes tilt without rendering filter convergence.
+The UI publishes orientation relative to that initial pose, and Refresh changes
+the relative reference without clearing the running filter. Absolute yaw can
+still drift because Glass3 does not provide a magnetometer.
+
 The UI owns presentation only. WebRTC, recording, perception, storage, and
 annotation business logic remain in their owning `src/` packages.
 

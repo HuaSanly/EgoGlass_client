@@ -416,6 +416,17 @@ def test_frame_link_strip_maps_live_display_metrics() -> None:
         home.close_resources()
 
 
+def test_imu_row_separates_sync_state_from_gyroscope_rate() -> None:
+    home = HomeView(RuntimeStub())  # type: ignore[arg-type]
+    try:
+        home._update_imu(RuntimeSnapshot(imu_pose=_imu_pose()))
+
+        assert home.imu_sync_badge.text() == "已同步"
+        assert home.imu_detail.text().startswith("100.0 Hz")
+    finally:
+        home.close_resources()
+
+
 def test_spatial_sync_canvas_renders_imu_and_hand_pose(
     qt_application: QApplication,
 ) -> None:
