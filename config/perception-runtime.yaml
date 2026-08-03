@@ -1,6 +1,6 @@
 # Online and offline orchestration around the shared sensor-preprocessing and HaMeR stages.
 schema_version: "1.0"
-enabled: true
+enabled: false
 
 # HaMeR is deliberately run on one worker. When it is busy, the newest decoded
 # WebRTC frame replaces older pending frames instead of delaying the media path.

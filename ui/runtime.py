@@ -8,7 +8,7 @@ import secrets
 import threading
 import time
 from collections import deque
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +25,7 @@ from ingest_gateway.recording_models import RecordingLibrary, RecordingState
 from ingest_gateway.webrtc_models import StreamControlAction, StreamControlCommand
 from ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
 from perception.runtime import HandTrackingRuntime
+from perception.video_processing import VideoProcessingService
 
 from .state import CommandResult, RuntimeSnapshot
 
@@ -73,6 +74,10 @@ class UnifiedRuntimeHost:
             lambda: self.webrtc.recording_source(),
         )
         self.perception = HandTrackingRuntime(recordings_root=recordings_root)
+        self.video_processing = VideoProcessingService(
+            recordings_root,
+            on_gpu_job_changed=self._on_gpu_job_changed,
+        )
         self.discovery = (
             LanDiscoveryService(
                 self.pairing_token,
@@ -182,7 +187,36 @@ class UnifiedRuntimeHost:
         self._track_command(f"session-{action}", self.recording.session_command(action))
 
     def request_replay_generation(self, session_id: str) -> None:
-        self._track_command("generate-replay", self.perception.start_replay(session_id))
+        self.request_processing(session_id)
+
+    def request_processing(
+        self,
+        session_id: str,
+        *,
+        clip_id: str | None = None,
+        preset_id: str = "hand-tracking-quality",
+    ) -> None:
+        self._track_sync_command(
+            "start-processing",
+            lambda: self.video_processing.enqueue(
+                session_id,
+                clip_id=clip_id,
+                preset_id=preset_id,
+            ),
+        )
+
+    def request_processing_cancel(self, job_id: str) -> None:
+        self._track_sync_command(
+            "cancel-processing", lambda: self.video_processing.cancel(job_id)
+        )
+
+    def request_processing_retry(self, job_id: str) -> None:
+        self._track_sync_command(
+            "retry-processing", lambda: self.video_processing.retry(job_id)
+        )
+
+    def request_live_inference(self, enabled: bool) -> None:
+        self._track_command("live-inference", self.perception.set_live_enabled(enabled))
 
     def request_library_refresh(self) -> None:
         self._track_command("refresh-library", self._refresh_library())
@@ -200,6 +234,30 @@ class UnifiedRuntimeHost:
         clip_id: str,
     ) -> concurrent.futures.Future[Path]:
         return self.submit(self.perception.replay_video_path(session_id, run_id, clip_id))
+
+    def processing_runs(
+        self, session_id: str
+    ) -> concurrent.futures.Future[tuple[dict[str, object], ...]]:
+        return self.submit(asyncio.to_thread(self.video_processing.list_runs, session_id))
+
+    def processing_result(
+        self,
+        session_id: str,
+        run_id: str,
+        clip_id: str,
+        frame_index: int,
+        session_time_ns: int,
+    ) -> concurrent.futures.Future[dict[str, object] | None]:
+        return self.submit(
+            asyncio.to_thread(
+                self.video_processing.result_for_frame,
+                session_id,
+                run_id,
+                clip_id,
+                frame_index,
+                session_time_ns,
+            )
+        )
 
     async def _request_stream(self, action: StreamControlAction) -> object:
         if action is StreamControlAction.STOP:
@@ -237,6 +295,21 @@ class UnifiedRuntimeHost:
 
         future.add_done_callback(completed)
 
+    def _track_sync_command(self, name: str, operation: Callable[[], object]) -> None:
+        async def run() -> object:
+            return await asyncio.to_thread(operation)
+
+        self._track_command(name, run())
+
+    def _on_gpu_job_changed(self, active: bool) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.perception.set_offline_processing(active),
+            loop,
+        )
+
     def _thread_main(self) -> None:
         try:
             asyncio.run(self._serve())
@@ -249,6 +322,7 @@ class UnifiedRuntimeHost:
 
     async def _serve(self) -> None:
         self._loop = asyncio.get_running_loop()
+        self.video_processing.start()
         config = uvicorn.Config(
             self.app,
             host=self.config.host,
@@ -278,6 +352,7 @@ class UnifiedRuntimeHost:
                 library_task,
                 return_exceptions=True,
             )
+            await asyncio.to_thread(self.video_processing.close)
 
     async def _initial_library_refresh(self) -> None:
         try:
@@ -302,6 +377,7 @@ class UnifiedRuntimeHost:
                     self.recording.status(),
                     self.perception.status(),
                 )
+                processing = self.video_processing.snapshot()
                 revision += 1
                 snapshot = RuntimeSnapshot(
                     revision=revision,
@@ -314,6 +390,7 @@ class UnifiedRuntimeHost:
                     recording=recording,
                     library=self._library,
                     perception=perception,
+                    processing=processing,
                     display=self.frame_buffer.status(),
                     recent_events=tuple(self._recent_events),
                 )
@@ -333,6 +410,7 @@ class UnifiedRuntimeHost:
                     recording=previous.recording,
                     library=previous.library,
                     perception=previous.perception,
+                    processing=previous.processing,
                     display=self.frame_buffer.status(),
                     last_error=str(error),
                     recent_events=tuple(self._recent_events),

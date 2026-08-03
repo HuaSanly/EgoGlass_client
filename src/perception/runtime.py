@@ -84,7 +84,7 @@ class HandTrackingRuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: str = "1.0"
-    enabled: bool = True
+    enabled: bool = False
     max_live_inference_fps: float = Field(default=6.0, gt=0.0, le=60.0)
     replay: ReplayConfig = Field(default_factory=ReplayConfig)
 
@@ -362,12 +362,14 @@ class HandTrackingRuntime:
         self._status_revision = 0
         self._pending_live_frame: LiveHandTrackingFrame | None = None
         self._live_worker: asyncio.Task[None] | None = None
+        self._live_enabled = self.config.enabled
+        self._offline_processing = False
         self._state = (
             HandTrackingRuntimeState.IDLE
-            if self.config.enabled
+            if self._live_enabled
             else HandTrackingRuntimeState.DISABLED
         )
-        self._detail = "waiting for the first decoded frame" if self.config.enabled else "disabled"
+        self._detail = "waiting for the first decoded frame" if self._live_enabled else "disabled"
         self._last_live_submission_ns: int | None = None
         self._latest_result: HandTrackingResult | None = None
         self._last_error: str | None = None
@@ -387,7 +389,7 @@ class HandTrackingRuntime:
     async def submit_live_frame(self, frame: LiveHandTrackingFrame) -> None:
         """Keep at most one newest decoded frame while CUDA inference is in flight."""
 
-        if not self.config.enabled:
+        if not self._live_enabled or self._offline_processing:
             return
         minimum_interval_ns = round(1_000_000_000 / self.config.max_live_inference_fps)
         async with self._lock:
@@ -453,6 +455,42 @@ class HandTrackingRuntime:
 
         async with self._lock:
             return self._status_payload_locked()
+
+    async def set_live_enabled(self, enabled: bool) -> None:
+        """Enable optional live inference without changing preview or recording."""
+
+        async with self._lock:
+            if enabled and self._offline_processing:
+                raise PerceptionRuntimeError("offline processing currently owns the GPU")
+            self._live_enabled = enabled
+            self._pending_live_frame = None
+            self._state = (
+                HandTrackingRuntimeState.IDLE
+                if enabled
+                else HandTrackingRuntimeState.DISABLED
+            )
+            self._detail = "waiting for the first decoded frame" if enabled else "disabled"
+            self._publish_status_locked()
+
+    async def set_offline_processing(self, active: bool) -> None:
+        """Pause live inference while the offline worker exclusively owns the GPU."""
+
+        async with self._lock:
+            self._offline_processing = active
+            if active:
+                self._pending_live_frame = None
+                self._state = HandTrackingRuntimeState.DISABLED
+                self._detail = "paused while offline processing owns the GPU"
+            else:
+                self._state = (
+                    HandTrackingRuntimeState.IDLE
+                    if self._live_enabled
+                    else HandTrackingRuntimeState.DISABLED
+                )
+                self._detail = (
+                    "waiting for the first decoded frame" if self._live_enabled else "disabled"
+                )
+            self._publish_status_locked()
 
     async def status_events(
         self,
@@ -529,7 +567,7 @@ class HandTrackingRuntime:
     async def _run_live_worker(self) -> None:
         while True:
             async with self._lock:
-                if self._replay_state is ReplayState.RUNNING:
+                if self._offline_processing or self._replay_state is ReplayState.RUNNING:
                     if self._pending_live_frame is not None:
                         self._live_frames_dropped += 1
                         self._pending_live_frame = None
@@ -663,6 +701,8 @@ class HandTrackingRuntime:
             "status_revision": self._status_revision,
             "state": self._state.value,
             "detail": self._detail,
+            "live_enabled": self._live_enabled,
+            "offline_processing": self._offline_processing,
             "live_frames_received": self._live_frames_received,
             "live_frames_dropped": self._live_frames_dropped,
             "live_inferences": self._live_inferences,

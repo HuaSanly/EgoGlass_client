@@ -10,6 +10,7 @@ from ingest_gateway.webrtc_models import (
     StreamControlStatus,
     WebRtcStatus,
 )
+from perception.video_processing import ProcessingServiceSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,7 @@ class RuntimeSnapshot:
     recording: RecordingStatus | None = None
     library: RecordingLibrary | None = None
     perception: dict[str, object] = field(default_factory=dict)
+    processing: ProcessingServiceSnapshot | None = None
     display: LiveFrameStatus | None = None
     last_error: str | None = None
     recent_events: tuple[str, ...] = ()

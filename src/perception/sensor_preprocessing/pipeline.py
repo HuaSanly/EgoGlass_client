@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from bisect import bisect_right
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from itertools import zip_longest
@@ -437,6 +437,7 @@ class SensorPreprocessingPipeline:
         session_directory: str | Path,
         *,
         verify_media_hashes: bool | None = None,
+        clip_ids: Collection[str] | None = None,
     ) -> Iterator[PreparedFrameBundle]:
         """按 clip 和帧顺序解码一个已完成会话，并组装对应 IMU 时间窗。"""
 
@@ -458,7 +459,21 @@ class SensorPreprocessingPipeline:
                 key=lambda sample: (sample.session_time_ns, sample.sample_id),
             )
         )
+        selected_clip_ids = (
+            {clip.clip_id for clip in reader.session.clips}
+            if clip_ids is None
+            else set(clip_ids)
+        )
+        unknown_clip_ids = selected_clip_ids.difference(
+            clip.clip_id for clip in reader.session.clips
+        )
+        if unknown_clip_ids:
+            raise SensorPreprocessingError(
+                f"unknown recorded clip ids: {', '.join(sorted(unknown_clip_ids))}"
+            )
         for clip in reader.session.clips:
+            if clip.clip_id not in selected_clip_ids:
+                continue
             yield from self._iter_recorded_clip(reader, clip.clip_id, prepared_imu)
 
     def process_live_frame(
