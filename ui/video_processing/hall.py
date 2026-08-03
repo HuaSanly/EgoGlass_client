@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
-    ElevatedCardWidget,
+    CardWidget,
     FlowLayout,
     FluentIcon,
     ImageLabel,
@@ -28,7 +28,7 @@ from ingest_gateway.recording_models import (
 )
 
 
-class VideoClipCard(ElevatedCardWidget):
+class VideoClipCard(CardWidget):
     activated = pyqtSignal(str, str)
 
     def __init__(
@@ -44,7 +44,8 @@ class VideoClipCard(ElevatedCardWidget):
         self._result_count = 0
         self._processing_state: str | None = None
         self.setObjectName(f"videoClipCard-{clip.clip_id}")
-        self.setFixedSize(312, 330)
+        self.setFixedSize(312, 360)
+        self.setClickEnabled(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clicked.connect(lambda: self.activated.emit(self.session_id, self.clip_id))
 
@@ -168,18 +169,17 @@ class VideoHall(QWidget):
         self.scroll.setObjectName("videoHallScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.scroll.viewport().setAutoFillBackground(False)
         self.scroll.setStyleSheet(
             "SmoothScrollArea, QScrollArea, QScrollArea > QWidget > QWidget {"
-            " border: none; background: transparent; }"
+            " border: none; background: #f7f9fc; }"
         )
+        self.scroll.viewport().setStyleSheet("background: #f7f9fc;")
+        self.scroll.setAutoFillBackground(True)
+        self.scroll.viewport().setAutoFillBackground(True)
         self.content = QWidget(self.scroll)
         self.content.setObjectName("videoHallContent")
-        self.content.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.content.setAutoFillBackground(False)
-        self.content.setStyleSheet("QWidget#videoHallContent { background: transparent; }")
+        self.content.setStyleSheet("QWidget#videoHallContent { background: #f7f9fc; }")
+        self.content.setAutoFillBackground(True)
         self.flow = FlowLayout(self.content, needAni=False, isTight=True)
         self.flow.setContentsMargins(0, 8, 10, 16)
         self.flow.setHorizontalSpacing(16)

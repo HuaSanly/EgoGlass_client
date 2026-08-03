@@ -7,6 +7,7 @@ from pathlib import Path
 import av
 import numpy as np
 from PyQt6.QtCore import Qt
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from tests.test_ui_native_views import _recording_library
@@ -50,7 +51,7 @@ def test_thumbnail_service_does_not_recursively_scan_for_media(tmp_path: Path) -
         service.close()
 
 
-def test_video_hall_uses_one_transparent_horizontal_flow(
+def test_video_hall_uses_one_body_colored_horizontal_flow(
     qt_application: QApplication,
 ) -> None:
     hall = VideoHall()
@@ -64,10 +65,20 @@ def test_video_hall_uses_one_transparent_horizontal_flow(
     assert second.parentWidget() is hall.content
     assert first.y() == second.y()
     assert second.x() > first.x()
-    assert hall.scroll.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    assert hall.scroll.viewport().testAttribute(
+    assert not hall.scroll.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert not hall.scroll.viewport().testAttribute(
         Qt.WidgetAttribute.WA_TranslucentBackground
     )
+    assert hall.scroll.autoFillBackground()
+    assert "#f7f9fc" in hall.scroll.styleSheet()
+    assert "#f7f9fc" in hall.scroll.viewport().styleSheet()
+    assert "#f7f9fc" in hall.content.styleSheet()
+    assert first.thumbnail.geometry().bottom() < first.session_label.geometry().top()
+    assert first.session_label.geometry().bottom() < first.primary_meta.geometry().top()
+    original_position = first.pos()
+    QTest.mouseMove(first, first.rect().center())
+    QTest.qWait(150)
+    assert first.pos() == original_position
 
     hall.resize(600, 760)
     qt_application.processEvents()
@@ -80,7 +91,8 @@ def test_video_hall_uses_fluent_visible_controls_without_session_sections() -> N
         encoding="utf-8"
     )
 
-    assert "ElevatedCardWidget" in source
+    assert "CardWidget" in source
+    assert "ElevatedCardWidget" not in source
     assert "SmoothScrollArea" in source
     assert "FlowLayout" in source
     assert "_SessionSection" not in source

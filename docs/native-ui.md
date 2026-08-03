@@ -42,9 +42,10 @@ Incomplete sessions remain as disabled cards. Each clip card shows its session,
 a real asynchronously decoded first frame, capture time, duration, format,
 frame count, file size, processing state, and viewable-result count. Two
 bounded thumbnail workers only inspect exact `media/<clip-id>.mp4` or legacy
-`<clip-id>.mp4` paths. The transparent `SmoothScrollArea` is used only for
-overflow. The recording library is scanned once at startup and again only
-after the operator presses Refresh.
+`<clip-id>.mp4` paths. The frameless `SmoothScrollArea` uses the same opaque
+background as the page, which prevents hover repaint artifacts while remaining
+visually unframed. It is used only for overflow. The recording library is
+scanned once at startup and again only after the operator presses Refresh.
 
 Selecting a card opens the workbench, indexes the complete session, and seeks
 to that clip. The workbench keeps one central 4:3 `VideoCanvas` and one

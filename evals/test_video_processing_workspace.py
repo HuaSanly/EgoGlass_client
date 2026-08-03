@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from PyQt6.QtCore import QPoint, QRect
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from perception.video_processing import (
@@ -150,6 +151,13 @@ def test_video_hall_cards_fill_rows_before_wrapping(
 
     assert first.y() == second.y()
     assert second.x() > first.x()
+    assert first.thumbnail.geometry().bottom() < first.session_label.geometry().top()
+    assert first.session_label.geometry().bottom() < first.primary_meta.geometry().top()
+    assert "#f7f9fc" in hall.scroll.viewport().styleSheet()
+    original_position = first.pos()
+    QTest.mouseMove(first, first.rect().center())
+    QTest.qWait(150)
+    assert first.pos() == original_position
     hall.resize(600, 760)
     qt_application.processEvents()
     assert second.y() > first.y()
