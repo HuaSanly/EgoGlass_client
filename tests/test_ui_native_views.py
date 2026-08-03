@@ -5,18 +5,19 @@ import subprocess
 import sys
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 from pyqtgraph.opengl import GLViewWidget
-from qfluentwidgets import HeaderCardWidget, TitleLabel
+from qfluentwidgets import HeaderCardWidget, SimpleCardWidget, TitleLabel
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 from ingest_gateway.live_frames import LiveFrame
 from ingest_gateway.webrtc_models import StreamControlAction
 from ui.app import MainWindow
 from ui.state import RuntimeSnapshot
-from ui.views.home import HomeView, ViewerMode, _confidence_text
+from ui.views.home import HomeView, ViewerMode, _confidence_body
 from ui.widgets.spatial_sync_canvas import (
     SpatialSyncCanvas,
     _camera_points_to_scene,
@@ -190,15 +191,20 @@ def test_live_and_replay_modes_share_the_same_canvas(
     home = HomeView(RuntimeStub())  # type: ignore[arg-type]
     try:
         original_canvas = home.canvas
-        home.set_viewer_mode(ViewerMode.REPLAY)
-        assert home.canvas is original_canvas
-        assert home.replay_controls.isVisible() is False
         home.show()
         qt_application.processEvents()
+        assert home.frame_link_strip.isVisible()
+        assert not home.replay_controls.isVisible()
+
+        home.set_viewer_mode(ViewerMode.REPLAY)
+        assert home.canvas is original_canvas
+        assert not home.frame_link_strip.isVisible()
         assert home.replay_controls.isVisible()
         assert home.mode_badge.text() == "来源 · 回放"
+
         home.set_viewer_mode(ViewerMode.LIVE)
         assert home.canvas is original_canvas
+        assert home.frame_link_strip.isVisible()
         assert not home.replay_controls.isVisible()
         assert home.mode_badge.text() == "来源 · 实时"
     finally:
@@ -353,6 +359,9 @@ def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
         assert home.stream_button not in sidebar_widgets
         assert home.recording_button not in sidebar_widgets
         assert home.session_button not in sidebar_widgets
+        assert home.frame_link_strip not in sidebar_widgets
+        assert isinstance(home.frame_link_strip, SimpleCardWidget)
+        assert home.frame_link_strip.parent() is home.canvas.parent()
         assert home.findChild(type(home.stream_button), "streamControlButton") is home.stream_button
         assert len(home.findChildren(SpatialSyncCanvas)) == 1
         assert home.spatial_canvas.reset_pose_button.objectName() == "imuPoseResetButton"
@@ -361,6 +370,7 @@ def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
         assert "rgba(255, 255, 255, 0.14)" in home.spatial_canvas.styleSheet()
         assert not isinstance(home.spatial_canvas.parent(), HeaderCardWidget)
         assert home.spatial_canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
+        assert len(home.sync_data_card.findChildren(QWidget, "syncStatusRow")) == 3
         assert "background: transparent" in home.sidebar.viewport().styleSheet()
 
         source = (Path(__file__).parents[1] / "ui" / "views" / "home.py").read_text(
@@ -369,6 +379,36 @@ def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
         assert 'HeaderCardWidget("采集控制"' not in source
         assert 'HeaderCardWidget("空间同步"' not in source
         assert 'HeaderCardWidget("同步数据"' in source
+        assert "syncMetricBlock" not in source
+        assert "_sync_metric_block" not in source
+        assert "link_sync_badge" not in source
+        assert "font-size:" not in source
+    finally:
+        home.close_resources()
+
+
+def test_frame_link_strip_maps_live_display_metrics() -> None:
+    home = HomeView(RuntimeStub())  # type: ignore[arg-type]
+    try:
+        display = SimpleNamespace(
+            frames_received=120,
+            frames_converted=118,
+            presentation_fps=29.5,
+            latest_conversion_ms=0.42,
+            presentation_queue_depth=1,
+            presentation_frames_dropped=2,
+            pending_frames_overwritten=3,
+        )
+
+        home._update_metrics(RuntimeSnapshot(display=display))  # type: ignore[arg-type]
+
+        assert home.frame_input_value.text() == "120 / 118"
+        assert home.frame_input_detail.text() == "接收帧 / RGB 帧"
+        assert home.frame_present_value.text() == "29.5 FPS"
+        assert home.frame_present_detail.text() == "呈现 0 帧"
+        assert home.frame_latency_value.text() == "0.42 / 0.00 ms"
+        assert home.frame_buffer_value.text() == "1 / 2 / 3"
+        assert home.frame_buffer_detail.text() == "队列 / 丢帧 / 跳帧 · 覆盖 --"
     finally:
         home.close_resources()
 
@@ -539,9 +579,8 @@ def test_replay_generation_tooltip_tracks_actual_job_completion(
         home.close_resources()
 
 
-def test_confidence_text_includes_every_score() -> None:
-    text = _confidence_text(
-        "左手",
+def test_confidence_body_includes_every_score() -> None:
+    text = _confidence_body(
         {
             "detector_confidence": 0.91,
             "reconstruction_quality": 0.82,
@@ -549,12 +588,12 @@ def test_confidence_text_includes_every_score() -> None:
             "coverage_score": 0.64,
             "compactness_score": 0.55,
             "final_confidence": 0.46,
-        },
+        }
     )
 
     assert text == (
-        "左手\n检测 0.91  ·  重建 0.82  ·  深度 0.73  ·  "
-        "覆盖 0.64  ·  紧致 0.55  ·  最终 0.46"
+        "检测 0.91 · 重建 0.82 · 深度 0.73\n"
+        "覆盖 0.64 · 紧致 0.55 · 最终 0.46"
     )
 
 

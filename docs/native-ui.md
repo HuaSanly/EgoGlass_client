@@ -64,10 +64,15 @@ The same `VideoCanvas` switches between live input and replay. Switching modes
 does not reconnect WebRTC, create another media surface, or stop the current
 stream.
 
-In live mode the right side has two peer sections: a standalone dark space sync
-OpenGL viewport and one `同步数据` Fluent card. The data card contains compact
-IMU, left-hand, right-hand, and frame-link status blocks. The old capture, hand,
-frame, and IMU vertical cards are not part of the home page.
+In live mode the right side has two peer sections with matching outer edges: a
+standalone dark spatial-sync OpenGL viewport and one `同步数据` Fluent card. The
+card contains a model summary followed by flat IMU, left-hand, and right-hand
+rows separated by Fluent dividers. It does not contain nested metric cards.
+
+A horizontal `SimpleCardWidget` directly below the live video presents the
+frame chain as four equal groups: input, presentation, latency, and buffering.
+Switching to replay hides this strip and shows replay transport controls in the
+same position. The video canvas is retained during that switch.
 
 ## Four-by-three video
 

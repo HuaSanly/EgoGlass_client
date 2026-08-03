@@ -121,6 +121,12 @@ def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
 
     assert 'HeaderCardWidget("空间同步"' not in source
     assert 'HeaderCardWidget("同步数据"' in source
+    assert "SimpleCardWidget" in source
+    assert "frameLinkStrip" in source
+    assert "syncMetricBlock" not in source
+    assert "_sync_metric_block" not in source
+    assert "link_sync_badge" not in source
+    assert "font-size:" not in source
     assert "scroll.viewport().setStyleSheet(\"background: transparent;\")" in source
     assert "GLViewWidget" in spatial_source
     assert "GLMeshItem" in spatial_source
@@ -173,10 +179,29 @@ def test_fluent_home_renders_without_overlap_at_supported_sizes(
                 window.home_view.sidebar.mapTo(window, QPoint(0, 0)),
                 window.home_view.sidebar.size(),
             )
+            frame_strip_rect = QRect(
+                window.home_view.frame_link_strip.mapTo(window, QPoint(0, 0)),
+                window.home_view.frame_link_strip.size(),
+            )
             assert not canvas_rect.intersects(sidebar_rect)
+            assert not frame_strip_rect.intersects(sidebar_rect)
+            assert frame_strip_rect.left() == canvas_rect.left()
+            assert frame_strip_rect.right() == canvas_rect.right()
+            assert frame_strip_rect.top() > canvas_rect.bottom()
             spatial = window.home_view.findChild(SpatialSyncCanvas)
             assert spatial is not None
             assert spatial.findChild(GLViewWidget, "spatialSyncViewport") is not None
+            spatial_rect = QRect(
+                spatial.mapTo(window, QPoint(0, 0)),
+                spatial.size(),
+            )
+            sync_card = window.home_view.sync_data_card
+            sync_card_rect = QRect(
+                sync_card.mapTo(window, QPoint(0, 0)),
+                sync_card.size(),
+            )
+            assert spatial_rect.left() == sync_card_rect.left()
+            assert spatial_rect.right() == sync_card_rect.right()
             assert not window.grab().isNull()
     finally:
         window.close()
