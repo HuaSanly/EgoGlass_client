@@ -44,7 +44,7 @@ class VideoClipCard(ElevatedCardWidget):
         self._result_count = 0
         self._processing_state: str | None = None
         self.setObjectName(f"videoClipCard-{clip.clip_id}")
-        self.setFixedSize(322, 338)
+        self.setFixedSize(312, 330)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clicked.connect(lambda: self.activated.emit(self.session_id, self.clip_id))
 
@@ -53,14 +53,20 @@ class VideoClipCard(ElevatedCardWidget):
         root.setSpacing(8)
         self.thumbnail = ImageLabel(self)
         self.thumbnail.setObjectName("videoClipThumbnail")
-        self.thumbnail.setFixedSize(302, 226)
+        self.thumbnail.setFixedSize(292, 219)
         self.thumbnail.setBorderRadius(5, 5, 5, 5)
         self.thumbnail.setScaledContents(True)
         root.addWidget(self.thumbnail)
 
         title_row = QHBoxLayout()
         title_row.setSpacing(6)
-        title_row.addWidget(StrongBodyLabel(f"片段 {clip_number:02d}", self))
+        self.session_label = StrongBodyLabel(
+            session.display_name or session.session_id[:8],
+            self,
+        )
+        self.session_label.setMaximumWidth(210)
+        self.session_label.setToolTip(session.session_id)
+        title_row.addWidget(self.session_label)
         title_row.addStretch(1)
         self.result_badge = InfoBadge.info("结果 0", self)
         title_row.addWidget(self.result_badge)
@@ -68,7 +74,8 @@ class VideoClipCard(ElevatedCardWidget):
 
         captured = datetime.fromtimestamp(clip.recorded_at_unix_ms / 1000, UTC).astimezone()
         self.primary_meta = CaptionLabel(
-            f"{captured:%Y-%m-%d %H:%M:%S}  ·  {_clock(clip.duration_ms)}",
+            f"片段 {clip_number:02d}  ·  {captured:%Y-%m-%d %H:%M:%S}  ·  "
+            f"{_clock(clip.duration_ms)}",
             self,
         )
         root.addWidget(self.primary_meta)
@@ -132,35 +139,6 @@ class VideoClipCard(ElevatedCardWidget):
         )
 
 
-class _SessionSection(QWidget):
-    activated = pyqtSignal(str, str)
-
-    def __init__(self, session: RecordingSession, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.session = session
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 10)
-        root.setSpacing(10)
-        header = QHBoxLayout()
-        header.setSpacing(8)
-        header.addWidget(StrongBodyLabel(session.display_name or session.session_id[:8], self))
-        header.addWidget(CaptionLabel(f"{len(session.clips)} 个片段", self))
-        if session.state is not CaptureSessionState.COMPLETE:
-            header.addWidget(InfoBadge.warning("未完成", self))
-        header.addStretch(1)
-        root.addLayout(header)
-        self.flow = FlowLayout(needAni=False, isTight=False)
-        self.flow.setHorizontalSpacing(14)
-        self.flow.setVerticalSpacing(14)
-        self.cards: dict[str, VideoClipCard] = {}
-        for index, clip in enumerate(session.clips, start=1):
-            card = VideoClipCard(session, clip, index, self)
-            card.activated.connect(self.activated)
-            self.cards[clip.clip_id] = card
-            self.flow.addWidget(card)
-        root.addLayout(self.flow)
-
-
 class VideoHall(QWidget):
     refreshRequested = pyqtSignal()
     clipActivated = pyqtSignal(str, str)
@@ -189,36 +167,41 @@ class VideoHall(QWidget):
         self.scroll = SmoothScrollArea(self)
         self.scroll.setObjectName("videoHallScroll")
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.scroll.viewport().setAutoFillBackground(False)
+        self.scroll.setStyleSheet(
+            "SmoothScrollArea, QScrollArea, QScrollArea > QWidget > QWidget {"
+            " border: none; background: transparent; }"
+        )
         self.content = QWidget(self.scroll)
         self.content.setObjectName("videoHallContent")
-        self.content_layout = QVBoxLayout(self.content)
-        self.content_layout.setContentsMargins(0, 8, 10, 16)
-        self.content_layout.setSpacing(18)
+        self.content.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.content.setAutoFillBackground(False)
+        self.content.setStyleSheet("QWidget#videoHallContent { background: transparent; }")
+        self.flow = FlowLayout(self.content, needAni=False, isTight=True)
+        self.flow.setContentsMargins(0, 8, 10, 16)
+        self.flow.setHorizontalSpacing(16)
+        self.flow.setVerticalSpacing(16)
         self.empty_label = BodyLabel("录像库为空。完成一次采集后在这里处理视频。", self.content)
-        self.content_layout.addWidget(self.empty_label)
-        self.content_layout.addStretch(1)
+        self.flow.addWidget(self.empty_label)
         self.scroll.setWidget(self.content)
         root.addWidget(self.scroll, 1)
 
     def set_library(self, library: RecordingLibrary) -> None:
-        while self.content_layout.count():
-            item = self.content_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        self.flow.takeAllWidgets()
         self.cards.clear()
         sessions = [session for session in library.sessions if session.clips]
         self.empty_label = BodyLabel("录像库为空。完成一次采集后在这里处理视频。", self.content)
         self.empty_label.setVisible(not sessions)
-        self.content_layout.addWidget(self.empty_label)
+        self.flow.addWidget(self.empty_label)
         for session in sessions:
-            section = _SessionSection(session, self.content)
-            section.activated.connect(self.clipActivated)
-            self.content_layout.addWidget(section)
-            for clip_id, card in section.cards.items():
-                self.cards[(session.session_id, clip_id)] = card
-        self.content_layout.addStretch(1)
+            for index, clip in enumerate(session.clips, start=1):
+                card = VideoClipCard(session, clip, index, self.content)
+                card.activated.connect(self.clipActivated)
+                self.flow.addWidget(card)
+                self.cards[(session.session_id, clip.clip_id)] = card
 
     def set_thumbnail(self, session_id: str, clip_id: str, image: QImage | None) -> None:
         card = self.cards.get((session_id, clip_id))

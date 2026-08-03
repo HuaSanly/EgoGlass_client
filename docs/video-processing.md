@@ -99,11 +99,13 @@ as selectable playback results.
 
 ## Video hall and navigation
 
-Video Processing opens in a session-grouped hall rather than immediately
-allocating a decoder. Each clip card displays an in-memory first-frame
-thumbnail and the number of viewable runs that cover that clip. Session-wide
-runs count for every clip; clip-scoped runs count only for their matching clip.
-Incomplete sessions stay visible but disabled.
+Video Processing opens in a flat Fluent card hall rather than immediately
+allocating a decoder. Cards fill each row from left to right and wrap at the
+viewport edge; the session name is carried by the card instead of a containing
+session section. Each card displays an in-memory first-frame thumbnail and the
+number of viewable runs that cover that clip. Session-wide runs count for every
+clip; clip-scoped runs count only for their matching clip. Incomplete sessions
+stay visible but disabled.
 
 Opening a clip loads the complete session and positions playback at that clip.
 The workbench selects the newest valid run by completion time, with Raw Video

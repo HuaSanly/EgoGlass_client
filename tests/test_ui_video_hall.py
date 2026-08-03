@@ -6,7 +6,11 @@ from pathlib import Path
 
 import av
 import numpy as np
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication
 
+from tests.test_ui_native_views import _recording_library
+from ui.video_processing.hall import VideoHall
 from ui.video_processing.thumbnails import VideoThumbnailService
 
 
@@ -44,6 +48,44 @@ def test_thumbnail_service_does_not_recursively_scan_for_media(tmp_path: Path) -
         assert result.error == "找不到视频文件"
     finally:
         service.close()
+
+
+def test_video_hall_uses_one_transparent_horizontal_flow(
+    qt_application: QApplication,
+) -> None:
+    hall = VideoHall()
+    hall.resize(1100, 760)
+    hall.set_library(_recording_library(include_incomplete=True))
+    hall.show()
+    qt_application.processEvents()
+    first, second = tuple(hall.cards.values())
+
+    assert first.parentWidget() is hall.content
+    assert second.parentWidget() is hall.content
+    assert first.y() == second.y()
+    assert second.x() > first.x()
+    assert hall.scroll.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert hall.scroll.viewport().testAttribute(
+        Qt.WidgetAttribute.WA_TranslucentBackground
+    )
+
+    hall.resize(600, 760)
+    qt_application.processEvents()
+    assert second.y() > first.y()
+    hall.close()
+
+
+def test_video_hall_uses_fluent_visible_controls_without_session_sections() -> None:
+    source = (Path(__file__).parents[1] / "ui" / "video_processing" / "hall.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ElevatedCardWidget" in source
+    assert "SmoothScrollArea" in source
+    assert "FlowLayout" in source
+    assert "_SessionSection" not in source
+    assert "QLabel" not in source
+    assert "QPushButton" not in source
 
 
 def _wait_for_thumbnail(service: VideoThumbnailService):

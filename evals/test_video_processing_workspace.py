@@ -21,6 +21,7 @@ from perception.video_processing import (
 from ui.app import MainWindow
 from ui.replay.player import PlaybackClipSpan, PlaybackFrame, ReplaySnapshot, ReplayState
 from ui.state import RuntimeSnapshot
+from ui.video_processing.hall import VideoHall
 from ui.views.video_processing import _processing_states, _Selection
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas
@@ -104,6 +105,55 @@ def test_workbench_keeps_video_and_space_visible_at_supported_sizes(
     finally:
         window.close()
         qt_application.processEvents()
+
+
+def test_video_hall_cards_fill_rows_before_wrapping(
+    qt_application: QApplication,
+) -> None:
+    from ingest_gateway.recording_models import CaptureSessionState
+
+    def clip(index: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            clip_id=f"clip-{index}",
+            recorded_at_unix_ms=1_700_000_000_000 + index,
+            duration_ms=3_000,
+            width=640,
+            height=480,
+            fps=30,
+            frame_count=90,
+            file_size_bytes=4096,
+        )
+
+    hall = VideoHall()
+    hall.resize(1100, 760)
+    hall.set_library(
+        SimpleNamespace(
+            sessions=[
+                SimpleNamespace(
+                    session_id="session-a",
+                    display_name="会话 A",
+                    state=CaptureSessionState.COMPLETE,
+                    clips=[clip(1)],
+                ),
+                SimpleNamespace(
+                    session_id="session-b",
+                    display_name="会话 B",
+                    state=CaptureSessionState.COMPLETE,
+                    clips=[clip(2)],
+                ),
+            ]
+        )
+    )
+    hall.show()
+    qt_application.processEvents()
+    first, second = tuple(hall.cards.values())
+
+    assert first.y() == second.y()
+    assert second.x() > first.x()
+    hall.resize(600, 760)
+    qt_application.processEvents()
+    assert second.y() > first.y()
+    hall.close()
 
 
 def test_result_switching_does_not_reopen_or_duplicate_video_decoder() -> None:
