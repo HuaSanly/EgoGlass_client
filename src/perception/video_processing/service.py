@@ -15,6 +15,7 @@ from .contracts import (
     ProcessingRunSummary,
     ProcessingServiceSnapshot,
 )
+from .export import ExportSummary, export_annotated_clip
 from .job_store import ProcessingJobStore
 from .results import ProcessingResultStore
 from .runner import ProcessingCanceled, SessionProcessingRunner
@@ -41,6 +42,7 @@ class VideoProcessingService:
         self._stop_requested = False
         self._thread: threading.Thread | None = None
         self._active_job_id: str | None = None
+        self._auto_enqueue = self.store.setting("auto_enqueue", "false") == "true"
         self._revision = 0
 
     @property
@@ -99,11 +101,32 @@ class VideoProcessingService:
         self._notify_changed()
         return job
 
+    def set_auto_enqueue(self, enabled: bool) -> bool:
+        with self._condition:
+            self._auto_enqueue = bool(enabled)
+            self.store.set_setting("auto_enqueue", "true" if enabled else "false")
+            self._revision += 1
+        return self._auto_enqueue
+
+    def enqueue_completed_session(self, session_id: str) -> ProcessingJob | None:
+        with self._condition:
+            enabled = self._auto_enqueue
+        if not enabled:
+            return None
+        if any(job.session_id == session_id for job in self.store.list_jobs()):
+            return None
+        return self.enqueue(session_id)
+
     def snapshot(self) -> ProcessingServiceSnapshot:
         with self._condition:
             revision = self._revision
             active_job_id = self._active_job_id
-        return ProcessingServiceSnapshot(revision, active_job_id, self.store.list_jobs())
+        return ProcessingServiceSnapshot(
+            revision,
+            active_job_id,
+            self._auto_enqueue,
+            self.store.list_jobs(),
+        )
 
     def result_for_frame(
         self,
@@ -141,6 +164,34 @@ class VideoProcessingService:
         manifests.sort(key=lambda item: int(item.get("started_at_unix_ns", 0)), reverse=True)
         return tuple(manifests)
 
+    def session_directory(self, session_id: str) -> Path:
+        """Return a validated capture-session directory for the local player."""
+
+        return self._session_path(session_id)
+
+    def export_annotated_clip(
+        self,
+        session_id: str,
+        run_id: str,
+        clip_id: str,
+    ) -> ExportSummary:
+        manifest = self._read_run_manifest(session_id, run_id)
+        if manifest.get("state") != "completed":
+            raise ValueError("only completed processing runs can be exported")
+        preset = manifest.get("preset")
+        if not isinstance(preset, dict):
+            raise ValueError("processing run has no valid preset")
+        stride = int(preset.get("inference_stride_frames", 1))
+        run_clip_id = manifest.get("clip_id")
+        if run_clip_id is not None and run_clip_id != clip_id:
+            raise ValueError("processing run does not contain the selected clip")
+        return export_annotated_clip(
+            self._session_path(session_id),
+            self._run_directory(session_id, run_id),
+            clip_id,
+            hold_previous_frames=max(0, stride - 1),
+        )
+
     def _worker(self) -> None:
         while True:
             with self._condition:
@@ -166,35 +217,52 @@ class VideoProcessingService:
         with self._condition:
             self._active_job_id = job.job_id
             self._revision += 1
-        if self.on_gpu_job_changed is not None:
-            self.on_gpu_job_changed(True)
+        gpu_claim_started = self.on_gpu_job_changed is not None
         try:
+            if self.on_gpu_job_changed is not None:
+                self.on_gpu_job_changed(True)
             total = self.runner.inspect(self._session_path(job.session_id), job.clip_id)
-            job = self.store.start_run(job.job_id, run_id, total)
-            summary = self.runner.run(
-                job,
-                self._session_path(job.session_id),
-                output,
-                progress=lambda current, count: self._progress(job.job_id, current, count),
-                is_canceled=lambda: self._is_canceled(job.job_id),
-            )
+            if self._is_canceled(job.job_id):
+                raise ProcessingCanceled()
+            try:
+                job = self.store.start_run(job.job_id, run_id, total)
+            except RuntimeError:
+                if self.store.require(job.job_id).state is ProcessingJobState.CANCELING:
+                    raise ProcessingCanceled() from None
+                raise
+            try:
+                summary = self.runner.run(
+                    job,
+                    self._session_path(job.session_id),
+                    output,
+                    progress=lambda current, count: self._progress(job.job_id, current, count),
+                    is_canceled=lambda: self._is_canceled(job.job_id),
+                )
+            finally:
+                release_gpu = getattr(self.runner, "release_gpu", None)
+                if callable(release_gpu):
+                    release_gpu()
         except ProcessingCanceled:
             current = self.store.require(job.job_id)
             if current.state is ProcessingJobState.CANCELING:
                 self.store.mark_canceled(job.job_id)
         except Exception as error:
             current = self.store.require(job.job_id)
-            if current.state in {ProcessingJobState.PREPARING, ProcessingJobState.RUNNING}:
+            if current.state is ProcessingJobState.CANCELING:
+                self.store.mark_canceled(job.job_id)
+            elif current.state in {ProcessingJobState.PREPARING, ProcessingJobState.RUNNING}:
                 self.store.fail(job.job_id, str(error))
         else:
             self._complete(job.job_id, summary)
         finally:
-            if self.on_gpu_job_changed is not None:
-                self.on_gpu_job_changed(False)
-            with self._condition:
-                self._active_job_id = None
-                self._revision += 1
-                self._condition.notify_all()
+            try:
+                if gpu_claim_started and self.on_gpu_job_changed is not None:
+                    self.on_gpu_job_changed(False)
+            finally:
+                with self._condition:
+                    self._active_job_id = None
+                    self._revision += 1
+                    self._condition.notify_all()
 
     def _progress(self, job_id: str, current: int, total: int) -> None:
         self.store.update_progress(job_id, current, total, f"正在处理 {current}/{total}")
@@ -240,4 +308,3 @@ class VideoProcessingService:
         if payload.get("session_id") != session_id or payload.get("run_id") != run_id:
             raise ValueError("processing run identity mismatch")
         return payload
-

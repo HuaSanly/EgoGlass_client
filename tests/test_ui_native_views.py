@@ -8,16 +8,27 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from PyQt6.QtWidgets import QApplication, QWidget
 from pyqtgraph.opengl import GLViewWidget
 from qfluentwidgets import HeaderCardWidget, SimpleCardWidget, TitleLabel
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 from ingest_gateway.live_frames import LiveFrame
+from ingest_gateway.recording_models import CaptureSessionState
 from ingest_gateway.webrtc_models import StreamControlAction
+from perception.sensor_preprocessing import RecordedImuPose
+from perception.video_processing import (
+    ProcessingJob,
+    ProcessingJobState,
+    ProcessingPreset,
+    ProcessingServiceSnapshot,
+)
 from ui.app import MainWindow
+from ui.replay.player import PlaybackFrame, ReplayState
 from ui.state import RuntimeSnapshot
-from ui.views.home import HomeView, ViewerMode, _confidence_body
+from ui.views.home import HomeView, _confidence_body
+from ui.views.video_processing import _Selection
 from ui.widgets.spatial_sync_canvas import (
     SpatialSyncCanvas,
     _camera_points_to_scene,
@@ -36,9 +47,13 @@ class RuntimeStub:
         self.session_actions: list[str] = []
         self.stream_actions: list[StreamControlAction] = []
         self.recording_actions: list[str] = []
-        self.replay_sessions: list[str] = []
         self.perception_result: dict[str, object] | None = None
         self.imu_pose_reset_calls = 0
+        self.processing_requests: list[tuple[str, str | None, str]] = []
+        self.processing_cancels: list[str] = []
+        self.processing_retries: list[str] = []
+        self.processing_exports: list[tuple[str, str, str]] = []
+        self.processing_auto_queue: list[bool] = []
 
     def snapshot(self) -> RuntimeSnapshot:
         return self.snapshot_value
@@ -65,20 +80,44 @@ class RuntimeStub:
     def request_recording(self, action: str) -> None:
         self.recording_actions.append(action)
 
-    def request_replay_generation(self, session_id: str) -> None:
-        self.replay_sessions.append(session_id)
-
     def request_imu_pose_reset(self) -> None:
         self.imu_pose_reset_calls += 1
 
-    def media_path(self, _session_id: str, _clip_id: str) -> Future[Path | None]:
-        future: Future[Path | None] = Future()
-        future.set_result(None)
+    def request_processing(
+        self,
+        session_id: str,
+        *,
+        clip_id: str | None = None,
+        preset_id: str,
+    ) -> None:
+        self.processing_requests.append((session_id, clip_id, preset_id))
+
+    def request_processing_cancel(self, job_id: str) -> None:
+        self.processing_cancels.append(job_id)
+
+    def request_processing_retry(self, job_id: str) -> None:
+        self.processing_retries.append(job_id)
+
+    def request_processing_export(self, session_id: str, run_id: str, clip_id: str) -> None:
+        self.processing_exports.append((session_id, run_id, clip_id))
+
+    def request_processing_auto_queue(self, enabled: bool) -> None:
+        self.processing_auto_queue.append(enabled)
+
+    def request_live_inference(self, _enabled: bool) -> None:
+        return None
+
+    def session_directory(self, _session_id: str) -> Path:
+        return Path("missing-session")
+
+    def processing_runs(self, _session_id: str) -> Future[tuple[dict[str, object], ...]]:
+        future: Future[tuple[dict[str, object], ...]] = Future()
+        future.set_result(())
         return future
 
-    def replay_video_path(self, *_values: str) -> Future[Path]:
-        future: Future[Path] = Future()
-        future.set_exception(FileNotFoundError("missing replay"))
+    def processing_result(self, *_values: object) -> Future[dict[str, object] | None]:
+        future: Future[dict[str, object] | None] = Future()
+        future.set_result(None)
         return future
 
     def stop(self) -> None:
@@ -154,7 +193,7 @@ def _hand_result(
     }
 
 
-def test_fluent_window_registers_only_home_and_one_video_canvas(
+def test_fluent_window_registers_processing_first_and_live_capture_second(
     qt_application: QApplication,
 ) -> None:
     runtime = RuntimeStub()
@@ -163,10 +202,27 @@ def test_fluent_window_registers_only_home_and_one_video_canvas(
         window.show()
         qt_application.processEvents()
 
-        assert window.stackedWidget.count() == 1
-        assert window.stackedWidget.widget(0) is window.home_view
-        assert len(window.findChildren(VideoCanvas)) == 1
-        assert len(window.findChildren(SpatialSyncCanvas)) == 1
+        assert window.stackedWidget.count() == 2
+        assert window.stackedWidget.widget(0) is window.processing_view
+        assert window.stackedWidget.widget(1) is window.home_view
+        assert window.stackedWidget.currentWidget() is window.processing_view
+        assert len(window.processing_view.findChildren(VideoCanvas)) == 1
+        assert len(window.processing_view.findChildren(SpatialSyncCanvas)) == 1
+        assert window.processing_view.canvas.isVisible()
+        assert window.processing_view.spatial_canvas.isVisible()
+        headers = [
+            window.processing_view.task_table.horizontalHeaderItem(column).text()
+            for column in range(window.processing_view.task_table.columnCount())
+        ]
+        assert headers == [
+            "会话",
+            "范围",
+            "方案",
+            "状态",
+            "进度",
+            "耗时",
+            "说明 / 失败原因",
+        ]
         assert not (Path(__file__).parents[1] / "ui/views/library.py").exists()
         assert not (Path(__file__).parents[1] / "ui/views/annotation.py").exists()
         assert not (Path(__file__).parents[1] / "ui/views/diagnostics.py").exists()
@@ -174,6 +230,196 @@ def test_fluent_window_registers_only_home_and_one_video_canvas(
         window.close()
         qt_application.processEvents()
     assert runtime.stop_calls == 1
+
+
+def test_window_shutdown_releases_runtime_after_a_view_close_failure(
+    qt_application: QApplication,
+) -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    processing_close = window.processing_view.close_resources
+    home_close = window.home_view.close_resources
+    closed: list[str] = []
+
+    def fail_processing_close() -> None:
+        processing_close()
+        closed.append("processing")
+        raise RuntimeError("replay close failed")
+
+    def track_home_close() -> None:
+        home_close()
+        closed.append("home")
+
+    window.processing_view.close_resources = fail_processing_close  # type: ignore[method-assign]
+    window.home_view.close_resources = track_home_close  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="replay close failed"):
+        window.shutdown()
+
+    assert closed == ["processing", "home"]
+    assert runtime.stop_calls == 1
+    window.close()
+
+
+def test_processing_video_and_space_views_consume_the_same_playback_frame(
+    qt_application: QApplication,
+) -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    image.setflags(write=False)
+    frame = PlaybackFrame("session", "connection", 12, 30_000_000, 1_030_000_000, image)
+    pose = RecordedImuPose(
+        session_id="session",
+        session_time_ns=frame.session_time_ns,
+        quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+        roll_degrees=0.0,
+        pitch_degrees=0.0,
+        yaw_degrees=0.0,
+        accelerometer_mps2=(0.0, 0.0, 9.81),
+        gyroscope_radps=(0.0, 0.0, 0.0),
+        samples_received=100,
+        samples_processed=100,
+        recent_rate_hz=100.0,
+    )
+    result = _hand_result(frame_index=12)
+    try:
+        view = window.processing_view
+        view._selection = _Selection("session", None)
+        view._run_ids = {"主结果": "run-primary", "对比结果": "run-comparison"}
+        view.primary_run_combo.addItem("主结果")
+        view.primary_run_combo.setCurrentText("主结果")
+        view.comparison_run_combo.addItem("对比结果")
+        view.comparison_run_combo.setCurrentText("对比结果")
+
+        def completed_result(*_values: object) -> Future[dict[str, object]]:
+            future: Future[dict[str, object]] = Future()
+            future.set_result(result)
+            return future
+
+        runtime.processing_result = completed_result  # type: ignore[method-assign]
+        view.replay._update(  # type: ignore[attr-defined]
+            state=ReplayState.PAUSED,
+            duration_seconds=2.0,
+            position_seconds=1.03,
+            frame=frame,
+            imu_pose=pose,
+        )
+        window.show()
+        qt_application.processEvents()
+        view._update_frame()
+        view._update_frame()
+
+        assert view.canvas.status().latest_frame_index == 12
+        assert view.canvas.status().overlay_visible
+        assert view.spatial_canvas.status().latest_frame_index == 12
+        assert view.spatial_canvas.status().has_imu_pose
+        assert view.spatial_canvas.status().has_left_hand
+        assert "100.0 Hz" in view.frame_imu.text()
+        assert view.canvas._comparison_overlay is result
+        assert view.findChildren(VideoCanvas) == [view.canvas]
+    finally:
+        window.close()
+        qt_application.processEvents()
+
+
+def test_processing_command_bar_calls_persistent_job_commands() -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    image.setflags(write=False)
+    frame = PlaybackFrame("session", "clip", 7, 7_000_000, 107_000_000, image)
+    view = window.processing_view
+    try:
+        view._selection = _Selection("session", None)
+        view.refresh_action.trigger()
+        view.start_action.trigger()
+
+        running = ProcessingJob(
+            "running-job",
+            "session",
+            None,
+            ProcessingPreset(),
+            ProcessingJobState.RUNNING,
+            1,
+            2,
+            run_id="run-active",
+            started_at_unix_ns=1,
+        )
+        runtime.snapshot_value = RuntimeSnapshot(
+            processing=ProcessingServiceSnapshot(1, running.job_id, False, (running,))
+        )
+        view.cancel_action.trigger()
+
+        failed = ProcessingJob(
+            "failed-job",
+            "session",
+            None,
+            ProcessingPreset(),
+            ProcessingJobState.FAILED,
+            1,
+            3,
+            detail="model failed",
+            started_at_unix_ns=1,
+            finished_at_unix_ns=3,
+        )
+        view._update_tasks((failed,))
+        view.task_table.selectRow(0)
+        view.retry_action.trigger()
+
+        view.replay._update(frame=frame)  # type: ignore[attr-defined]
+        view._run_ids = {"结果": "run-complete"}
+        view.primary_run_combo.addItem("结果")
+        view.primary_run_combo.setCurrentText("结果")
+        view.export_action.trigger()
+
+        assert runtime.refresh_calls == 1
+        assert runtime.processing_requests == [
+            ("session", None, "hand-tracking-quality")
+        ]
+        assert runtime.processing_cancels == ["running-job"]
+        assert runtime.processing_retries == ["failed-job"]
+        assert runtime.processing_exports == [("session", "run-complete", "clip")]
+    finally:
+        window.close()
+
+
+def test_processing_tree_excludes_incomplete_or_empty_sessions(
+    qt_application: QApplication,
+) -> None:
+    window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
+    view = window.processing_view
+    complete_clip = SimpleNamespace(clip_id="clip", duration_ms=1_000)
+    library = SimpleNamespace(
+        sessions=[
+            SimpleNamespace(
+                session_id="complete",
+                display_name="完整",
+                state=CaptureSessionState.COMPLETE,
+                clips=[complete_clip],
+            ),
+            SimpleNamespace(
+                session_id="incomplete",
+                display_name="未完成",
+                state=CaptureSessionState.INCOMPLETE,
+                clips=[],
+            ),
+            SimpleNamespace(
+                session_id="empty",
+                display_name="空会话",
+                state=CaptureSessionState.COMPLETE,
+                clips=[],
+            ),
+        ]
+    )
+    try:
+        view._refresh_tree(library)  # type: ignore[arg-type]
+
+        assert view.session_tree.topLevelItemCount() == 1
+        assert view.session_tree.topLevelItem(0).text(0) == "完整"
+    finally:
+        window.close()
+        qt_application.processEvents()
 
 
 def test_home_header_only_shows_egoglass_title() -> None:
@@ -186,28 +432,19 @@ def test_home_header_only_shows_egoglass_title() -> None:
         home.close_resources()
 
 
-def test_live_and_replay_modes_share_the_same_canvas(
+def test_live_capture_has_one_canvas_and_no_legacy_replay_controls(
     qt_application: QApplication,
 ) -> None:
     home = HomeView(RuntimeStub())  # type: ignore[arg-type]
     try:
-        original_canvas = home.canvas
         home.show()
         qt_application.processEvents()
-        assert home.frame_link_strip.isVisible()
-        assert not home.replay_controls.isVisible()
 
-        home.set_viewer_mode(ViewerMode.REPLAY)
-        assert home.canvas is original_canvas
-        assert not home.frame_link_strip.isVisible()
-        assert home.replay_controls.isVisible()
-        assert home.mode_badge.text() == "来源 · 回放"
-
-        home.set_viewer_mode(ViewerMode.LIVE)
-        assert home.canvas is original_canvas
+        assert home.findChildren(VideoCanvas) == [home.canvas]
         assert home.frame_link_strip.isVisible()
-        assert not home.replay_controls.isVisible()
         assert home.mode_badge.text() == "来源 · 实时"
+        assert not hasattr(home, "replay_controls")
+        assert not hasattr(home, "right_stack")
     finally:
         home.close_resources()
 
@@ -314,6 +551,37 @@ def test_overlay_waits_for_a_future_result_frame_and_clears_on_reconnect(
     qt_application.processEvents()
 
 
+def test_playback_seek_backwards_replaces_primary_and_comparison_overlays(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas()
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    image.setflags(write=False)
+    canvas.set_frame(
+        PlaybackFrame("session", "clip", 20, 20_000_000, 120_000_000, image)
+    )
+    assert canvas.set_overlay(
+        _hand_result(include_right=False, frame_index=20, sequence_id="clip")
+    )
+    assert canvas.set_comparison_overlay(
+        _hand_result(include_right=True, frame_index=20, sequence_id="clip")
+    )
+
+    canvas.set_frame(
+        PlaybackFrame("session", "clip", 5, 5_000_000, 105_000_000, image)
+    )
+
+    assert canvas.status().latest_overlay_frame_index is None
+    assert canvas.set_overlay(
+        _hand_result(include_right=False, frame_index=5, sequence_id="clip")
+    )
+    assert canvas.set_comparison_overlay(
+        _hand_result(include_right=True, frame_index=5, sequence_id="clip")
+    )
+    assert canvas.status().latest_overlay_frame_index == 5
+    assert canvas.status().overlay_visible
+
+
 def test_home_controls_call_runtime_commands() -> None:
     runtime = RuntimeStub()
     home = HomeView(runtime)  # type: ignore[arg-type]
@@ -322,13 +590,11 @@ def test_home_controls_call_runtime_commands() -> None:
         home.recording_button.setProperty("action", "start")
         home._toggle_stream()
         home._toggle_recording()
-        home.refresh_button.click()
         home.session_button.click()
         home.spatial_canvas.reset_pose_button.click()
 
         assert runtime.stream_actions == [StreamControlAction.STOP]
         assert runtime.recording_actions == ["start"]
-        assert runtime.refresh_calls == 1
         assert runtime.session_actions == ["new"]
         assert runtime.imu_pose_reset_calls == 1
     finally:
@@ -542,53 +808,6 @@ def test_top_context_badges_show_the_active_source_and_session() -> None:
         home._sync_context_badges()
         assert home.mode_badge.text() == "来源 · 实时"
         assert home.session_badge.text() == "会话 · live-ses"
-
-        home._session_labels = {"记录会话": "replay-session-5678"}
-        home.session_combo.addItem("记录会话")
-        home.session_combo.setCurrentText("记录会话")
-        home.set_viewer_mode(ViewerMode.REPLAY)
-        assert home.mode_badge.text() == "来源 · 回放"
-        assert home.session_badge.text() == "会话 · replay-s"
-    finally:
-        home.close_resources()
-
-
-def test_replay_generation_tooltip_tracks_actual_job_completion(
-    qt_application: QApplication,
-) -> None:
-    home = HomeView(RuntimeStub())  # type: ignore[arg-type]
-    try:
-        home.show()
-        running = RuntimeSnapshot(
-            perception={
-                "replay": {
-                    "state": "running",
-                    "detail": "processing 3/10 frames",
-                    "frames_processed": 3,
-                    "frame_total": 10,
-                    "report": None,
-                }
-            }
-        )
-        home._update_replay_job(running)
-        qt_application.processEvents()
-        assert home._replay_state_tooltip is not None
-        assert home._replay_state_tooltip.isVisible()
-
-        complete = RuntimeSnapshot(
-            perception={
-                "replay": {
-                    "state": "complete",
-                    "detail": "annotated replay is ready",
-                    "frames_processed": 10,
-                    "frame_total": 10,
-                    "report": {},
-                }
-            }
-        )
-        home._update_replay_job(complete)
-        assert home._replay_state_tooltip is None
-        assert home.open_result_button.isEnabled()
     finally:
         home.close_resources()
 

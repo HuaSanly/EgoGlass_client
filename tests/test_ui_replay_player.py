@@ -7,7 +7,17 @@ from pathlib import Path
 import av
 import numpy as np
 
-from ui.replay.player import ReplayPlayer, ReplayState, frame_time_seconds
+from ui.replay.player import (
+    PlaybackFrame,
+    ReplayPlayer,
+    ReplayState,
+    _index_standalone_file,
+    _IndexedClip,
+    _IndexedFrame,
+    _SessionDecoder,
+    _SessionIndex,
+    frame_time_seconds,
+)
 
 
 def _write_video(path: Path) -> None:
@@ -51,6 +61,10 @@ def test_replay_player_decodes_first_frame_and_runs_to_end(tmp_path: Path) -> No
         first = player.snapshot()
         assert first.path == path
         assert first.frame is not None
+        assert isinstance(first.frame, PlaybackFrame)
+        assert first.frame.session_id == "standalone"
+        assert first.frame.clip_id == "clip"
+        assert first.frame.pts_ns == first.frame.session_time_ns == 0
         assert first.frame.image_rgb.shape == (48, 64, 3)
         assert not first.frame.image_rgb.flags.writeable
         player.play()
@@ -86,3 +100,73 @@ def test_replay_worker_recovers_after_invalid_file(tmp_path: Path) -> None:
         assert player.snapshot().error is None
     finally:
         player.close()
+
+
+def test_session_decoder_crosses_clips_on_one_session_timeline(tmp_path: Path) -> None:
+    first_path = tmp_path / "first.mp4"
+    second_path = tmp_path / "second.mp4"
+    _write_video(first_path)
+    _write_video(second_path)
+    references = _index_standalone_file(first_path).clips[0].frames
+    second_references = tuple(
+        _IndexedFrame(
+            frame.frame_index,
+            frame.pts,
+            frame.time_base,
+            1_000_000_000 + frame.session_time_ns,
+        )
+        for frame in _index_standalone_file(second_path).clips[0].frames
+    )
+    index = _SessionIndex(
+        "session",
+        tmp_path,
+        (
+            _IndexedClip("first", first_path, references),
+            _IndexedClip("second", second_path, second_references),
+        ),
+        0,
+        1_400_000_000,
+    )
+    decoder = _SessionDecoder(index)
+    try:
+        frames = [decoder.next() for _ in range(10)]
+    finally:
+        decoder.close()
+
+    assert [frame.clip_id for frame in frames] == ["first"] * 5 + ["second"] * 5
+    assert [frame.session_time_ns for frame in frames] == sorted(
+        frame.session_time_ns for frame in frames
+    )
+
+
+def test_session_seek_opens_only_the_target_clip(tmp_path: Path) -> None:
+    second_path = tmp_path / "second.mp4"
+    _write_video(second_path)
+    references = _index_standalone_file(second_path).clips[0].frames
+    shifted = tuple(
+        _IndexedFrame(
+            frame.frame_index,
+            frame.pts,
+            frame.time_base,
+            1_000_000_000 + frame.session_time_ns,
+        )
+        for frame in references
+    )
+    index = _SessionIndex(
+        "session",
+        tmp_path,
+        (
+            _IndexedClip("first", tmp_path / "missing-first.mp4", references),
+            _IndexedClip("second", second_path, shifted),
+        ),
+        0,
+        1_400_000_000,
+    )
+    decoder = _SessionDecoder(index)
+    try:
+        frame = decoder.seek(1_200_000_000)
+    finally:
+        decoder.close()
+
+    assert frame.clip_id == "second"
+    assert frame.session_time_ns == 1_200_000_000

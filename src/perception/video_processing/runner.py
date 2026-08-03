@@ -11,7 +11,10 @@ from perception.sensor_preprocessing import (
     SensorPreprocessingPipeline,
     derive_recorded_clock_mapping,
 )
-from perception.spatial_perception.hand_tracking import HumanEgoHandTrackingPipeline
+from perception.spatial_perception.hand_tracking import (
+    HumanEgoHandTrackingPipeline,
+    release_pipeline_resources,
+)
 
 from .contracts import ProcessingJob, ProcessingRunSummary
 from .results import ProcessingResultStore
@@ -162,6 +165,13 @@ class SessionProcessingRunner:
             self._tracker = self._tracker_factory()
         return self._tracker
 
+    def release_gpu(self) -> None:
+        """Release the offline model before live inference may resume."""
+
+        tracker = self._tracker
+        self._tracker = None
+        release_pipeline_resources(tracker)
+
     @staticmethod
     def _write_log(path: Path, message: str) -> None:
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -209,4 +219,3 @@ class SessionProcessingRunner:
             encoding="utf-8",
         )
         os.replace(temporary, path)
-

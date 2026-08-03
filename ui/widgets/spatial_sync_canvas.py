@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
@@ -16,8 +17,6 @@ from pyqtgraph.opengl import (
     GLViewWidget,
 )
 from qfluentwidgets import CaptionLabel, FluentIcon, StrongBodyLabel, TransparentToolButton
-
-from ingest_gateway.imu_preview import ImuPoseSnapshot
 
 HAND_CONNECTIONS = (
     (5, 6),
@@ -88,6 +87,11 @@ class SpatialSyncCanvasStatus:
     latest_frame_index: int | None
 
 
+class SpatialPoseSnapshot(Protocol):
+    quaternion_wxyz: tuple[float, float, float, float]
+    samples_received: int
+
+
 @dataclass(frozen=True, slots=True)
 class _HandPose:
     side: str
@@ -137,7 +141,7 @@ class SpatialSyncCanvas(QWidget):
             """
         )
 
-        self._pose: ImuPoseSnapshot | None = None
+        self._pose: SpatialPoseSnapshot | None = None
         self._hands: tuple[_HandPose, ...] = ()
         self._latest_frame_index: int | None = None
 
@@ -292,7 +296,7 @@ class SpatialSyncCanvas(QWidget):
             self.view.addItem(item)
         self._update_reference_items()
 
-    def set_pose(self, pose: ImuPoseSnapshot | None) -> None:
+    def set_pose(self, pose: SpatialPoseSnapshot | None) -> None:
         self._pose = pose
         self._update_reference_items()
         self._update_hand_items()
@@ -605,7 +609,9 @@ def _points_3d(value: object) -> list[tuple[float, float, float]]:
     return points
 
 
-def _pose_quaternion(pose: ImuPoseSnapshot | None) -> tuple[float, float, float, float]:
+def _pose_quaternion(
+    pose: SpatialPoseSnapshot | None,
+) -> tuple[float, float, float, float]:
     if pose is None or pose.samples_received == 0:
         return _IDENTITY_QUATERNION
     values = tuple(float(value) for value in pose.quaternion_wxyz)

@@ -67,12 +67,21 @@ class ProcessingJob:
     detail: str = ""
     run_id: str | None = None
     retry_of_job_id: str | None = None
+    started_at_unix_ns: int | None = None
+    finished_at_unix_ns: int | None = None
 
     @property
     def progress_fraction(self) -> float:
         if self.progress_total <= 0:
             return 0.0
         return min(1.0, self.progress_current / self.progress_total)
+
+    @property
+    def elapsed_seconds(self) -> float:
+        if self.started_at_unix_ns is None:
+            return 0.0
+        end_ns = self.finished_at_unix_ns or self.updated_at_unix_ns
+        return max(0.0, (end_ns - self.started_at_unix_ns) / 1_000_000_000)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,5 +101,5 @@ class ProcessingRunSummary:
 class ProcessingServiceSnapshot:
     revision: int
     active_job_id: str | None
+    auto_enqueue_on_session_complete: bool
     jobs: tuple[ProcessingJob, ...]
-

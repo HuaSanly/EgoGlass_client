@@ -3,17 +3,14 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
 
-import av
 import numpy as np
 from av import VideoFrame
 
 from perception.runtime import (
     HandTrackingRuntime,
     LiveHandTrackingFrame,
-    _H264ReplayWriter,
 )
 from perception.sensor_preprocessing import (
     ClockId,
@@ -36,8 +33,6 @@ def _runtime_config(path: Path) -> Path:
         """schema_version: \"1.0\"
 enabled: true
 max_live_inference_fps: 60.0
-replay:
-  inference_stride_frames: 5
 """,
         encoding="utf-8",
     )
@@ -54,36 +49,6 @@ def _frame(index: int, received_at_ns: int) -> LiveHandTrackingFrame:
     )
 
 
-def test_replay_writer_creates_fast_start_h264_mp4(tmp_path: Path) -> None:
-    path = tmp_path / "annotated.mp4"
-    writer = _H264ReplayWriter(path, 30.0, 8, 6)
-    for value, presentation_time_ns in (
-        (20, 1_000_000_000),
-        (120, 1_040_000_000),
-        (220, 1_090_000_000),
-    ):
-        writer.write(
-            np.full((6, 8, 3), value, dtype=np.uint8),
-            presentation_time_ns,
-        )
-    writer.close()
-    writer.close()
-
-    with av.open(str(path), mode="r") as container:
-        stream = container.streams.video[0]
-        frames = list(container.decode(stream))
-
-    encoded = path.read_bytes()
-    assert stream.codec_context.name == "h264"
-    assert len(frames) == 3
-    assert [Fraction(frame.pts) * frame.time_base for frame in frames] == [
-        Fraction(0),
-        Fraction(1, 25),
-        Fraction(9, 100),
-    ]
-    assert encoded.index(b"moov") < encoded.index(b"mdat")
-
-
 def test_live_runtime_keeps_only_newest_pending_frame(tmp_path: Path) -> None:
     started = threading.Event()
     release = threading.Event()
@@ -91,7 +56,6 @@ def test_live_runtime_keeps_only_newest_pending_frame(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         runtime = HandTrackingRuntime(
-            recordings_root=tmp_path / "recordings",
             runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
         )
 
@@ -131,7 +95,6 @@ def test_live_runtime_accepts_an_immutable_gateway_rgb_frame(tmp_path: Path) -> 
 
     async def scenario() -> None:
         runtime = HandTrackingRuntime(
-            recordings_root=tmp_path / "recordings",
             runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
         )
 
@@ -155,10 +118,50 @@ def test_live_runtime_accepts_an_immutable_gateway_rgb_frame(tmp_path: Path) -> 
     assert processed[0].image_rgb is image_rgb
 
 
+def test_offline_gpu_claim_waits_for_inflight_live_inference(tmp_path: Path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    async def scenario() -> None:
+        runtime = HandTrackingRuntime(
+            runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
+        )
+
+        def process(frame: LiveHandTrackingFrame) -> FakeResult:
+            started.set()
+            assert release.wait(timeout=2)
+            return FakeResult(frame.frame_index)
+
+        runtime._process_live_frame = process  # type: ignore[method-assign]
+        released = threading.Event()
+
+        def release_tracker() -> None:
+            runtime._tracker = None
+            released.set()
+
+        runtime._release_tracker_for_current_thread = release_tracker  # type: ignore[method-assign]
+        await runtime.submit_live_frame(_frame(0, 0))
+        assert await asyncio.to_thread(started.wait, 2)
+        claim = asyncio.create_task(runtime.set_offline_processing(True))
+        await asyncio.sleep(0)
+        assert not claim.done()
+
+        release.set()
+        await asyncio.wait_for(claim, timeout=2)
+        status = await runtime.status()
+        assert status["offline_processing"] is True
+        assert status["state"] == "disabled"
+        assert status["live_inferences"] == 0
+        assert status["latest_result"] is None
+        assert released.is_set()
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
 def test_status_events_push_initial_snapshot_and_completed_inference(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = HandTrackingRuntime(
-            recordings_root=tmp_path / "recordings",
             runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
         )
         runtime._process_live_frame = (  # type: ignore[method-assign]
@@ -194,7 +197,6 @@ def test_status_events_push_initial_snapshot_and_completed_inference(tmp_path: P
 def test_live_preprocessing_anchors_session_time_at_first_received_frame(tmp_path: Path) -> None:
     repository = Path(__file__).parents[1]
     runtime = HandTrackingRuntime(
-        recordings_root=tmp_path / "recordings",
         runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
         sensor_config_path=repository / "config" / "sensor-preprocessing.yaml",
     )
@@ -220,25 +222,3 @@ def test_live_preprocessing_anchors_session_time_at_first_received_frame(tmp_pat
         assert estimate.session_time_ns == 0
     finally:
         asyncio.run(runtime.close())
-
-
-def test_runtime_rejects_recording_path_escape(tmp_path: Path) -> None:
-    recordings = tmp_path / "recordings"
-    recordings.mkdir()
-    runtime = HandTrackingRuntime(
-        recordings_root=recordings,
-        runtime_config_path=_runtime_config(tmp_path / "runtime.yaml"),
-    )
-
-    async def scenario() -> None:
-        try:
-            try:
-                await runtime.start_replay("../outside")
-            except Exception as error:
-                assert "escapes recordings root" in str(error)
-            else:
-                raise AssertionError("path escape was accepted")
-        finally:
-            await runtime.close()
-
-    asyncio.run(scenario())

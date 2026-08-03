@@ -123,7 +123,7 @@ The input paths share all preparation after frame acquisition:
 
 Live hand tracking can run from decoded frames and a connection-local receipt
 timeline because it does not consume IMU. That does not prove a recording is
-ready for strict video/IMU replay. Offline replay first derives and persists the
+ready for strict video/IMU processing. Offline processing first derives the
 recorded clock mapping, then requires every used video frame and IMU sample to
 resolve through that one mapper. There is no video-only fallback.
 
@@ -248,7 +248,7 @@ for bundle in pipeline.iter_recorded_session("recordings/session-id"):
     spatial_perception.process(bundle)
 ```
 
-The hand-tracking replay runtime performs the strict derivation before creating
+`VideoProcessingService` performs the strict derivation before creating
 the preprocessing pipeline. Callers using the pipeline directly must supply the
 same mapper explicitly:
 

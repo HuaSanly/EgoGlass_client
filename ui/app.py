@@ -17,12 +17,13 @@ from qfluentwidgets import FluentIcon, FluentWindow, Theme, setTheme, setThemeCo
 from .logging_config import configure_logging
 from .runtime import RuntimeConfig, UnifiedRuntimeHost
 from .views.home import HomeView
+from .views.video_processing import VideoProcessingView
 
 LOGGER = logging.getLogger(__name__)
 
 
 class MainWindow(FluentWindow):
-    """Own the single Fluent home interface and orderly runtime shutdown."""
+    """Own the processing-first Fluent workspace and orderly runtime shutdown."""
 
     def __init__(self, runtime: UnifiedRuntimeHost) -> None:
         super().__init__()
@@ -30,6 +31,7 @@ class MainWindow(FluentWindow):
         if application is not None:
             application.setFont(QFont("Microsoft YaHei UI", 10))
         self.runtime = runtime
+        self.processing_view = VideoProcessingView(runtime, self)
         self.home_view = HomeView(runtime, self)
         self._shutdown_complete = False
 
@@ -39,14 +41,27 @@ class MainWindow(FluentWindow):
         self.setMicaEffectEnabled(False)
         self.navigationInterface.setAcrylicEnabled(True)
         self.navigationInterface.setExpandWidth(220)
-        self.addSubInterface(self.home_view, FluentIcon.HOME, "主页")
+        self.addSubInterface(self.processing_view, FluentIcon.MOVIE, "视频处理")
+        self.addSubInterface(self.home_view, FluentIcon.CAMERA, "实时采集")
 
     def shutdown(self) -> None:
         if self._shutdown_complete:
             return
         self._shutdown_complete = True
-        self.home_view.close_resources()
-        self.runtime.stop()
+        errors: list[Exception] = []
+        for operation in (
+            self.processing_view.close_resources,
+            self.home_view.close_resources,
+            self.runtime.stop,
+        ):
+            try:
+                operation()
+            except Exception as error:
+                errors.append(error)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("native client shutdown failed", errors)
 
     def closeEvent(self, event: object) -> None:
         try:

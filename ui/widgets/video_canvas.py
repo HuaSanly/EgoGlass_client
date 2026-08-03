@@ -9,6 +9,7 @@ from PyQt6.QtGui import QColor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from ingest_gateway.live_frames import LiveFrame
+from ui.replay.player import PlaybackFrame
 
 HAND_CONNECTIONS = (
     (5, 6),
@@ -100,9 +101,10 @@ class VideoCanvas(QWidget):
         self.setMinimumSize(480, 360)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._maximum_overlay_age_frames = maximum_overlay_age_frames
-        self._frame: LiveFrame | None = None
+        self._frame: LiveFrame | PlaybackFrame | None = None
         self._image: QImage | None = None
         self._overlay: dict[str, object] | None = None
+        self._comparison_overlay: dict[str, object] | None = None
         self._latest_frame_key: tuple[str, str, int] | None = None
         self._pending_presentation = False
         self._presented_frames = 0
@@ -122,10 +124,10 @@ class VideoCanvas(QWidget):
     def canvas_geometry(self) -> FittedImageGeometry:
         return fit_image_geometry(self.width(), self.height(), 4, 3)
 
-    def set_frame(self, frame: LiveFrame | None) -> bool:
+    def set_frame(self, frame: LiveFrame | PlaybackFrame | None) -> bool:
         if frame is None:
             return False
-        frame_key = (frame.session_id, frame.connection_session_id, frame.frame_index)
+        frame_key = (frame.session_id, _frame_stream_id(frame), frame.frame_index)
         if frame_key == self._latest_frame_key:
             return False
         image_rgb = frame.image_rgb
@@ -133,8 +135,18 @@ class VideoCanvas(QWidget):
             raise ValueError("VideoCanvas requires an HxWx3 uint8 RGB frame")
         if not image_rgb.flags.c_contiguous:
             raise ValueError("VideoCanvas requires a contiguous RGB frame")
-        if self._latest_frame_key is not None and frame_key[:2] != self._latest_frame_key[:2]:
+        stream_changed = (
+            self._latest_frame_key is not None
+            and frame_key[:2] != self._latest_frame_key[:2]
+        )
+        moved_backwards = (
+            self._latest_frame_key is not None
+            and frame_key[:2] == self._latest_frame_key[:2]
+            and frame_key[2] < self._latest_frame_key[2]
+        )
+        if stream_changed or moved_backwards:
             self._overlay = None
+            self._comparison_overlay = None
         if self._latest_frame_key is not None and frame_key[:2] == self._latest_frame_key[:2]:
             self._source_frames_skipped += max(
                 0,
@@ -154,9 +166,21 @@ class VideoCanvas(QWidget):
         return True
 
     def set_overlay(self, result: dict[str, object] | None) -> bool:
+        return self._set_result_overlay("primary", result)
+
+    def set_comparison_overlay(self, result: dict[str, object] | None) -> bool:
+        return self._set_result_overlay("comparison", result)
+
+    def _set_result_overlay(
+        self,
+        layer: str,
+        result: dict[str, object] | None,
+    ) -> bool:
+        attribute = "_overlay" if layer == "primary" else "_comparison_overlay"
+        current = getattr(self, attribute)
         if result is None:
-            changed = self._overlay is not None
-            self._overlay = None
+            changed = current is not None
+            setattr(self, attribute, None)
             if changed:
                 self.update()
             return changed
@@ -168,14 +192,14 @@ class VideoCanvas(QWidget):
             and result_key[:2] != self._latest_frame_key[:2]
         ):
             return False
-        current_key = _result_key(self._overlay) if self._overlay is not None else None
+        current_key = _result_key(current) if current is not None else None
         if (
             current_key is not None
             and current_key[:2] == result_key[:2]
             and result_key[2] <= current_key[2]
         ):
             return False
-        self._overlay = result
+        setattr(self, attribute, result)
         self.update()
         return True
 
@@ -183,6 +207,7 @@ class VideoCanvas(QWidget):
         self._frame = None
         self._image = None
         self._overlay = None
+        self._comparison_overlay = None
         self._latest_frame_key = None
         self.update()
 
@@ -235,7 +260,7 @@ class VideoCanvas(QWidget):
         else:
             image_geometry = _fit_inside(canvas, self._frame.width, self._frame.height)
             painter.drawImage(_rect(image_geometry), self._image)
-            self._paint_overlay(painter, canvas)
+            self._paint_overlays(painter, canvas)
         painter.end()
 
         finished_ns = time.perf_counter_ns()
@@ -245,11 +270,36 @@ class VideoCanvas(QWidget):
             self._presented_frames += 1
             self._presented_at_ns.append(finished_ns)
 
-    def _paint_overlay(self, painter: QPainter, canvas: FittedImageGeometry) -> None:
-        active_overlay = self._active_overlay()
-        if active_overlay is None:
+    def _paint_overlays(self, painter: QPainter, canvas: FittedImageGeometry) -> None:
+        primary = self._active_overlay(self._overlay)
+        comparison = self._active_overlay(self._comparison_overlay)
+        if comparison is None:
+            if primary is not None:
+                self._paint_result_overlay(painter, canvas, primary[0])
             return
-        result, _frame_age = active_overlay
+        midpoint = canvas.minimum[0] + canvas.width / 2
+        if primary is not None:
+            painter.save()
+            painter.setClipRect(
+                QRectF(canvas.minimum[0], canvas.minimum[1], canvas.width / 2, canvas.height)
+            )
+            self._paint_result_overlay(painter, canvas, primary[0])
+            painter.restore()
+        painter.save()
+        painter.setClipRect(
+            QRectF(midpoint, canvas.minimum[1], canvas.width / 2, canvas.height)
+        )
+        self._paint_result_overlay(painter, canvas, comparison[0])
+        painter.restore()
+        painter.setPen(QPen(QColor("#f8fafc"), 1))
+        painter.drawLine(QLineF(midpoint, canvas.minimum[1], midpoint, canvas.maximum[1]))
+
+    def _paint_result_overlay(
+        self,
+        painter: QPainter,
+        canvas: FittedImageGeometry,
+        result: dict[str, object],
+    ) -> None:
         source_width = _positive_number(result.get("source_image_width_px"))
         source_height = _positive_number(result.get("source_image_height_px"))
         hands = result.get("hands")
@@ -289,8 +339,12 @@ class VideoCanvas(QWidget):
                     4,
                 )
 
-    def _active_overlay(self) -> tuple[dict[str, object], int] | None:
-        result = self._overlay
+    def _active_overlay(
+        self,
+        result: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], int] | None:
+        if result is None:
+            result = self._overlay
         result_key = _result_key(result) if result is not None else None
         frame_key = self._latest_frame_key
         if result is None or result_key is None or frame_key is None:
@@ -390,3 +444,9 @@ def _has_drawable_hands(result: dict[str, object]) -> bool:
         )
         for hand in hands
     )
+
+
+def _frame_stream_id(frame: LiveFrame | PlaybackFrame) -> str:
+    if isinstance(frame, PlaybackFrame):
+        return frame.clip_id
+    return frame.connection_session_id

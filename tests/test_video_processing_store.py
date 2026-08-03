@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from perception.video_processing import (
     ProcessingJobState,
     ProcessingJobStore,
@@ -21,6 +23,9 @@ def test_job_queue_persists_history_and_recovers_active_jobs(tmp_path) -> None:
     interrupted = recovered.require(first.job_id)
     assert interrupted.state is ProcessingJobState.INTERRUPTED
     assert interrupted.progress_current == 3
+    assert interrupted.started_at_unix_ns is not None
+    assert interrupted.finished_at_unix_ns is not None
+    assert interrupted.elapsed_seconds >= 0
 
     retry = recovered.retry(first.job_id)
     assert retry.retry_of_job_id == first.job_id
@@ -38,6 +43,57 @@ def test_queue_cancel_distinguishes_waiting_and_running_jobs(tmp_path) -> None:
     store.start_run(running.job_id, "run-2", 5)
     assert store.request_cancel(running.job_id).state is ProcessingJobState.CANCELING
     assert store.mark_canceled(running.job_id).state is ProcessingJobState.CANCELED
+
+
+def test_completed_run_wins_a_cancel_requested_after_its_last_frame(tmp_path) -> None:
+    store = ProcessingJobStore(tmp_path / "jobs.sqlite3")
+    job = store.enqueue("a" * 32, None, ProcessingPreset())
+    store.claim_next()
+    store.start_run(job.job_id, "run-complete", 2)
+    store.update_progress(job.job_id, 2, 2, "all frames written")
+    assert store.request_cancel(job.job_id).state is ProcessingJobState.CANCELING
+
+    completed = store.complete(job.job_id)
+
+    assert completed.state is ProcessingJobState.COMPLETED
+    assert completed.progress_current == completed.progress_total == 2
+
+
+def test_queue_migrates_v1_timestamps_without_losing_history(tmp_path) -> None:
+    path = tmp_path / "jobs.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO metadata VALUES ('schema_version', '1');
+            CREATE TABLE jobs (
+                job_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                clip_id TEXT,
+                preset_json TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at_unix_ns INTEGER NOT NULL,
+                updated_at_unix_ns INTEGER NOT NULL,
+                progress_current INTEGER NOT NULL DEFAULT 0,
+                progress_total INTEGER NOT NULL DEFAULT 0,
+                detail TEXT NOT NULL DEFAULT '',
+                run_id TEXT,
+                retry_of_job_id TEXT REFERENCES jobs(job_id)
+            );
+            """
+        )
+
+    ProcessingJobStore(path)
+
+    with sqlite3.connect(path) as connection:
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(jobs)")
+        }
+        version = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()
+    assert {"started_at_unix_ns", "finished_at_unix_ns"} <= columns
+    assert version == ("2",)
 
 
 def test_results_are_addressed_by_clip_frame_and_session_time(tmp_path) -> None:

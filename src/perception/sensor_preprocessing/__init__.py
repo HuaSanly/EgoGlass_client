@@ -15,6 +15,11 @@ from .clock_mapping import (
     rokid_sdk_source_instance_id,
     rtp_match_error_to_uncertainty_ns,
 )
+from .imu_pose import (
+    RecordedImuPose,
+    RecordedImuPoseTimeline,
+    build_recorded_imu_pose_timeline,
+)
 from .models import (
     AlignmentStatus,
     CaptureClipRef,
@@ -73,6 +78,8 @@ __all__ = [
     "PreparedFrameBundle",
     "PreparedImuSample",
     "RecordedPreprocessingConfig",
+    "RecordedImuPose",
+    "RecordedImuPoseTimeline",
     "RawFrameRef",
     "RawImuSample",
     "RecordedAlignmentError",
@@ -90,6 +97,7 @@ __all__ = [
     "SensorPreprocessingPipeline",
     "client_perf_source_instance_id",
     "derive_recorded_clock_mapping",
+    "build_recorded_imu_pose_timeline",
     "frame_callback_observation",
     "frame_presentation_observation",
     "frame_sdk_observation",

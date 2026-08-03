@@ -1,19 +1,20 @@
 # EgoGlass Client
 
 The Windows client receives Glass3 video and IMU, records capture sessions,
-runs online perception, replays stored media, and provides a native operator UI.
+processes stored video, optionally runs online perception, and provides a native UI.
 The runtime uses one Python process and one Conda environment named `egoglass`.
 
 ## Layout
 
 ```text
-ui/                         # PyQt Fluent application and native home view
+ui/                         # PyQt Fluent processing workspace and live capture view
 src/
   annotation/               # Annotation contracts, editor state, and persistence
   ingest_gateway/           # WebRTC ingress, recording, and raw sessions
   perception/               # Independently reusable research/runtime core
     sensor_preprocessing/   # Time mapping, calibration, and prepared inputs
     spatial_perception/     # Hand tracking; planned VIO and coordinate fusion
+    video_processing/       # Persistent offline queue, results, and export
 config/                     # Shared client configuration
 tests/                      # Deterministic gate tests
 evals/                      # Periodic quality evaluations and device evidence
@@ -22,14 +23,15 @@ docs/                       # Component operation notes
 ```
 
 PyQt owns the main thread. WebRTC and Uvicorn use one asyncio thread;
-RGB conversion, inference, recording, replay, and IMU orientation use bounded
+RGB conversion, inference, recording, playback, and IMU orientation use bounded
 workers inside that same process. The native UI calls runtime objects directly.
 HTTP port `8770` remains available for Glass3 signaling and external diagnostics.
 
 Hand tracking adapts HumanEgo's MediaPipe/ViTPose + HaMeR flow. Source and
 license records for adapted model code live beside the hand-tracking module.
 
-See [native UI](docs/native-ui.md), [ingest gateway](docs/ingest-gateway.md),
+See [native UI](docs/native-ui.md), [video processing](docs/video-processing.md),
+[ingest gateway](docs/ingest-gateway.md),
 [sensor preprocessing](docs/sensor-preprocessing.md),
 [hand tracking](docs/hand-tracking.md), [spatial perception](docs/spatial-perception.md),
 [interaction processing](docs/interaction-processing.md), and

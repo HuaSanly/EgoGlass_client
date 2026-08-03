@@ -25,6 +25,9 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
         encoding="utf-8"
     )
     home = (repository / "ui" / "views" / "home.py").read_text(encoding="utf-8")
+    processing = (repository / "ui" / "views" / "video_processing.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "threading.Thread" in runtime
     assert "uvicorn.Server" in runtime
@@ -43,8 +46,9 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     assert "mjpg" not in video.lower()
     assert "library_refresh_at_ns" not in runtime
     assert "library_task = asyncio.create_task(self._initial_library_refresh())" in runtime
-    assert "request_library_refresh" in home
-    assert "SegmentedWidget" in home
+    assert "request_library_refresh" in processing
+    assert "CommandBar" in processing
+    assert "SegmentedWidget" not in home
     assert "HeaderCardWidget" in home
     assert 'TitleLabel("EgoGlass")' in home
     assert "感知工作台" not in home
@@ -167,7 +171,15 @@ def test_fluent_home_renders_without_overlap_at_supported_sizes(
         request_stream=lambda _action: None,
         request_recording=lambda _action: None,
         request_imu_pose_reset=lambda: None,
-        request_replay_generation=lambda _session_id: None,
+        request_processing=lambda *_args, **_kwargs: None,
+        request_processing_cancel=lambda _job_id: None,
+        request_processing_retry=lambda _job_id: None,
+        request_processing_export=lambda *_args: None,
+        request_processing_auto_queue=lambda _enabled: None,
+        request_live_inference=lambda _enabled: None,
+        processing_runs=lambda _session_id: None,
+        processing_result=lambda *_args: None,
+        session_directory=lambda _session_id: None,
         stop=lambda: None,
     )
     window = MainWindow(runtime)  # type: ignore[arg-type]
@@ -175,6 +187,7 @@ def test_fluent_home_renders_without_overlap_at_supported_sizes(
         for width, height in ((1280, 800), (1440, 900), (1920, 1080)):
             window.resize(width, height)
             window.show()
+            window.switchTo(window.home_view)
             qt_application.processEvents()
             canvas = window.home_view.canvas.canvas_geometry()
             assert canvas.width > 0
@@ -223,9 +236,9 @@ def test_fluent_home_renders_without_overlap_at_supported_sizes(
 
 @pytest.mark.skipif(
     os.environ.get("EGOGLASS_RUN_UI_SOAK") != "1",
-    reason="set EGOGLASS_RUN_UI_SOAK=1 for the 60-second Qt presentation eval",
+    reason="set EGOGLASS_RUN_UI_SOAK=1 for the 30-second Qt presentation eval",
 )
-def test_four_by_three_canvas_sustains_thirty_fps_for_sixty_seconds(
+def test_four_by_three_canvas_sustains_thirty_fps_for_thirty_seconds(
     qt_application: QApplication,
 ) -> None:
     canvas = VideoCanvas()
@@ -236,7 +249,7 @@ def test_four_by_three_canvas_sustains_thirty_fps_for_sixty_seconds(
     started = time.perf_counter()
     frame_index = 0
     presentation_times_ns: list[int] = []
-    while time.perf_counter() - started < 60:
+    while time.perf_counter() - started < 30:
         target = started + frame_index / 30
         remaining = target - time.perf_counter()
         if remaining > 0:

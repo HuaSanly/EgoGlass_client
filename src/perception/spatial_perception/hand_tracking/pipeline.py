@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import time
 from collections.abc import Iterable, Iterator, Mapping
@@ -302,6 +303,23 @@ class HumanEgoHandTrackingPipeline:
             grasp_ratio=grasp_ratio,
             is_grasping=grasp_ratio < self.config.grasp_ratio_threshold,
         )
+
+
+def release_pipeline_resources(
+    pipeline: HumanEgoHandTrackingPipeline | None,
+) -> None:
+    """Drop one inactive model graph and return its cached CUDA memory."""
+
+    if pipeline is None:
+        return
+    del pipeline
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _recover_absolute_3d(

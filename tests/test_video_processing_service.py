@@ -18,6 +18,7 @@ class FakeRunner:
     def __init__(self, release: threading.Event | None = None) -> None:
         self.release = release
         self.started = threading.Event()
+        self.release_gpu_calls = 0
 
     def inspect(self, _session: Path, _clip_id: str | None) -> int:
         return 3
@@ -47,6 +48,26 @@ class FakeRunner:
             output.name, job.session_id, job.clip_id, output, 3, 3, 2, now, now
         )
 
+    def release_gpu(self) -> None:
+        self.release_gpu_calls += 1
+
+
+class BlockingInspectRunner(FakeRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.inspect_started = threading.Event()
+        self.inspect_release = threading.Event()
+        self.run_called = False
+
+    def inspect(self, _session: Path, _clip_id: str | None) -> int:
+        self.inspect_started.set()
+        assert self.inspect_release.wait(timeout=2)
+        return 3
+
+    def run(self, *args, **kwargs):
+        self.run_called = True
+        return super().run(*args, **kwargs)
+
 
 def _wait_for(service: VideoProcessingService, state: ProcessingJobState) -> ProcessingJob:
     deadline = time.monotonic() + 3
@@ -70,6 +91,7 @@ def test_service_runs_one_persistent_job_and_keeps_run_history(tmp_path: Path) -
         assert completed.progress_current == completed.progress_total == 3
         assert completed.run_id is not None
         assert service.list_runs("a" * 32)[0]["run_id"] == completed.run_id
+        assert runner.release_gpu_calls == 1
     finally:
         service.close()
 
@@ -89,5 +111,68 @@ def test_service_cancels_active_job_without_deleting_its_run(tmp_path: Path) -> 
         canceled = _wait_for(service, ProcessingJobState.CANCELED)
         assert canceled.run_id is not None
         assert (session / "derived" / "video-processing" / canceled.run_id).is_dir()
+    finally:
+        service.close()
+
+
+def test_service_cancel_during_preparation_reaches_terminal_state(tmp_path: Path) -> None:
+    (tmp_path / ("a" * 32)).mkdir()
+    runner = BlockingInspectRunner()
+    service = VideoProcessingService(tmp_path, runner=runner)  # type: ignore[arg-type]
+    service.start()
+    try:
+        job = service.enqueue("a" * 32)
+        assert runner.inspect_started.wait(timeout=2)
+        assert service.cancel(job.job_id).state is ProcessingJobState.CANCELING
+        runner.inspect_release.set()
+        canceled = _wait_for(service, ProcessingJobState.CANCELED)
+
+        assert canceled.run_id is None
+        assert not runner.run_called
+        assert service._thread is not None and service._thread.is_alive()
+    finally:
+        runner.inspect_release.set()
+        service.close()
+
+
+def test_auto_enqueue_is_persistent_and_idempotent(tmp_path: Path) -> None:
+    (tmp_path / ("a" * 32)).mkdir()
+    service = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
+    assert not service.snapshot().auto_enqueue_on_session_complete
+    service.set_auto_enqueue(True)
+    first = service.enqueue_completed_session("a" * 32)
+    second = service.enqueue_completed_session("a" * 32)
+
+    assert first is not None
+    assert second is None
+    restarted = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
+    assert restarted.snapshot().auto_enqueue_on_session_complete
+
+
+def test_gpu_claim_failure_marks_job_failed_and_releases_ownership(tmp_path: Path) -> None:
+    (tmp_path / ("a" * 32)).mkdir()
+    ownership_changes: list[bool] = []
+    ownership_released = threading.Event()
+
+    def change_ownership(active: bool) -> None:
+        ownership_changes.append(active)
+        if active:
+            raise RuntimeError("GPU ownership unavailable")
+        ownership_released.set()
+
+    service = VideoProcessingService(
+        tmp_path,
+        runner=FakeRunner(),  # type: ignore[arg-type]
+        on_gpu_job_changed=change_ownership,
+    )
+    service.start()
+    try:
+        service.enqueue("a" * 32)
+        failed = _wait_for(service, ProcessingJobState.FAILED)
+
+        assert failed.detail == "GPU ownership unavailable"
+        assert ownership_released.wait(timeout=2)
+        assert ownership_changes == [True, False]
+        assert service._thread is not None and service._thread.is_alive()
     finally:
         service.close()

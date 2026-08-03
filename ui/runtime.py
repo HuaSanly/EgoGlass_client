@@ -73,7 +73,7 @@ class UnifiedRuntimeHost:
             recordings_root,
             lambda: self.webrtc.recording_source(),
         )
-        self.perception = HandTrackingRuntime(recordings_root=recordings_root)
+        self.perception = HandTrackingRuntime()
         self.video_processing = VideoProcessingService(
             recordings_root,
             on_gpu_job_changed=self._on_gpu_job_changed,
@@ -130,7 +130,7 @@ class UnifiedRuntimeHost:
         server = self._server
         if server is not None and not server.should_exit:
             try:
-                future = self.submit(self.recording.session_command("finalize"))
+                future = self.submit(self._request_session("finalize"))
                 future.result(timeout=min(timeout_seconds, 15.0))
             except Exception:
                 LOGGER.exception("capture session finalization failed during shutdown")
@@ -184,10 +184,7 @@ class UnifiedRuntimeHost:
     def request_session(self, action: str) -> None:
         if action not in {"new", "finalize"}:
             raise ValueError("session action must be new or finalize")
-        self._track_command(f"session-{action}", self.recording.session_command(action))
-
-    def request_replay_generation(self, session_id: str) -> None:
-        self.request_processing(session_id)
+        self._track_command(f"session-{action}", self._request_session(action))
 
     def request_processing(
         self,
@@ -218,22 +215,39 @@ class UnifiedRuntimeHost:
     def request_live_inference(self, enabled: bool) -> None:
         self._track_command("live-inference", self.perception.set_live_enabled(enabled))
 
+    def request_processing_export(
+        self,
+        session_id: str,
+        run_id: str,
+        clip_id: str,
+    ) -> None:
+        self._track_sync_command(
+            "export-processing",
+            lambda: self.video_processing.export_annotated_clip(
+                session_id,
+                run_id,
+                clip_id,
+            ),
+        )
+
+    def request_processing_auto_queue(self, enabled: bool) -> None:
+        self._track_sync_command(
+            "processing-auto-queue",
+            lambda: _CommandDetail(
+                "自动入队已开启"
+                if self.video_processing.set_auto_enqueue(enabled)
+                else "自动入队已关闭"
+            ),
+        )
+
     def request_library_refresh(self) -> None:
         self._track_command("refresh-library", self._refresh_library())
 
     def request_imu_pose_reset(self) -> None:
         self._track_command("imu-pose-reset", self._reset_imu_pose())
 
-    def media_path(self, session_id: str, clip_id: str) -> concurrent.futures.Future[Path | None]:
-        return self.submit(self.recording.media_path(session_id, clip_id))
-
-    def replay_video_path(
-        self,
-        session_id: str,
-        run_id: str,
-        clip_id: str,
-    ) -> concurrent.futures.Future[Path]:
-        return self.submit(self.perception.replay_video_path(session_id, run_id, clip_id))
+    def session_directory(self, session_id: str) -> Path:
+        return self.video_processing.session_directory(session_id)
 
     def processing_runs(
         self, session_id: str
@@ -275,6 +289,17 @@ class UnifiedRuntimeHost:
             )
         )
 
+    async def _request_session(self, action: str) -> object:
+        previous = await self.recording.status()
+        completed_session_id = previous.session_id
+        result = await self.recording.session_command(action)
+        if completed_session_id is not None:
+            await asyncio.to_thread(
+                self.video_processing.enqueue_completed_session,
+                completed_session_id,
+            )
+        return result
+
     async def _reset_imu_pose(self) -> object:
         self.imu_preview.reset_orientation()
         return _CommandDetail("IMU pose reset")
@@ -304,11 +329,12 @@ class UnifiedRuntimeHost:
     def _on_gpu_job_changed(self, active: bool) -> None:
         loop = self._loop
         if loop is None or loop.is_closed():
-            return
-        asyncio.run_coroutine_threadsafe(
+            raise RuntimeError("runtime event loop is unavailable for GPU ownership change")
+        future = asyncio.run_coroutine_threadsafe(
             self.perception.set_offline_processing(active),
             loop,
         )
+        future.result(timeout=120.0)
 
     def _thread_main(self) -> None:
         try:

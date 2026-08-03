@@ -48,7 +48,6 @@ def _frame(connection_id: str, received_at_ns: int) -> LiveHandTrackingFrame:
 
 def test_each_live_connection_starts_a_nonnegative_session_timeline(tmp_path: Path) -> None:
     runtime = HandTrackingRuntime(
-        recordings_root=tmp_path / "recordings",
         runtime_config_path=REPOSITORY / "config" / "perception-runtime.yaml",
         sensor_config_path=REPOSITORY / "config" / "sensor-preprocessing.yaml",
     )

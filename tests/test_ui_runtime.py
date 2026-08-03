@@ -117,6 +117,31 @@ def test_imu_pose_reset_command_resets_preview() -> None:
     asyncio.run(scenario())
 
 
+def test_gpu_job_callback_waits_until_perception_changes_ownership() -> None:
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class PerceptionStub:
+            async def set_offline_processing(self, _active: bool) -> None:
+                entered.set()
+                await release.wait()
+
+        runtime = UnifiedRuntimeHost.__new__(UnifiedRuntimeHost)
+        runtime._loop = asyncio.get_running_loop()
+        runtime.perception = PerceptionStub()  # type: ignore[assignment]
+        claim = asyncio.create_task(
+            asyncio.to_thread(runtime._on_gpu_job_changed, True)
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert not claim.done()
+
+        release.set()
+        await asyncio.wait_for(claim, timeout=1)
+
+    asyncio.run(scenario())
+
+
 def test_perception_result_forwarder_keeps_only_the_newest_unique_result() -> None:
     async def scenario() -> None:
         first = {

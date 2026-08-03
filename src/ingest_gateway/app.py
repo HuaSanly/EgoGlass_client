@@ -12,9 +12,8 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi import Path as ApiPath
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
 
-from perception.runtime import HandTrackingRuntime, PerceptionRuntimeError
+from perception.runtime import HandTrackingRuntime
 
 from .discovery import DISCOVERY_PORT, LanDiscoveryService
 from .imu_preview import ImuPreviewRuntime
@@ -55,14 +54,6 @@ from .webrtc_runtime import (
 )
 
 
-class HandTrackingReplayRequest(BaseModel):
-    """A stored capture session requested for offline hand-tracking replay."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    session_id: str = Field(pattern=r"^[0-9a-f]{32}$")
-
-
 def create_app(
     webrtc_runtime: WebRtcSessionRuntime | None = None,
     discovery_service: LanDiscoveryService | None = None,
@@ -80,9 +71,7 @@ def create_app(
         active_recordings_root,
         lambda: active_webrtc_runtime.recording_source(),
     )
-    active_perception_runtime = perception_runtime or HandTrackingRuntime(
-        recordings_root=active_recordings_root,
-    )
+    active_perception_runtime = perception_runtime or HandTrackingRuntime()
     active_live_frame_buffer = live_frame_buffer
     active_imu_preview_runtime = imu_preview_runtime
     set_capture_sink = getattr(active_webrtc_runtime, "set_capture_telemetry_sink", None)
@@ -178,40 +167,6 @@ def create_app(
                 "X-Accel-Buffering": "no",
             },
         )
-
-    @app.post("/api/v1/perception/hand-tracking/replays", status_code=202)
-    async def start_hand_tracking_replay(
-        replay_request: HandTrackingReplayRequest,
-        request: Request,
-    ) -> dict[str, str]:
-        _require_loopback(request, viewer_allowed_hosts, "hand-tracking replay")
-        try:
-            await active_perception_runtime.start_replay(replay_request.session_id)
-        except FileNotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-        except PerceptionRuntimeError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        return {"state": "accepted", "session_id": replay_request.session_id}
-
-    @app.get(
-        "/api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}"
-    )
-    async def hand_tracking_replay_video(
-        request: Request,
-        session_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
-        run_id: Annotated[str, ApiPath(pattern=r"^[0-9A-Za-z-]{10,64}$")],
-        clip_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
-    ) -> FileResponse:
-        _require_loopback(request, viewer_allowed_hosts, "hand-tracking replay")
-        try:
-            video_path = await active_perception_runtime.replay_video_path(
-                session_id,
-                run_id,
-                clip_id,
-            )
-        except (FileNotFoundError, PerceptionRuntimeError) as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-        return FileResponse(video_path, media_type="video/mp4")
 
     @app.get("/api/v1/webrtc/control", response_model=StreamControlStatus)
     async def get_stream_control_status(request: Request) -> StreamControlStatus:

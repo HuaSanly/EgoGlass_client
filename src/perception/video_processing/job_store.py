@@ -6,9 +6,15 @@ import time
 import uuid
 from pathlib import Path
 
-from .contracts import ACTIVE_JOB_STATES, ProcessingJob, ProcessingJobState, ProcessingPreset
+from .contracts import (
+    ACTIVE_JOB_STATES,
+    TERMINAL_JOB_STATES,
+    ProcessingJob,
+    ProcessingJobState,
+    ProcessingPreset,
+)
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
 
 
 class ProcessingJobStore:
@@ -68,11 +74,13 @@ class ProcessingJobStore:
             now_ns = time.time_ns()
             connection.execute(
                 """
-                UPDATE jobs SET state = ?, updated_at_unix_ns = ?, detail = ?
+                UPDATE jobs SET state = ?, updated_at_unix_ns = ?,
+                    started_at_unix_ns = ?, detail = ?
                 WHERE job_id = ? AND state = ?
                 """,
                 (
                     ProcessingJobState.PREPARING.value,
+                    now_ns,
                     now_ns,
                     "正在校验会话",
                     row["job_id"],
@@ -116,7 +124,7 @@ class ProcessingJobStore:
         job = self.require(job_id)
         return self._transition(
             job_id,
-            {ProcessingJobState.RUNNING},
+            {ProcessingJobState.RUNNING, ProcessingJobState.CANCELING},
             ProcessingJobState.COMPLETED,
             progress_current=job.progress_total,
             detail=detail,
@@ -169,16 +177,19 @@ class ProcessingJobStore:
     def recover_interrupted(self) -> int:
         values = tuple(state.value for state in ACTIVE_JOB_STATES)
         placeholders = ",".join("?" for _ in values)
+        now_ns = time.time_ns()
         with self._connect() as connection:
             cursor = connection.execute(
                 f"""
-                UPDATE jobs SET state = ?, detail = ?, updated_at_unix_ns = ?
+                UPDATE jobs SET state = ?, detail = ?, updated_at_unix_ns = ?,
+                    finished_at_unix_ns = ?
                 WHERE state IN ({placeholders})
                 """,
                 (
                     ProcessingJobState.INTERRUPTED.value,
                     "客户端退出导致任务中断，请手动重试",
-                    time.time_ns(),
+                    now_ns,
+                    now_ns,
                     *values,
                 ),
             )
@@ -200,6 +211,23 @@ class ProcessingJobStore:
             ).fetchall()
         return tuple(_job_from_row(row) for row in rows)
 
+    def setting(self, key: str, default: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = ?", (f"setting:{key}",)
+            ).fetchone()
+        return default if row is None else str(row["value"])
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (f"setting:{key}", value),
+            )
+
     def _transition(
         self,
         job_id: str,
@@ -207,10 +235,21 @@ class ProcessingJobStore:
         state: ProcessingJobState,
         **changes: object,
     ) -> ProcessingJob:
+        now_ns = time.time_ns()
         assignments = ["state = ?", "updated_at_unix_ns = ?"]
-        values: list[object] = [state.value, time.time_ns()]
+        values: list[object] = [state.value, now_ns]
+        if state in TERMINAL_JOB_STATES:
+            assignments.append("finished_at_unix_ns = ?")
+            values.append(now_ns)
         for key, value in changes.items():
-            if key not in {"run_id", "progress_current", "progress_total", "detail"}:
+            if key not in {
+                "run_id",
+                "progress_current",
+                "progress_total",
+                "detail",
+                "started_at_unix_ns",
+                "finished_at_unix_ns",
+            }:
                 raise ValueError(f"unsupported job field {key!r}")
             assignments.append(f"{key} = ?")
             values.append(value)
@@ -249,7 +288,9 @@ class ProcessingJobStore:
                     progress_total INTEGER NOT NULL DEFAULT 0,
                     detail TEXT NOT NULL DEFAULT '',
                     run_id TEXT,
-                    retry_of_job_id TEXT REFERENCES jobs(job_id)
+                    retry_of_job_id TEXT REFERENCES jobs(job_id),
+                    started_at_unix_ns INTEGER,
+                    finished_at_unix_ns INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS jobs_state_created
                     ON jobs(state, created_at_unix_ns);
@@ -261,6 +302,23 @@ class ProcessingJobStore:
             if row is None:
                 connection.execute(
                     "INSERT INTO metadata(key, value) VALUES ('schema_version', ?)",
+                    (_SCHEMA_VERSION,),
+                )
+            elif row["value"] == "1":
+                columns = {
+                    str(item["name"])
+                    for item in connection.execute("PRAGMA table_info(jobs)").fetchall()
+                }
+                if "started_at_unix_ns" not in columns:
+                    connection.execute(
+                        "ALTER TABLE jobs ADD COLUMN started_at_unix_ns INTEGER"
+                    )
+                if "finished_at_unix_ns" not in columns:
+                    connection.execute(
+                        "ALTER TABLE jobs ADD COLUMN finished_at_unix_ns INTEGER"
+                    )
+                connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
                     (_SCHEMA_VERSION,),
                 )
             elif row["value"] != _SCHEMA_VERSION:
@@ -302,6 +360,8 @@ def _job_from_row(row: sqlite3.Row) -> ProcessingJob:
         detail=row["detail"],
         run_id=row["run_id"],
         retry_of_job_id=row["retry_of_job_id"],
+        started_at_unix_ns=row["started_at_unix_ns"],
+        finished_at_unix_ns=row["finished_at_unix_ns"],
     )
 
 

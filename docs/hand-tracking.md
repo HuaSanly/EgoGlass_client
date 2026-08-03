@@ -4,7 +4,7 @@
 
 `HumanEgoHandTrackingPipeline` consumes the read-only, rectified BGR image and
 camera calibration in `PreparedFrameBundle`. The same `process_frame()` method
-is used by recorded replay and live gateway paths.
+is used by persistent offline processing and the optional live gateway path.
 
 The output is `HandTrackingResult` contract version `1.0`. Each hand contains:
 
@@ -76,34 +76,21 @@ External diagnostics can read these loopback-only endpoints:
 
 - `GET /api/v1/perception/hand-tracking/status`
 - `GET /api/v1/perception/hand-tracking/events` (SSE status push)
-- `POST /api/v1/perception/hand-tracking/replays`
-- `GET /api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}`
 
 Live visualization reads the in-process decoded RGB buffer and draws structured
 hand-tracking results directly on the PyQt `VideoCanvas`. The model does not
 encode a separate live preview image.
 
-Offline replay renders an annotated MP4 for every clip and one `results.jsonl`
-under `<session>/perception/hand-tracking/<run-id>/`. It never overwrites raw
-recordings or earlier runs. By default every fifth frame runs inference and
-intermediate frames reuse the latest same-clip skeleton.
+Offline hand tracking runs through `VideoProcessingService`. Each immutable run
+writes `run.json`, `results.sqlite`, and `run.log` under
+`<session>/derived/video-processing/<run-id>/`. Presets select inference stride;
+intermediate frames may hold the most recent same-clip result only within that
+explicit stride. The UI dynamically overlays structured results on original
+media. It encodes an annotated H.264 MP4 only after an explicit export.
 
-Before inference, replay strictly derives one video/IMU session timeline from
-the recording's immutable timing evidence and persists it as
-`<session>/derived/sensor-preprocessing/clock-mapping-v1.json`. Missing timing
-evidence fails the run; replay has no video-only or unchecked-clock mode. The
-annotated output uses the prepared frame's strictly increasing
-`session_time_ns` as variable-frame-rate H.264 PTS and writes fast-start
-metadata so native PTS-driven replay preserves recovered capture pacing. Raw capture files
-remain unchanged.
-
-The equivalent command-line replay is:
-
-```powershell
-conda run -n egoglass python -m perception.main hand-replay `
-  --session-directory local-data\recordings\<session-id> `
-  --output-directory local-data\recordings\<session-id>\perception\hand-tracking\manual-run
-```
+Before inference, the service derives one strict video/IMU session timeline
+from immutable timing evidence. Missing timing evidence fails the job; there is
+no video-only or unchecked-clock mode. Raw capture files remain unchanged.
 
 ```python
 from perception.spatial_perception.hand_tracking import (

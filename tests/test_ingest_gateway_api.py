@@ -38,9 +38,7 @@ PAIRING_TOKEN = "api-pairing-token-123456"
 
 
 class HandTrackingApiRuntime:
-    def __init__(self, video_path: Path) -> None:
-        self.video_path = video_path
-        self.replay_requests: list[str] = []
+    def __init__(self, _video_path: Path) -> None:
         self.closed = False
 
     async def status(self) -> dict[str, object]:
@@ -53,29 +51,12 @@ class HandTrackingApiRuntime:
             "live_inferences": 2,
             "latest_result": None,
             "last_error": None,
-            "replay": {
-                "state": "idle",
-                "detail": "no replay requested",
-                "frames_processed": 0,
-                "frame_total": 0,
-                "report": None,
-            },
         }
-
-    async def start_replay(self, session_id: str) -> None:
-        self.replay_requests.append(session_id)
 
     async def status_events(self):
         yield await self.status()
         yield None
 
-    async def replay_video_path(
-        self,
-        _session_id: str,
-        _run_id: str,
-        _clip_id: str,
-    ) -> Path:
-        return self.video_path
 
     async def close(self) -> None:
         self.closed = True
@@ -580,7 +561,9 @@ def test_cli_disables_high_frequency_preview_access_logs(monkeypatch, capsys) ->
     assert captured["app"].state.discovery_service is not None
 
 
-def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> None:
+def test_hand_tracking_status_is_loopback_only_and_legacy_replay_routes_are_removed(
+    tmp_path: Path,
+) -> None:
     video = tmp_path / "replay.mp4"
     video.write_bytes(b"mp4-data")
     runtime = HandTrackingApiRuntime(video)
@@ -616,9 +599,8 @@ def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> No
     assert "event: status\ndata: " in events.text
     assert '"live_inferences":2' in events.text
     assert events.text.endswith(": heartbeat\n\n")
-    assert replay.status_code == 202
-    assert runtime.replay_requests == [session_id]
-    assert media.content == b"mp4-data"
+    assert replay.status_code == 404
+    assert media.status_code == 404
     assert runtime.closed is True
 
     remote_app = create_app(perception_runtime=HandTrackingApiRuntime(video))  # type: ignore[arg-type]

@@ -1,42 +1,30 @@
 from __future__ import annotations
 
-import concurrent.futures
-from enum import StrEnum
-from pathlib import Path
-
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QSizePolicy,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 from qfluentwidgets import (
-    BodyLabel,
     CaptionLabel,
-    ComboBox,
     FluentIcon,
     HeaderCardWidget,
     InfoBar,
     InfoLevel,
     PrimaryPushButton,
-    ProgressRing,
     PushButton,
-    SegmentedWidget,
     SimpleCardWidget,
-    Slider,
     SmoothScrollArea,
-    StateToolTip,
     StrongBodyLabel,
     TitleLabel,
-    TransparentToolButton,
+    ToggleToolButton,
 )
 
 from ingest_gateway.recording_models import RecordingState
 from ingest_gateway.webrtc_models import StreamControlAction, StreamControlState
-from ui.replay.player import ReplayPlayer, ReplayState
 from ui.runtime import UnifiedRuntimeHost
 from ui.state import RuntimeSnapshot
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
@@ -44,34 +32,17 @@ from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas
 
 
-class ViewerMode(StrEnum):
-    LIVE = "live"
-    REPLAY = "replay"
-
-
 class HomeView(QWidget):
-    """Single 4:3 workspace shared by live display and stored replay."""
+    """Live capture, optional inference, and device synchronization view."""
 
     def __init__(self, runtime: UnifiedRuntimeHost, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("homeView")
         self.setStyleSheet("#homeView { background: #f5f7fb; }")
         self.runtime = runtime
-        self.replay = ReplayPlayer()
-        self.viewer_mode = ViewerMode.LIVE
         self._closed = False
         self._live_session_id: str | None = None
         self._last_snapshot_revision = -1
-        self._library_identity: int | None = None
-        self._session_labels: dict[str, str] = {}
-        self._clip_labels: dict[str, tuple[str, str]] = {}
-        self._media_future: concurrent.futures.Future[Path | None] | None = None
-        self._result_media_future: concurrent.futures.Future[Path] | None = None
-        self._pending_replay_target: tuple[str, str] | None = None
-        self._active_replay_target: tuple[str, str] | None = None
-        self._last_replay_error: str | None = None
-        self._last_replay_job_state = "idle"
-        self._replay_state_tooltip: StateToolTip | None = None
 
         self._build()
         self._frame_timer = QTimer(self)
@@ -90,22 +61,6 @@ class HomeView(QWidget):
         self._closed = True
         self._frame_timer.stop()
         self._status_timer.stop()
-        if self._replay_state_tooltip is not None:
-            self._replay_state_tooltip.close()
-            self._replay_state_tooltip = None
-        self.replay.close()
-
-    def set_viewer_mode(self, mode: ViewerMode) -> None:
-        if mode is self.viewer_mode:
-            return
-        self.viewer_mode = mode
-        self.mode_selector.setCurrentItem(mode.value)
-        replay_mode = mode is ViewerMode.REPLAY
-        self.frame_link_strip.setVisible(not replay_mode)
-        self.replay_controls.setVisible(replay_mode)
-        self.right_stack.setCurrentIndex(1 if replay_mode else 0)
-        self._sync_context_badges()
-        self.canvas.set_overlay(None)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -144,21 +99,7 @@ class HomeView(QWidget):
     def _build_mode_bar(self) -> QHBoxLayout:
         layout = QHBoxLayout()
         layout.setSpacing(10)
-        self.mode_selector = SegmentedWidget(self)
-        self.mode_selector.addItem(
-            ViewerMode.LIVE.value,
-            "实时",
-            lambda: self.set_viewer_mode(ViewerMode.LIVE),
-            FluentIcon.CAMERA,
-        )
-        self.mode_selector.addItem(
-            ViewerMode.REPLAY.value,
-            "回放",
-            lambda: self.set_viewer_mode(ViewerMode.REPLAY),
-            FluentIcon.MOVIE,
-        )
-        self.mode_selector.setCurrentItem(ViewerMode.LIVE.value)
-        layout.addWidget(self.mode_selector)
+        layout.addWidget(StrongBodyLabel("实时采集", self))
         self.mode_badge = StatusIndicator(
             "来源 · 实时",
             FluentIcon.CAMERA,
@@ -171,6 +112,12 @@ class HomeView(QWidget):
         self.frame_detail = CaptionLabel("等待首帧")
         layout.addWidget(self.frame_detail, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addStretch(1)
+
+        self.live_inference_button = ToggleToolButton(FluentIcon.ROBOT, self)
+        self.live_inference_button.setToolTip("开启实时手部推理")
+        self.live_inference_button.setFixedSize(36, 36)
+        self.live_inference_button.toggled.connect(self.runtime.request_live_inference)
+        layout.addWidget(self.live_inference_button)
 
         self.stream_button = _compact_button("开始视频", FluentIcon.PLAY, primary=True)
         self.stream_button.setObjectName("streamControlButton")
@@ -200,31 +147,6 @@ class HomeView(QWidget):
 
         self.frame_link_strip = self._build_frame_link_strip(column)
         layout.addWidget(self.frame_link_strip)
-
-        self.replay_controls = QWidget(column)
-        replay_layout = QHBoxLayout(self.replay_controls)
-        replay_layout.setContentsMargins(4, 0, 4, 0)
-        replay_layout.setSpacing(8)
-        self.play_button = _tool_button(FluentIcon.PLAY, "播放或暂停")
-        self.play_button.clicked.connect(self._toggle_replay)
-        replay_layout.addWidget(self.play_button)
-        self.step_button = _tool_button(FluentIcon.PAGE_RIGHT, "前进一帧")
-        self.step_button.clicked.connect(self.replay.step)
-        replay_layout.addWidget(self.step_button)
-        self.replay_slider = Slider(Qt.Orientation.Horizontal, self.replay_controls)
-        self.replay_slider.setRange(0, 1)
-        self.replay_slider.sliderReleased.connect(self._seek_replay)
-        replay_layout.addWidget(self.replay_slider, 1)
-        self.replay_time = CaptionLabel("00:00 / 00:00")
-        replay_layout.addWidget(self.replay_time)
-        self.rate_combo = ComboBox(self.replay_controls)
-        self.rate_combo.addItems(["0.25x", "0.5x", "1.0x", "1.5x", "2.0x"])
-        self.rate_combo.setCurrentText("1.0x")
-        self.rate_combo.currentTextChanged.connect(self._set_replay_rate)
-        self.rate_combo.setFixedWidth(92)
-        replay_layout.addWidget(self.rate_combo)
-        self.replay_controls.setVisible(False)
-        layout.addWidget(self.replay_controls)
         return column
 
     def _build_frame_link_strip(self, parent: QWidget) -> SimpleCardWidget:
@@ -269,11 +191,7 @@ class HomeView(QWidget):
         scroll.setStyleSheet("#homeSidebar { border: none; background: transparent; }")
         scroll.viewport().setStyleSheet("background: transparent;")
 
-        self.right_stack = QStackedWidget(scroll)
-        self.right_stack.setStyleSheet("background: transparent;")
-        self.right_stack.addWidget(self._build_live_sidebar())
-        self.right_stack.addWidget(self._build_replay_sidebar())
-        scroll.setWidget(self.right_stack)
+        scroll.setWidget(self._build_live_sidebar())
         return scroll
 
     def _build_live_sidebar(self) -> QWidget:
@@ -359,94 +277,20 @@ class HomeView(QWidget):
         layout.addStretch(1)
         return panel
 
-    def _build_replay_sidebar(self) -> QWidget:
-        panel = QWidget(self)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 8, 0)
-        layout.setSpacing(12)
-
-        resource_card = HeaderCardWidget("回放资源", panel)
-        resource_layout = QVBoxLayout()
-        resource_layout.setSpacing(10)
-        resource_layout.addWidget(CaptionLabel("采集会话"))
-        self.session_combo = ComboBox(resource_card)
-        self.session_combo.currentTextChanged.connect(self._select_replay_session)
-        resource_layout.addWidget(self.session_combo)
-        resource_layout.addWidget(CaptionLabel("视频片段"))
-        self.clip_combo = ComboBox(resource_card)
-        resource_layout.addWidget(self.clip_combo)
-        action_row = QHBoxLayout()
-        self.refresh_button = _push_button("刷新", FluentIcon.SYNC)
-        self.refresh_button.clicked.connect(self.runtime.request_library_refresh)
-        action_row.addWidget(self.refresh_button)
-        self.open_clip_button = _push_button("打开片段", FluentIcon.FOLDER)
-        self.open_clip_button.clicked.connect(self._open_selected_clip)
-        action_row.addWidget(self.open_clip_button)
-        resource_layout.addLayout(action_row)
-        resource_card.viewLayout.addLayout(resource_layout)
-        layout.addWidget(resource_card)
-
-        result_card = HeaderCardWidget("识别回放", panel)
-        result_layout = QVBoxLayout()
-        result_layout.setSpacing(10)
-        self.replay_job_detail = BodyLabel("尚未生成识别回放")
-        self.replay_job_detail.setWordWrap(True)
-        progress_row = QHBoxLayout()
-        self.replay_progress = ProgressRing(result_card)
-        self.replay_progress.setFixedSize(30, 30)
-        self.replay_progress.setRange(0, 1)
-        self.replay_progress.setVisible(False)
-        progress_row.addWidget(self.replay_progress)
-        progress_row.addWidget(self.replay_job_detail, 1)
-        result_layout.addLayout(progress_row)
-        self.generate_button = _push_button(
-            "生成识别回放",
-            FluentIcon.ROBOT,
-            primary=True,
-        )
-        self.generate_button.clicked.connect(self._generate_replay)
-        result_layout.addWidget(self.generate_button)
-        self.open_result_button = _push_button("播放识别结果", FluentIcon.MOVIE)
-        self.open_result_button.clicked.connect(self._open_result_replay)
-        self.open_result_button.setEnabled(False)
-        result_layout.addWidget(self.open_result_button)
-        result_card.viewLayout.addLayout(result_layout)
-        layout.addWidget(result_card)
-
-        playback_card = HeaderCardWidget("播放信息", panel)
-        playback_layout = QVBoxLayout()
-        self.playback_detail = BodyLabel("未打开视频")
-        self.playback_detail.setWordWrap(True)
-        playback_layout.addWidget(self.playback_detail)
-        playback_card.viewLayout.addLayout(playback_layout)
-        layout.addWidget(playback_card)
-        layout.addStretch(1)
-        return panel
-
     def _update_frame(self) -> None:
-        self._resolve_media_futures()
-        replay_snapshot = self.replay.snapshot()
-        frame = (
-            self.runtime.latest_frame()
-            if self.viewer_mode is ViewerMode.LIVE
-            else replay_snapshot.frame
-        )
+        frame = self.runtime.latest_frame()
         if self.canvas.set_frame(frame) and frame is not None:
             self.frame_detail.setText(
                 f"帧 {frame.frame_index:,} · RGB {frame.width}×{frame.height}"
             )
-        if self.viewer_mode is ViewerMode.LIVE:
-            result = self.runtime.take_latest_perception_result()
-            if result is not None:
-                self.canvas.set_overlay(result)
-        if self.viewer_mode is ViewerMode.REPLAY:
-            self._update_replay_controls(replay_snapshot)
+        result = self.runtime.take_latest_perception_result()
+        if result is not None:
+            self.canvas.set_overlay(result)
 
     def _update_status(self) -> None:
         snapshot = self.runtime.snapshot()
-        self._drain_command_results()
-        self._refresh_replay_library(snapshot)
-        self._update_replay_job(snapshot)
+        if self.isVisible():
+            self._drain_command_results()
         if snapshot.revision == self._last_snapshot_revision:
             return
         self._last_snapshot_revision = snapshot.revision
@@ -502,13 +346,23 @@ class HomeView(QWidget):
             InfoLevel.ERROR if active else InfoLevel.INFOAMTION
         )
         self._live_session_id = recording.session_id
-        if self.viewer_mode is ViewerMode.LIVE:
-            self._sync_context_badges()
+        self._sync_context_badges()
 
     def _update_perception(self, snapshot: RuntimeSnapshot) -> None:
         perception = snapshot.perception
         state = str(perception.get("state", "idle"))
         detail = str(perception.get("detail", "等待识别"))
+        live_enabled = perception.get("live_enabled") is True
+        offline_processing = perception.get("offline_processing") is True
+        self.live_inference_button.blockSignals(True)
+        self.live_inference_button.setChecked(live_enabled)
+        self.live_inference_button.blockSignals(False)
+        self.live_inference_button.setEnabled(not offline_processing)
+        self.live_inference_button.setToolTip(
+            "离线处理正在独占 GPU"
+            if offline_processing
+            else ("关闭实时手部推理" if live_enabled else "开启实时手部推理")
+        )
         state_text, state_level = _perception_state_presentation(state)
         self.perception_state.setText(state_text)
         self.perception_state.setLevel(state_level)
@@ -586,155 +440,6 @@ class HomeView(QWidget):
             f"Y {pose.yaw_degrees:.1f}°"
         )
 
-    def _refresh_replay_library(self, snapshot: RuntimeSnapshot) -> None:
-        library = snapshot.library
-        if library is None or id(library) == self._library_identity:
-            return
-        self._library_identity = id(library)
-        current = self.session_combo.currentText()
-        self._session_labels = {
-            f"{session.display_name or '未命名会话'} · {session.session_id[:8]}": session.session_id
-            for session in library.sessions
-            if session.clips
-        }
-        labels = list(self._session_labels)
-        self.session_combo.blockSignals(True)
-        self.session_combo.clear()
-        self.session_combo.addItems(labels)
-        self.session_combo.setCurrentText(current if current in self._session_labels else "")
-        if labels and not self.session_combo.currentText():
-            self.session_combo.setCurrentIndex(0)
-        self.session_combo.blockSignals(False)
-        self._select_replay_session()
-
-    def _select_replay_session(self, _label: str = "") -> None:
-        session_id = self._selected_session_id()
-        library = self.runtime.snapshot().library
-        self._clip_labels = {}
-        if session_id is not None and library is not None:
-            session = next(
-                (item for item in library.sessions if item.session_id == session_id),
-                None,
-            )
-            if session is not None:
-                self._clip_labels = {
-                    f"片段 {index + 1:02d} · {clip.width}×{clip.height}": (
-                        session_id,
-                        clip.clip_id,
-                    )
-                    for index, clip in enumerate(session.clips)
-                }
-        self.clip_combo.clear()
-        self.clip_combo.addItems(list(self._clip_labels))
-        if self._clip_labels:
-            self.clip_combo.setCurrentIndex(0)
-        if self.viewer_mode is ViewerMode.REPLAY:
-            self._sync_context_badges()
-
-    def _open_selected_clip(self) -> None:
-        target = self._clip_labels.get(self.clip_combo.currentText())
-        if target is None or self._media_future is not None:
-            return
-        self._pending_replay_target = target
-        self._media_future = self.runtime.media_path(*target)
-
-    def _generate_replay(self) -> None:
-        session_id = self._selected_session_id()
-        if session_id is not None:
-            self.runtime.request_replay_generation(session_id)
-
-    def _open_result_replay(self) -> None:
-        if self._result_media_future is not None:
-            return
-        replay = self.runtime.snapshot().perception.get("replay", {})
-        report = replay.get("report") if isinstance(replay, dict) else None
-        videos = report.get("videos") if isinstance(report, dict) else None
-        first_video = videos[0] if isinstance(videos, list) and videos else None
-        if not isinstance(first_video, dict) or not isinstance(report, dict):
-            return
-        values = (report.get("session_id"), report.get("run_id"), first_video.get("clip_id"))
-        if all(isinstance(value, str) for value in values):
-            self._result_media_future = self.runtime.replay_video_path(*values)
-
-    def _update_replay_job(self, snapshot: RuntimeSnapshot) -> None:
-        replay = snapshot.perception.get("replay", {})
-        if not isinstance(replay, dict):
-            return
-        state = str(replay.get("state", "idle"))
-        detail = str(replay.get("detail", "尚未生成识别回放"))
-        processed = replay.get("frames_processed", 0)
-        total = replay.get("frame_total", 0)
-        running = state == "running"
-        self.replay_progress.setVisible(running)
-        self.generate_button.setEnabled(not running)
-        if isinstance(processed, int) and isinstance(total, int) and total > 0:
-            self.replay_progress.setRange(0, total)
-            self.replay_progress.setValue(min(processed, total))
-            detail = f"{detail} · {processed}/{total}"
-        self.replay_job_detail.setText(detail)
-        self.open_result_button.setEnabled(isinstance(replay.get("report"), dict))
-        self._update_replay_state_tooltip(state, detail)
-
-    def _resolve_media_futures(self) -> None:
-        if self._media_future is not None and self._media_future.done():
-            future, self._media_future = self._media_future, None
-            try:
-                path = future.result()
-                if path is not None:
-                    self.replay.open(path)
-                    self._active_replay_target = self._pending_replay_target
-                    self.set_viewer_mode(ViewerMode.REPLAY)
-                self._pending_replay_target = None
-            except Exception as error:
-                self._pending_replay_target = None
-                self._show_error(str(error))
-        if self._result_media_future is not None and self._result_media_future.done():
-            future, self._result_media_future = self._result_media_future, None
-            try:
-                self.replay.open(future.result())
-                self._active_replay_target = None
-                self.set_viewer_mode(ViewerMode.REPLAY)
-            except Exception as error:
-                self._show_error(str(error))
-
-    def _update_replay_controls(self, snapshot: object) -> None:
-        if not hasattr(snapshot, "state"):
-            return
-        replay = self.replay.snapshot()
-        self.play_button.setIcon(
-            FluentIcon.PAUSE if replay.state is ReplayState.PLAYING else FluentIcon.PLAY
-        )
-        maximum = max(1, round(replay.duration_seconds * 1000))
-        value = min(maximum, round(replay.position_seconds * 1000))
-        self.replay_slider.blockSignals(True)
-        self.replay_slider.setRange(0, maximum)
-        self.replay_slider.setValue(value)
-        self.replay_slider.blockSignals(False)
-        self.replay_time.setText(
-            f"{_clock(replay.position_seconds)} / {_clock(replay.duration_seconds)}"
-        )
-        path_name = replay.path.name if replay.path is not None else "未打开视频"
-        self.playback_detail.setText(
-            f"{path_name}\n状态：{replay.state.value}\n"
-            f"位置：{replay.position_seconds:.2f}s / {replay.duration_seconds:.2f}s"
-        )
-        if replay.state is ReplayState.ERROR and replay.error != self._last_replay_error:
-            self._last_replay_error = replay.error
-            self._show_error(replay.error or "回放失败")
-
-    def _toggle_replay(self) -> None:
-        if self.replay.snapshot().state is ReplayState.PLAYING:
-            self.replay.pause()
-        else:
-            self.replay.play()
-
-    def _seek_replay(self) -> None:
-        self.replay.seek(self.replay_slider.value() / 1000)
-
-    def _set_replay_rate(self, value: str) -> None:
-        if value:
-            self.replay.set_playback_rate(float(value.removesuffix("x")))
-
     def _toggle_stream(self) -> None:
         action = str(self.stream_button.property("action") or "start")
         self.runtime.request_stream(StreamControlAction(action))
@@ -746,8 +451,6 @@ class HomeView(QWidget):
     def _drain_command_results(self) -> None:
         for result in self.runtime.command_results():
             if result.succeeded:
-                if result.name == "generate-replay":
-                    continue
                 InfoBar.success(
                     "操作完成",
                     result.detail,
@@ -760,55 +463,9 @@ class HomeView(QWidget):
     def _show_error(self, detail: str) -> None:
         InfoBar.error("操作失败", detail, duration=4500, parent=self.window())
 
-    def _selected_session_id(self) -> str | None:
-        return self._session_labels.get(self.session_combo.currentText())
-
     def _sync_context_badges(self) -> None:
-        replay_mode = self.viewer_mode is ViewerMode.REPLAY
-        self.mode_badge.setText("来源 · 回放" if replay_mode else "来源 · 实时")
-        self.mode_badge.setLevel(InfoLevel.INFOAMTION if replay_mode else InfoLevel.SUCCESS)
-        self.mode_badge.setIcon(FluentIcon.MOVIE if replay_mode else FluentIcon.CAMERA)
-        session_id = self._selected_session_id() if replay_mode else self._live_session_id
+        session_id = self._live_session_id
         self.session_badge.setText(f"会话 · {session_id[:8]}" if session_id else "会话 · --")
-
-    def _update_replay_state_tooltip(self, state: str, detail: str) -> None:
-        previous = self._last_replay_job_state
-        self._last_replay_job_state = state
-        if state == "running":
-            if self._replay_state_tooltip is None:
-                tooltip = StateToolTip("正在生成识别回放", detail, self.window())
-                tooltip.move(tooltip.getSuitablePos())
-                tooltip.show()
-                self._replay_state_tooltip = tooltip
-            else:
-                self._replay_state_tooltip.setContent(detail)
-            return
-        if previous != "running":
-            return
-        tooltip, self._replay_state_tooltip = self._replay_state_tooltip, None
-        if state == "complete":
-            if tooltip is not None:
-                tooltip.setContent(detail)
-                tooltip.setState(True)
-            InfoBar.success("识别回放已生成", detail, duration=3000, parent=self.window())
-        elif state == "error":
-            if tooltip is not None:
-                tooltip.close()
-            self._show_error(detail)
-
-
-def _push_button(
-    text: str,
-    icon: FluentIcon,
-    *,
-    primary: bool = False,
-) -> PushButton:
-    button = PrimaryPushButton() if primary else PushButton()
-    button.setText(text)
-    button.setIcon(icon)
-    button.setMinimumHeight(36)
-    button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    return button
 
 
 def _vertical_separator(parent: QWidget) -> QFrame:
@@ -881,14 +538,6 @@ def _compact_button(
     return button
 
 
-def _tool_button(icon: FluentIcon, tooltip: str) -> TransparentToolButton:
-    button = TransparentToolButton()
-    button.setIcon(icon)
-    button.setToolTip(tooltip)
-    button.setFixedSize(36, 36)
-    return button
-
-
 def _hand_for_side(hands: object, side: str) -> dict[str, object] | None:
     if not isinstance(hands, list):
         return None
@@ -932,8 +581,3 @@ def _confidence_body(hand: dict[str, object] | None) -> str:
             else f"{name} --"
         )
     return "\n".join((" · ".join(values[:3]), " · ".join(values[3:])))
-
-
-def _clock(seconds: float) -> str:
-    total = max(0, round(seconds))
-    return f"{total // 60:02d}:{total % 60:02d}"
