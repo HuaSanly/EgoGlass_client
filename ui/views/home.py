@@ -19,7 +19,6 @@ from qfluentwidgets import (
     ComboBox,
     FluentIcon,
     HeaderCardWidget,
-    InfoBadge,
     InfoBar,
     InfoLevel,
     PrimaryPushButton,
@@ -41,6 +40,7 @@ from ui.replay.player import ReplayPlayer, ReplayState
 from ui.runtime import UnifiedRuntimeHost
 from ui.state import RuntimeSnapshot
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
+from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas
 
 
@@ -126,18 +126,19 @@ class HomeView(QWidget):
         layout.addWidget(TitleLabel("EgoGlass"))
         layout.addStretch(1)
 
-        self.connection_badge = InfoBadge("设备未连接", level=InfoLevel.INFOAMTION)
-        self.resolution_badge = InfoBadge("-- × --", level=InfoLevel.INFOAMTION)
-        self.fps_badge = InfoBadge("0.0 FPS", level=InfoLevel.INFOAMTION)
-        self.inference_badge = InfoBadge("推理 --", level=InfoLevel.INFOAMTION)
-        for badge in (
+        self.connection_badge = StatusIndicator(
+            "设备未连接", FluentIcon.CONNECT, self
+        )
+        self.resolution_badge = StatusIndicator("-- × --", FluentIcon.FIT_PAGE, self)
+        self.fps_badge = StatusIndicator("0.0 FPS", FluentIcon.SPEED_HIGH, self)
+        self.inference_badge = StatusIndicator("推理 --", FluentIcon.ROBOT, self)
+        for indicator in (
             self.connection_badge,
             self.resolution_badge,
             self.fps_badge,
             self.inference_badge,
         ):
-            badge.setMinimumHeight(24)
-            layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+            layout.addWidget(indicator, 0, Qt.AlignmentFlag.AlignVCenter)
         return layout
 
     def _build_mode_bar(self) -> QHBoxLayout:
@@ -158,9 +159,14 @@ class HomeView(QWidget):
         )
         self.mode_selector.setCurrentItem(ViewerMode.LIVE.value)
         layout.addWidget(self.mode_selector)
-        self.mode_badge = InfoBadge("来源 · 实时", level=InfoLevel.SUCCESS)
+        self.mode_badge = StatusIndicator(
+            "来源 · 实时",
+            FluentIcon.CAMERA,
+            self,
+            level=InfoLevel.SUCCESS,
+        )
         layout.addWidget(self.mode_badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.session_badge = InfoBadge("会话 · --", level=InfoLevel.INFOAMTION)
+        self.session_badge = StatusIndicator("会话 · --", FluentIcon.LIBRARY, self)
         layout.addWidget(self.session_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         self.frame_detail = CaptionLabel("等待首帧")
         layout.addWidget(self.frame_detail, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -180,8 +186,7 @@ class HomeView(QWidget):
         self.session_button.setObjectName("sessionControlButton")
         self.session_button.clicked.connect(lambda: self.runtime.request_session("new"))
         layout.addWidget(self.session_button)
-        self.recording_badge = InfoBadge("未录制", level=InfoLevel.INFOAMTION)
-        self.recording_badge.setMinimumHeight(24)
+        self.recording_badge = StatusIndicator("未录制", FluentIcon.VIDEO, self)
         layout.addWidget(self.recording_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         return layout
 
@@ -296,8 +301,9 @@ class HomeView(QWidget):
         summary_header.setContentsMargins(0, 0, 0, 0)
         summary_header.addWidget(StrongBodyLabel("感知模型", self.sync_data_card))
         summary_header.addStretch(1)
-        self.perception_state = InfoBadge("等待", level=InfoLevel.INFOAMTION)
-        self.perception_state.setMinimumHeight(22)
+        self.perception_state = StatusIndicator(
+            "等待", FluentIcon.ROBOT, self.sync_data_card
+        )
         summary_header.addWidget(self.perception_state)
         data_layout.addLayout(summary_header)
         self.perception_detail = CaptionLabel("尚未收到识别结果")
@@ -305,9 +311,15 @@ class HomeView(QWidget):
         data_layout.addWidget(self.perception_detail)
         data_layout.addWidget(_horizontal_separator(self.sync_data_card))
 
-        self.imu_sync_badge = InfoBadge("--", level=InfoLevel.INFOAMTION)
-        self.left_pose_badge = InfoBadge("--", level=InfoLevel.INFOAMTION)
-        self.right_pose_badge = InfoBadge("--", level=InfoLevel.INFOAMTION)
+        self.imu_sync_badge = StatusIndicator(
+            "--", FluentIcon.ROTATE, self.sync_data_card
+        )
+        self.left_pose_badge = StatusIndicator(
+            "--", FluentIcon.FINGERPRINT, self.sync_data_card
+        )
+        self.right_pose_badge = StatusIndicator(
+            "--", FluentIcon.FINGERPRINT, self.sync_data_card
+        )
         self.imu_detail = CaptionLabel("等待 IMU")
         self.left_confidence = CaptionLabel("未检测到 · 等待 3D 关键点")
         self.right_confidence = CaptionLabel("未检测到 · 等待 3D 关键点")
@@ -755,6 +767,7 @@ class HomeView(QWidget):
         replay_mode = self.viewer_mode is ViewerMode.REPLAY
         self.mode_badge.setText("来源 · 回放" if replay_mode else "来源 · 实时")
         self.mode_badge.setLevel(InfoLevel.INFOAMTION if replay_mode else InfoLevel.SUCCESS)
+        self.mode_badge.setIcon(FluentIcon.MOVIE if replay_mode else FluentIcon.CAMERA)
         session_id = self._selected_session_id() if replay_mode else self._live_session_id
         self.session_badge.setText(f"会话 · {session_id[:8]}" if session_id else "会话 · --")
 
@@ -831,7 +844,7 @@ def _frame_metric_cell(
 
 def _sync_status_row(
     title: str,
-    badge: InfoBadge,
+    badge: StatusIndicator,
     detail: CaptionLabel,
     parent: QWidget,
 ) -> QWidget:
@@ -846,7 +859,6 @@ def _sync_status_row(
     header.setSpacing(6)
     header.addWidget(StrongBodyLabel(title, row))
     header.addStretch(1)
-    badge.setMinimumHeight(22)
     header.addWidget(badge, 0, Qt.AlignmentFlag.AlignRight)
     row_layout.addLayout(header)
     row_layout.addWidget(detail)

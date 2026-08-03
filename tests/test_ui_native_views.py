@@ -23,6 +23,7 @@ from ui.widgets.spatial_sync_canvas import (
     _camera_points_to_scene,
     _glasses_frame_mesh,
 )
+from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas, fit_image_geometry
 
 
@@ -371,6 +372,7 @@ def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
         assert not isinstance(home.spatial_canvas.parent(), HeaderCardWidget)
         assert home.spatial_canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
         assert len(home.sync_data_card.findChildren(QWidget, "syncStatusRow")) == 3
+        assert len(home.findChildren(StatusIndicator)) == 11
         assert "background: transparent" in home.sidebar.viewport().styleSheet()
 
         source = (Path(__file__).parents[1] / "ui" / "views" / "home.py").read_text(
@@ -382,6 +384,7 @@ def test_capture_controls_share_the_mode_bar_not_the_live_sidebar() -> None:
         assert "syncMetricBlock" not in source
         assert "_sync_metric_block" not in source
         assert "link_sync_badge" not in source
+        assert "InfoBadge(" not in source
         assert "font-size:" not in source
     finally:
         home.close_resources()

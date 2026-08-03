@@ -8,11 +8,13 @@ import pytest
 from PyQt6.QtCore import QPoint, QRect
 from PyQt6.QtWidgets import QApplication
 from pyqtgraph.opengl import GLViewWidget
+from qfluentwidgets import BodyLabel, IconInfoBadge
 
 from ingest_gateway.live_frames import LiveFrame, LiveFramePacer
 from ui.app import MainWindow
 from ui.state import RuntimeSnapshot
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
+from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas
 
 
@@ -117,6 +119,9 @@ def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
     spatial_source = (
         repository / "ui" / "widgets" / "spatial_sync_canvas.py"
     ).read_text(encoding="utf-8")
+    indicator_source = (
+        repository / "ui" / "widgets" / "status_indicator.py"
+    ).read_text(encoding="utf-8")
     project = (repository / "pyproject.toml").read_text(encoding="utf-8")
 
     assert 'HeaderCardWidget("空间同步"' not in source
@@ -126,7 +131,11 @@ def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
     assert "syncMetricBlock" not in source
     assert "_sync_metric_block" not in source
     assert "link_sync_badge" not in source
+    assert "InfoBadge(" not in source
     assert "font-size:" not in source
+    assert "IconInfoBadge" in indicator_source
+    assert "BodyLabel" in indicator_source
+    assert "QLabel" not in indicator_source
     assert "scroll.viewport().setStyleSheet(\"background: transparent;\")" in source
     assert "GLViewWidget" in spatial_source
     assert "GLMeshItem" in spatial_source
@@ -191,6 +200,10 @@ def test_fluent_home_renders_without_overlap_at_supported_sizes(
             spatial = window.home_view.findChild(SpatialSyncCanvas)
             assert spatial is not None
             assert spatial.findChild(GLViewWidget, "spatialSyncViewport") is not None
+            indicators = window.home_view.findChildren(StatusIndicator)
+            assert len(indicators) == 11
+            assert all(indicator.findChild(IconInfoBadge) for indicator in indicators)
+            assert all(indicator.findChild(BodyLabel) for indicator in indicators)
             spatial_rect = QRect(
                 spatial.mapTo(window, QPoint(0, 0)),
                 spatial.size(),
