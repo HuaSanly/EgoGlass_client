@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtWidgets import QApplication
 from pyqtgraph.opengl import GLViewWidget
-from qfluentwidgets import HeaderCardWidget
+from qfluentwidgets import HeaderCardWidget, TitleLabel
 
 from ingest_gateway.imu_preview import ImuPoseSnapshot
 from ingest_gateway.live_frames import LiveFrame
@@ -172,6 +172,16 @@ def test_fluent_window_registers_only_home_and_one_video_canvas(
         window.close()
         qt_application.processEvents()
     assert runtime.stop_calls == 1
+
+
+def test_home_header_only_shows_egoglass_title() -> None:
+    home = HomeView(RuntimeStub())  # type: ignore[arg-type]
+    try:
+        titles = home.findChildren(TitleLabel)
+
+        assert [title.text() for title in titles] == ["EgoGlass"]
+    finally:
+        home.close_resources()
 
 
 def test_live_and_replay_modes_share_the_same_canvas(

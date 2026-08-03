@@ -121,11 +121,7 @@ class HomeView(QWidget):
 
     def _build_header(self) -> QHBoxLayout:
         layout = QHBoxLayout()
-        title_column = QVBoxLayout()
-        title_column.setSpacing(0)
-        title_column.addWidget(TitleLabel("EgoGlass 感知工作台"))
-        title_column.addWidget(CaptionLabel("眼镜实时感知、采集与离线回放"))
-        layout.addLayout(title_column)
+        layout.addWidget(TitleLabel("EgoGlass"))
         layout.addStretch(1)
 
         self.connection_badge = InfoBadge("设备未连接", level=InfoLevel.INFOAMTION)

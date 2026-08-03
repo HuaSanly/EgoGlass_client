@@ -44,6 +44,9 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     assert "request_library_refresh" in home
     assert "SegmentedWidget" in home
     assert "HeaderCardWidget" in home
+    assert 'TitleLabel("EgoGlass")' in home
+    assert "感知工作台" not in home
+    assert "眼镜实时感知、采集与离线回放" not in home
 
 
 def test_native_video_path_has_rgb_fanout_and_bounded_latest_overlay() -> None:
