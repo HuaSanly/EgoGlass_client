@@ -25,7 +25,7 @@ from ingest_gateway.recording_models import RecordingLibrary, RecordingState
 from ingest_gateway.webrtc_models import StreamControlAction, StreamControlCommand
 from ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
 from perception.runtime import HandTrackingRuntime
-from perception.video_processing import VideoProcessingService
+from perception.video_processing import ProcessingRunInfo, VideoProcessingService
 
 from .state import CommandResult, RuntimeSnapshot
 
@@ -191,7 +191,7 @@ class UnifiedRuntimeHost:
         session_id: str,
         *,
         clip_id: str | None = None,
-        preset_id: str = "hand-tracking-quality",
+        preset_id: str | None = None,
     ) -> None:
         self._track_sync_command(
             "start-processing",
@@ -240,6 +240,14 @@ class UnifiedRuntimeHost:
             ),
         )
 
+    def request_processing_default_preset(self, preset_id: str) -> None:
+        self._track_sync_command(
+            "processing-default-preset",
+            lambda: _CommandDetail(
+                f"默认处理方案已切换为 {self.video_processing.set_default_preset(preset_id)}"
+            ),
+        )
+
     def request_library_refresh(self) -> None:
         self._track_command("refresh-library", self._refresh_library())
 
@@ -251,7 +259,7 @@ class UnifiedRuntimeHost:
 
     def processing_runs(
         self, session_id: str
-    ) -> concurrent.futures.Future[tuple[dict[str, object], ...]]:
+    ) -> concurrent.futures.Future[tuple[ProcessingRunInfo, ...]]:
         return self.submit(asyncio.to_thread(self.video_processing.list_runs, session_id))
 
     def processing_result(

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,7 @@ from perception.video_processing import (
     ProcessingJobState,
     ProcessingJobStore,
     ProcessingPreset,
+    ProcessingResultStore,
     VideoProcessingService,
     cleanup_legacy_hand_tracking,
 )
@@ -153,3 +155,43 @@ def test_case_vp_007_completed_artifact_wins_last_moment_cancel(tmp_path: Path) 
 
     assert completed.state is ProcessingJobState.COMPLETED
     assert completed.progress_fraction == 1.0
+
+
+def test_case_vp_008_only_valid_completed_runs_are_viewable(tmp_path: Path) -> None:
+    session_id = "a" * 32
+    clip_id = "b" * 32
+    session = tmp_path / session_id
+    good = session / "derived" / "video-processing" / "good-run"
+    bad = session / "derived" / "video-processing" / "bad-run"
+    good.mkdir(parents=True)
+    bad.mkdir()
+    now = time.time_ns()
+    base = {
+        "session_id": session_id,
+        "clip_id": clip_id,
+        "state": "completed",
+        "preset": {
+            "preset_id": "hand-tracking-quality",
+            "display_name": "手部追踪 · 质量优先",
+            "inference_stride_frames": 1,
+        },
+        "started_at_unix_ns": now,
+        "completed_at_unix_ns": now,
+        "input_frame_count": 1,
+        "inferred_frame_count": 1,
+        "detected_hand_count": 0,
+        "error": None,
+    }
+    good.joinpath("run.json").write_text(
+        json.dumps({**base, "run_id": "good-run"}), encoding="utf-8"
+    )
+    bad.joinpath("run.json").write_text(
+        json.dumps({**base, "run_id": "bad-run"}), encoding="utf-8"
+    )
+    ProcessingResultStore(good / "results.sqlite")
+
+    runs = VideoProcessingService(tmp_path).list_runs(session_id)
+    by_id = {run.run_id: run for run in runs}
+
+    assert by_id["good-run"].covers_clip(clip_id)
+    assert not by_id["bad-run"].is_viewable

@@ -16,6 +16,13 @@ class ProcessingJobState(StrEnum):
     CANCELED = "canceled"
 
 
+class ProcessingRunState(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
 ACTIVE_JOB_STATES = frozenset(
     {
         ProcessingJobState.PREPARING,
@@ -98,8 +105,29 @@ class ProcessingRunSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ProcessingRunInfo:
+    run_id: str
+    session_id: str
+    clip_id: str | None
+    preset: ProcessingPreset
+    state: ProcessingRunState
+    input_frame_count: int
+    inferred_frame_count: int
+    detected_hand_count: int
+    started_at_unix_ns: int
+    completed_at_unix_ns: int | None
+    results_path: Path
+    is_viewable: bool
+    unavailable_reason: str | None = None
+
+    def covers_clip(self, clip_id: str) -> bool:
+        return self.is_viewable and (self.clip_id is None or self.clip_id == clip_id)
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessingServiceSnapshot:
     revision: int
     active_job_id: str | None
     auto_enqueue_on_session_complete: bool
     jobs: tuple[ProcessingJob, ...]
+    default_preset_id: str = DEFAULT_PRESETS[0].preset_id

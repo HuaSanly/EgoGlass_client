@@ -12,6 +12,8 @@ from .contracts import (
     ProcessingJob,
     ProcessingJobState,
     ProcessingPreset,
+    ProcessingRunInfo,
+    ProcessingRunState,
     ProcessingRunSummary,
     ProcessingServiceSnapshot,
 )
@@ -43,6 +45,12 @@ class VideoProcessingService:
         self._thread: threading.Thread | None = None
         self._active_job_id: str | None = None
         self._auto_enqueue = self.store.setting("auto_enqueue", "false") == "true"
+        stored_preset = self.store.setting("default_preset_id", DEFAULT_PRESETS[0].preset_id)
+        self._default_preset_id = (
+            stored_preset
+            if any(preset.preset_id == stored_preset for preset in DEFAULT_PRESETS)
+            else DEFAULT_PRESETS[0].preset_id
+        )
         self._revision = 0
 
     @property
@@ -81,9 +89,10 @@ class VideoProcessingService:
         session_id: str,
         *,
         clip_id: str | None = None,
-        preset_id: str = DEFAULT_PRESETS[0].preset_id,
+        preset_id: str | None = None,
     ) -> ProcessingJob:
         self._session_path(session_id)
+        preset_id = preset_id or self._default_preset_id
         preset = next((item for item in self.presets if item.preset_id == preset_id), None)
         if preset is None:
             raise KeyError(f"unknown processing preset {preset_id!r}")
@@ -108,6 +117,15 @@ class VideoProcessingService:
             self._revision += 1
         return self._auto_enqueue
 
+    def set_default_preset(self, preset_id: str) -> str:
+        if not any(preset.preset_id == preset_id for preset in self.presets):
+            raise KeyError(f"unknown processing preset {preset_id!r}")
+        with self._condition:
+            self._default_preset_id = preset_id
+            self.store.set_setting("default_preset_id", preset_id)
+            self._revision += 1
+        return preset_id
+
     def enqueue_completed_session(self, session_id: str) -> ProcessingJob | None:
         with self._condition:
             enabled = self._auto_enqueue
@@ -126,6 +144,7 @@ class VideoProcessingService:
             active_job_id,
             self._auto_enqueue,
             self.store.list_jobs(),
+            self._default_preset_id,
         )
 
     def result_for_frame(
@@ -146,11 +165,11 @@ class VideoProcessingService:
             hold_previous_frames=max(0, stride - 1),
         )
 
-    def list_runs(self, session_id: str) -> tuple[dict[str, object], ...]:
+    def list_runs(self, session_id: str) -> tuple[ProcessingRunInfo, ...]:
         root = self._session_path(session_id) / "derived" / "video-processing"
         if not root.is_dir():
             return ()
-        manifests: list[dict[str, object]] = []
+        runs: list[ProcessingRunInfo] = []
         for path in root.iterdir():
             manifest_path = path / "run.json"
             if not path.is_dir() or not manifest_path.is_file():
@@ -159,10 +178,13 @@ class VideoProcessingService:
                 payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if payload.get("session_id") == session_id:
-                manifests.append(payload)
-        manifests.sort(key=lambda item: int(item.get("started_at_unix_ns", 0)), reverse=True)
-        return tuple(manifests)
+            try:
+                run = _processing_run_info(path, payload, session_id)
+            except (KeyError, TypeError, ValueError):
+                continue
+            runs.append(run)
+        runs.sort(key=lambda item: item.started_at_unix_ns, reverse=True)
+        return tuple(runs)
 
     def session_directory(self, session_id: str) -> Path:
         """Return a validated capture-session directory for the local player."""
@@ -308,3 +330,70 @@ class VideoProcessingService:
         if payload.get("session_id") != session_id or payload.get("run_id") != run_id:
             raise ValueError("processing run identity mismatch")
         return payload
+
+
+def _processing_run_info(
+    run_directory: Path,
+    payload: dict[str, object],
+    expected_session_id: str,
+) -> ProcessingRunInfo:
+    run_id = _required_string(payload, "run_id")
+    session_id = _required_string(payload, "session_id")
+    if run_id != run_directory.name or session_id != expected_session_id:
+        raise ValueError("processing run identity mismatch")
+    clip_id = payload.get("clip_id")
+    if clip_id is not None and not isinstance(clip_id, str):
+        raise TypeError("processing run clip_id must be a string or null")
+    preset_payload = payload.get("preset")
+    if not isinstance(preset_payload, dict):
+        raise TypeError("processing run preset must be an object")
+    preset = ProcessingPreset(
+        _required_string(preset_payload, "preset_id"),
+        _required_string(preset_payload, "display_name"),
+        _required_integer(preset_payload, "inference_stride_frames"),
+    )
+    state = ProcessingRunState(_required_string(payload, "state"))
+    results_path = run_directory / "results.sqlite"
+    unavailable_reason: str | None = None
+    if state is not ProcessingRunState.COMPLETED:
+        error = payload.get("error")
+        unavailable_reason = str(error) if error else f"运行状态为 {state.value}"
+    else:
+        try:
+            ProcessingResultStore(results_path, read_only=True)
+        except Exception as error:
+            unavailable_reason = str(error)
+    completed_at = payload.get("completed_at_unix_ns")
+    if completed_at is not None and (
+        not isinstance(completed_at, int) or isinstance(completed_at, bool) or completed_at < 0
+    ):
+        raise TypeError("completed_at_unix_ns must be a non-negative integer or null")
+    return ProcessingRunInfo(
+        run_id,
+        session_id,
+        clip_id,
+        preset,
+        state,
+        _required_integer(payload, "input_frame_count"),
+        _required_integer(payload, "inferred_frame_count"),
+        _required_integer(payload, "detected_hand_count"),
+        _required_integer(payload, "started_at_unix_ns"),
+        completed_at,
+        results_path,
+        unavailable_reason is None,
+        unavailable_reason,
+    )
+
+
+def _required_string(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"{key} must be a non-empty string")
+    return value
+
+
+def _required_integer(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise TypeError(f"{key} must be a non-negative integer")
+    return value

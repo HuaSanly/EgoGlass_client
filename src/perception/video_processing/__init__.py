@@ -3,6 +3,8 @@ from .contracts import (
     ProcessingJob,
     ProcessingJobState,
     ProcessingPreset,
+    ProcessingRunInfo,
+    ProcessingRunState,
     ProcessingRunSummary,
     ProcessingServiceSnapshot,
 )
@@ -23,6 +25,8 @@ __all__ = [
     "ProcessingPreset",
     "ProcessingCanceled",
     "ProcessingResultStore",
+    "ProcessingRunInfo",
+    "ProcessingRunState",
     "ProcessingRunSummary",
     "ProcessingServiceSnapshot",
     "SessionProcessingRunner",

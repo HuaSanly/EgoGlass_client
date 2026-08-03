@@ -9,6 +9,7 @@ from perception.video_processing import (
     ProcessingCanceled,
     ProcessingJob,
     ProcessingJobState,
+    ProcessingResultStore,
     ProcessingRunSummary,
     VideoProcessingService,
 )
@@ -38,12 +39,24 @@ class FakeRunner:
                 {
                     "run_id": output.name,
                     "session_id": job.session_id,
-                    "preset": {"inference_stride_frames": 1},
+                    "clip_id": job.clip_id,
+                    "state": "completed",
+                    "preset": {
+                        "preset_id": job.preset.preset_id,
+                        "display_name": job.preset.display_name,
+                        "inference_stride_frames": 1,
+                    },
                     "started_at_unix_ns": now,
+                    "completed_at_unix_ns": now,
+                    "input_frame_count": 3,
+                    "inferred_frame_count": 3,
+                    "detected_hand_count": 2,
+                    "error": None,
                 }
             ),
             encoding="utf-8",
         )
+        ProcessingResultStore(output / "results.sqlite")
         return ProcessingRunSummary(
             output.name, job.session_id, job.clip_id, output, 3, 3, 2, now, now
         )
@@ -90,7 +103,9 @@ def test_service_runs_one_persistent_job_and_keeps_run_history(tmp_path: Path) -
         completed = _wait_for(service, ProcessingJobState.COMPLETED)
         assert completed.progress_current == completed.progress_total == 3
         assert completed.run_id is not None
-        assert service.list_runs("a" * 32)[0]["run_id"] == completed.run_id
+        run = service.list_runs("a" * 32)[0]
+        assert run.run_id == completed.run_id
+        assert run.is_viewable
         assert runner.release_gpu_calls == 1
     finally:
         service.close()
@@ -147,6 +162,61 @@ def test_auto_enqueue_is_persistent_and_idempotent(tmp_path: Path) -> None:
     assert second is None
     restarted = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
     assert restarted.snapshot().auto_enqueue_on_session_complete
+
+
+def test_default_preset_is_validated_persisted_and_used_for_enqueue(tmp_path: Path) -> None:
+    (tmp_path / ("a" * 32)).mkdir()
+    service = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
+
+    assert service.set_default_preset("hand-tracking-preview") == "hand-tracking-preview"
+    job = service.enqueue("a" * 32)
+    assert job.preset.preset_id == "hand-tracking-preview"
+    assert service.snapshot().default_preset_id == "hand-tracking-preview"
+
+    restarted = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
+    assert restarted.snapshot().default_preset_id == "hand-tracking-preview"
+    try:
+        restarted.set_default_preset("missing")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("unknown preset should be rejected")
+
+
+def test_completed_run_with_invalid_result_store_is_not_viewable(tmp_path: Path) -> None:
+    session = tmp_path / ("a" * 32)
+    run = session / "derived" / "video-processing" / "run-a"
+    run.mkdir(parents=True)
+    now = time.time_ns()
+    run.joinpath("run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-a",
+                "session_id": "a" * 32,
+                "clip_id": "b" * 32,
+                "state": "completed",
+                "preset": {
+                    "preset_id": "hand-tracking-quality",
+                    "display_name": "手部追踪 · 质量优先",
+                    "inference_stride_frames": 1,
+                },
+                "started_at_unix_ns": now,
+                "completed_at_unix_ns": now,
+                "input_frame_count": 10,
+                "inferred_frame_count": 10,
+                "detected_hand_count": 2,
+                "error": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    run.joinpath("results.sqlite").write_bytes(b"not sqlite")
+
+    info = VideoProcessingService(tmp_path, runner=FakeRunner()).list_runs("a" * 32)[0]
+
+    assert not info.is_viewable
+    assert info.unavailable_reason
+    assert not info.covers_clip("b" * 32)
 
 
 def test_gpu_claim_failure_marks_job_failed_and_releases_ownership(tmp_path: Path) -> None:

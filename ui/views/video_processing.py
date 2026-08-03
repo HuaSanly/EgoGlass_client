@@ -35,7 +35,7 @@ from qfluentwidgets import (
 )
 
 from ingest_gateway.recording_models import CaptureSessionState, RecordingLibrary
-from perception.video_processing import ProcessingJob, ProcessingJobState
+from perception.video_processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo
 from ui.replay.player import PlaybackFrame, ReplayPlayer, ReplaySnapshot, ReplayState
 from ui.runtime import UnifiedRuntimeHost
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
@@ -65,7 +65,7 @@ class VideoProcessingView(QWidget):
         self._library_signature: tuple[tuple[str, tuple[str, ...]], ...] = ()
         self._last_frame_key: tuple[str, str, int, int] | None = None
         self._last_processing_revision = -1
-        self._run_future: concurrent.futures.Future[tuple[dict[str, object], ...]] | None = None
+        self._run_future: concurrent.futures.Future[tuple[ProcessingRunInfo, ...]] | None = None
         self._result_futures: dict[
             str,
             tuple[
@@ -585,14 +585,10 @@ class VideoProcessingView(QWidget):
         self.comparison_run_combo.clear()
         self.comparison_run_combo.addItem("关闭对比")
         for run in runs:
-            if run.get("state") != "completed":
+            if not run.is_viewable:
                 continue
-            run_id = run.get("run_id")
-            preset = run.get("preset")
-            if not isinstance(run_id, str) or not isinstance(preset, dict):
-                continue
-            label = f"{str(preset.get('display_name', '处理结果'))} · {run_id[-8:]}"
-            self._run_ids[label] = run_id
+            label = f"{run.preset.display_name} · {run.run_id[-8:]}"
+            self._run_ids[label] = run.run_id
             self.primary_run_combo.addItem(label)
             self.comparison_run_combo.addItem(label)
         self.layer_status.setText(

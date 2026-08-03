@@ -24,7 +24,9 @@ and leaves preview and recording active. The offline model is released before
 optional online inference may resume.
 
 Automatic enqueue after session finalization is persisted but off by default.
-The operator can enable it from the processing inspector.
+The operator can enable it from system settings. The default processing preset
+is stored in the same queue database, validated against the built-in presets,
+and shared by manual clip processing and automatic session enqueue.
 
 ## Pipeline and outputs
 
@@ -89,6 +91,11 @@ The UI queries one primary run and one optional comparison run for each frame.
 Both overlays and the OpenGL hand pose share one decoded RGB frame. Seeking and
 single-frame stepping therefore cannot advance video, IMU, and results
 independently.
+
+Run discovery returns typed `ProcessingRunInfo` records. A completed manifest
+is viewable only when its `results.sqlite` exists and passes the result-store
+schema check. Missing or corrupt stores remain unavailable instead of appearing
+as selectable playback results.
 
 ## Verification
 
