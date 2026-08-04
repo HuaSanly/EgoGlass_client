@@ -143,8 +143,10 @@ def test_session_runner_writes_complete_immutable_run_from_capture_evidence(
             "sensor_calibration": SensorCalibration.load(calibration).model_dump(
                 mode="json"
             ),
+            # Legacy queued tasks used this key. New tasks use
+            # ``offline_hand_tracking`` and are covered by runtime tests.
             "hand_tracking": HandTrackingConfig.load(
-                PROJECT_ROOT / "config" / "hand-tracking.yaml"
+                PROJECT_ROOT / "config" / "offline-hand-tracking.yaml"
             ).model_dump(mode="json"),
         },
         ensure_ascii=False,

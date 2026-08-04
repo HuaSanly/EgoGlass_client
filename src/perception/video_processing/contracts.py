@@ -55,8 +55,6 @@ class ProcessingPreset:
 
 DEFAULT_PRESETS = (
     ProcessingPreset(),
-    ProcessingPreset("hand-tracking-balanced", "手部追踪 · 均衡", 3),
-    ProcessingPreset("hand-tracking-preview", "手部追踪 · 快速预览", 5),
 )
 
 
@@ -134,5 +132,4 @@ class ProcessingServiceSnapshot:
     auto_enqueue_on_session_complete: bool
     jobs: tuple[ProcessingJob, ...]
     default_preset_id: str = DEFAULT_PRESETS[0].preset_id
-    default_inference_stride_frames: int = 1
     default_output_result_type: str = "structured_results"

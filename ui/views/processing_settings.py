@@ -47,6 +47,18 @@ from ui.runtime import UnifiedRuntimeHost
 # ruff: noqa: E501
 FieldKind = Literal["bool", "choice", "int", "float", "text", "path", "file"]
 _SETTINGS_BACKGROUND = "#f7f9fc"
+_OFFLINE_FIXED_FIELDS = frozenset(
+    {
+        "detector",
+        "fallback_detector",
+        "device",
+        "require_cuda",
+        "enable_cuda_amp",
+        "require_hamer",
+        "allow_mediapipe_reconstruction_fallback",
+        "vitpose_variant",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +80,8 @@ class _FieldSpec:
 _MODULES = (
     ("client_runtime", "\u5ba2\u6237\u7aef\u4e0e\u7f51\u5173", FluentIcon.DEVELOPER_TOOLS, "Manage gateway, discovery, and recording storage"),
     ("sensor_preprocessing", "\u4f20\u611f\u5668\u9884\u5904\u7406", FluentIcon.CAMERA, "Manage calibration, decoding, undistortion, and IMU buffering"),
-    ("hand_tracking", "\u624b\u90e8\u8ffd\u8e2a", FluentIcon.ROBOT, "Manage live inference, detectors, and 3D reconstruction"),
+    ("live_hand_tracking", "\u5b9e\u65f6\u624b\u90e8\u8ffd\u8e2a", FluentIcon.ROBOT, "Low-latency MediaPipe hand tracking for the live preview"),
+    ("offline_hand_tracking", "\u79bb\u7ebf\u624b\u90e8\u8ffd\u8e2a", FluentIcon.PHOTO, "Quality-first ViTPose-H and HaMeR processing for recorded video"),
     ("video_processing", "\u79bb\u7ebf\u89c6\u9891\u5904\u7406", FluentIcon.MOVIE, "Manage defaults for newly submitted offline jobs"),
 )
 
@@ -115,7 +128,6 @@ _FIELD_DISPLAY: dict[str, tuple[str, str, str, str, tuple[tuple[str, object], ..
     "algorithm.sources.mano_weights_revision": ("Model revisions", "MANO weights revision", "Pinned model revision", "", ()),
     "default_preset_id": ("Basic", "Default processing preset", "Used for new workbench jobs", "", tuple((preset.display_name, preset.preset_id) for preset in DEFAULT_PRESETS)),
     "auto_enqueue_on_session_complete": ("Basic", "Auto-enqueue completed sessions", "Queue a completed session for offline processing", "", ()),
-    "default_inference_stride_frames": ("Basic", "Default inference stride", "Run inference every N frames", " frames", ()),
     "default_output_result_type": ("Basic", "Default result type", "Structured result format written by jobs", "", (("Structured results", "structured_results"),)),
 }
 def _field(
@@ -128,7 +140,7 @@ def _field(
     step: float = 1,
     decimals: int = 0,
 ) -> _FieldSpec:
-    display = _FIELD_DISPLAY[path]
+    display = _FIELD_DISPLAY.get(path) or _FIELD_DISPLAY[f"algorithm.{path}"]
     return _FieldSpec(
         module_id,
         display[0],
@@ -145,6 +157,37 @@ def _field(
     )
 
 
+def _hand_algorithm_fields(module_id: str, prefix: str) -> tuple[_FieldSpec, ...]:
+    return (
+        _field(module_id, f"{prefix}detector", "choice"),
+        _field(module_id, f"{prefix}fallback_detector", "choice"),
+        _field(module_id, f"{prefix}detector_keypoint_confidence", "float", maximum=1, step=0.01, decimals=2),
+        _field(module_id, f"{prefix}detector_min_valid_keypoints", "int", minimum=1, maximum=21),
+        _field(module_id, f"{prefix}minimum_hand_confidence", "float", maximum=1, step=0.01, decimals=2),
+        _field(module_id, f"{prefix}device", "choice"),
+        _field(module_id, f"{prefix}model_directory", "path"),
+        _field(module_id, f"{prefix}require_cuda", "bool"),
+        _field(module_id, f"{prefix}enable_cuda_amp", "bool"),
+        _field(module_id, f"{prefix}require_hamer", "bool"),
+        _field(module_id, f"{prefix}download_models", "bool"),
+        _field(module_id, f"{prefix}allow_mediapipe_reconstruction_fallback", "bool"),
+        _field(module_id, f"{prefix}vitpose_variant", "choice"),
+        _field(module_id, f"{prefix}detector_bbox_padding_ratio", "float", maximum=2, step=0.05, decimals=2),
+        _field(module_id, f"{prefix}detector_min_bbox_dimension_ratio", "float", maximum=1, step=0.01, decimals=2),
+        _field(module_id, f"{prefix}detector_max_bbox_area_ratio", "float", minimum=0.01, maximum=1, step=0.01, decimals=2),
+        _field(module_id, f"{prefix}physical_wrist_to_middle_mcp_m", "float", minimum=0.001, maximum=0.5, step=0.001, decimals=3),
+        _field(module_id, f"{prefix}minimum_depth_m", "float", minimum=0.001, maximum=10, step=0.01, decimals=3),
+        _field(module_id, f"{prefix}maximum_depth_m", "float", minimum=0.01, maximum=20, step=0.1, decimals=2),
+        _field(module_id, f"{prefix}grasp_ratio_threshold", "float", minimum=0.01, maximum=10, step=0.05, decimals=2),
+        _field(module_id, f"{prefix}sources.hamer_code_revision", "text"),
+        _field(module_id, f"{prefix}sources.hamer_weights_revision", "text"),
+        _field(module_id, f"{prefix}sources.vitpose_code_revision", "text"),
+        _field(module_id, f"{prefix}sources.vitpose_weights_revision", "text"),
+        _field(module_id, f"{prefix}sources.mediapipe_weights_revision", "text"),
+        _field(module_id, f"{prefix}sources.mano_weights_revision", "text"),
+    )
+
+
 _FIELDS = (
     _field("client_runtime", "host", "text"),
     _field("client_runtime", "port", "int", minimum=1, maximum=65_535),
@@ -158,37 +201,12 @@ _FIELDS = (
     _field("sensor_preprocessing", "image.interpolation", "choice"),
     _field("sensor_preprocessing", "image.border_mode", "choice"),
     _field("sensor_preprocessing", "live.max_pending_imu_samples", "int", minimum=1, maximum=32_768),
-    _field("hand_tracking", "runtime.enabled", "bool"),
-    _field("hand_tracking", "runtime.max_live_inference_fps", "float", minimum=0.1, maximum=60, step=0.5, decimals=1),
-    _field("hand_tracking", "algorithm.detector", "choice"),
-    _field("hand_tracking", "algorithm.fallback_detector", "choice"),
-    _field("hand_tracking", "algorithm.detector_keypoint_confidence", "float", maximum=1, step=0.01, decimals=2),
-    _field("hand_tracking", "algorithm.detector_min_valid_keypoints", "int", minimum=1, maximum=21),
-    _field("hand_tracking", "algorithm.minimum_hand_confidence", "float", maximum=1, step=0.01, decimals=2),
-    _field("hand_tracking", "algorithm.device", "choice"),
-    _field("hand_tracking", "algorithm.model_directory", "path"),
-    _field("hand_tracking", "algorithm.require_cuda", "bool"),
-    _field("hand_tracking", "algorithm.enable_cuda_amp", "bool"),
-    _field("hand_tracking", "algorithm.require_hamer", "bool"),
-    _field("hand_tracking", "algorithm.download_models", "bool"),
-    _field("hand_tracking", "algorithm.allow_mediapipe_reconstruction_fallback", "bool"),
-    _field("hand_tracking", "algorithm.vitpose_variant", "choice"),
-    _field("hand_tracking", "algorithm.detector_bbox_padding_ratio", "float", maximum=2, step=0.05, decimals=2),
-    _field("hand_tracking", "algorithm.detector_min_bbox_dimension_ratio", "float", maximum=1, step=0.01, decimals=2),
-    _field("hand_tracking", "algorithm.detector_max_bbox_area_ratio", "float", minimum=0.01, maximum=1, step=0.01, decimals=2),
-    _field("hand_tracking", "algorithm.physical_wrist_to_middle_mcp_m", "float", minimum=0.001, maximum=0.5, step=0.001, decimals=3),
-    _field("hand_tracking", "algorithm.minimum_depth_m", "float", minimum=0.001, maximum=10, step=0.01, decimals=3),
-    _field("hand_tracking", "algorithm.maximum_depth_m", "float", minimum=0.01, maximum=20, step=0.1, decimals=2),
-    _field("hand_tracking", "algorithm.grasp_ratio_threshold", "float", minimum=0.01, maximum=10, step=0.05, decimals=2),
-    _field("hand_tracking", "algorithm.sources.hamer_code_revision", "text"),
-    _field("hand_tracking", "algorithm.sources.hamer_weights_revision", "text"),
-    _field("hand_tracking", "algorithm.sources.vitpose_code_revision", "text"),
-    _field("hand_tracking", "algorithm.sources.vitpose_weights_revision", "text"),
-    _field("hand_tracking", "algorithm.sources.mediapipe_weights_revision", "text"),
-    _field("hand_tracking", "algorithm.sources.mano_weights_revision", "text"),
+    _field("live_hand_tracking", "runtime.enabled", "bool"),
+    _field("live_hand_tracking", "runtime.max_live_inference_fps", "float", minimum=0.1, maximum=60, step=0.5, decimals=1),
+    *_hand_algorithm_fields("live_hand_tracking", "algorithm."),
+    *_hand_algorithm_fields("offline_hand_tracking", ""),
     _field("video_processing", "default_preset_id", "choice"),
     _field("video_processing", "auto_enqueue_on_session_complete", "bool"),
-    _field("video_processing", "default_inference_stride_frames", "int", minimum=1, maximum=120),
     _field("video_processing", "default_output_result_type", "choice"),
 )
 _IMPACT_LABELS = {
@@ -395,6 +413,16 @@ class _ModulePage(QWidget):
             for card in (self.token_card, self.thread_card, self.device_card):
                 self.runtime_group.addSettingCard(card)
             layout.addWidget(self.runtime_group)
+        elif module_id == "live_hand_tracking":
+            self.runtime_group = SettingCardGroup("实时状态", content)
+            self.tracker_card, self.tracker_value = _readonly_card(
+                self.runtime_group,
+                FluentIcon.ROBOT,
+                "实时 Tracker",
+                "当前模型状态、检测器和累计推理帧",
+            )
+            self.runtime_group.addSettingCard(self.tracker_card)
+            layout.addWidget(self.runtime_group)
         layout.addStretch(1)
         scroll.setWidget(content)
         root.addWidget(scroll)
@@ -582,8 +610,12 @@ class ProcessingSettingsView(QWidget):
         ):
             button.setEnabled(available)
         for page in self.pages.values():
-            for card in page.cards.values():
-                card.editor.setEnabled(available)
+            for path, card in page.cards.items():
+                fixed_offline_policy = (
+                    page.module_id == "offline_hand_tracking"
+                    and path in _OFFLINE_FIXED_FIELDS
+                )
+                card.editor.setEnabled(available and not fixed_offline_policy)
 
     def _select_module(self, module_id: str) -> None:
         self._current_module_id = module_id
@@ -715,6 +747,7 @@ class ProcessingSettingsView(QWidget):
 
     def _update_status(self) -> None:
         self._update_client_runtime_status()
+        self._update_live_tracker_status()
         future = self._save_future
         if not self._save_pending or future is None or not future.done():
             return
@@ -780,6 +813,19 @@ class ProcessingSettingsView(QWidget):
             )
             codec = webrtc.video_codec or "编码 --"
             page.device_value.setText(f"{webrtc.phase.value} · {size} · {codec}")
+
+    def _update_live_tracker_status(self) -> None:
+        page = self.pages.get("live_hand_tracking")
+        if page is None or not hasattr(page, "tracker_value"):
+            return
+        perception = self.runtime.snapshot().perception
+        state = str(perception.get("state", "--"))
+        count = int(perception.get("live_inferences", 0) or 0)
+        detector = "--"
+        latest = perception.get("latest_result")
+        if isinstance(latest, Mapping):
+            detector = str(latest.get("detector_backend", "--"))
+        page.tracker_value.setText(f"{state} · {detector} · {count} 帧")
 
 def _readonly_card(
     parent: SettingCardGroup,

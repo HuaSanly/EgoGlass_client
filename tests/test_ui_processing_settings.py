@@ -66,7 +66,7 @@ def _runtime(tmp_path: Path) -> _SettingsRuntimeStub:
     return _SettingsRuntimeStub(service)
 
 
-def test_parameter_page_registers_four_module_routes(
+def test_parameter_page_registers_five_module_routes(
     qt_application,  # type: ignore[no-untyped-def]
     tmp_path: Path,
 ) -> None:
@@ -75,10 +75,26 @@ def test_parameter_page_registers_four_module_routes(
         assert tuple(view.pages) == (
             "client_runtime",
             "sensor_preprocessing",
-            "hand_tracking",
+            "live_hand_tracking",
+            "offline_hand_tracking",
             "video_processing",
         )
-        assert view.stack.count() == 4
+        assert view.stack.count() == 5
+        live_cards = view.pages["live_hand_tracking"].cards
+        offline_cards = view.pages["offline_hand_tracking"].cards
+        assert "runtime.max_live_inference_fps" in live_cards
+        assert "algorithm.detector" in live_cards
+        assert "runtime.max_live_inference_fps" not in offline_cards
+        assert "detector" in offline_cards
+        assert "algorithm.detector" not in offline_cards
+        assert not offline_cards["detector"].editor.isEnabled()
+        assert not offline_cards["vitpose_variant"].editor.isEnabled()
+        assert not offline_cards["enable_cuda_amp"].editor.isEnabled()
+        assert offline_cards["minimum_hand_confidence"].editor.isEnabled()
+        assert (
+            "default_inference_stride_frames"
+            not in view.pages["video_processing"].cards
+        )
         source = Path(__file__).parents[1] / "ui" / "views" / "processing_settings.py"
         assert "QLabel" not in source.read_text(encoding="utf-8")
     finally:
@@ -93,8 +109,10 @@ def test_parameter_page_tracks_and_discards_dirty_values(
     runtime = _runtime(tmp_path)
     view = ProcessingSettingsView(runtime)  # type: ignore[arg-type]
     try:
-        view._select_module("hand_tracking")
-        card = view.pages["hand_tracking"].cards["runtime.max_live_inference_fps"]
+        view._select_module("live_hand_tracking")
+        card = view.pages["live_hand_tracking"].cards[
+            "runtime.max_live_inference_fps"
+        ]
         card.editor.setValue(7.5)  # type: ignore[attr-defined]
 
         assert runtime.configuration_snapshot().dirty
@@ -138,8 +156,10 @@ def test_parameter_page_validates_and_saves_through_runtime_boundary(
     try:
         view.show()
         view._select_module("video_processing")
-        stride = view.pages["video_processing"].cards["default_inference_stride_frames"]
-        stride.editor.setValue(3)  # type: ignore[attr-defined]
+        auto_enqueue = view.pages["video_processing"].cards[
+            "auto_enqueue_on_session_complete"
+        ]
+        auto_enqueue.editor.setChecked(True)  # type: ignore[attr-defined]
         revision = runtime.configuration_snapshot().revision
 
         view._save_and_apply()
@@ -148,10 +168,9 @@ def test_parameter_page_validates_and_saves_through_runtime_boundary(
         snapshot = runtime.configuration_snapshot()
         assert snapshot.revision == revision + 1
         assert not snapshot.dirty
-        assert (
-            snapshot.require_module("video_processing").values["default_inference_stride_frames"]
-            == 3
-        )
+        assert snapshot.require_module("video_processing").values[
+            "auto_enqueue_on_session_complete"
+        ] is True
         assert view.apply_button.text() == "保存并应用"
     finally:
         view.close_resources()

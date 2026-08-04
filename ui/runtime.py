@@ -36,7 +36,11 @@ from perception.configuration import (
 )
 from perception.runtime import HandTrackingRuntime, HandTrackingRuntimeConfig
 from perception.sensor_preprocessing import SensorCalibration
-from perception.video_processing import ProcessingRunInfo, VideoProcessingService
+from perception.video_processing import (
+    ProcessingRunInfo,
+    SessionProcessingRunner,
+    VideoProcessingService,
+)
 
 from .state import CommandResult, RuntimeSnapshot
 
@@ -92,9 +96,20 @@ class UnifiedRuntimeHost:
             recordings_root,
             lambda: self.webrtc.recording_source(),
         )
-        self.perception = HandTrackingRuntime()
+        config_directory = self.configuration_service.config_directory
+        sensor_config_path = config_directory / "sensor-preprocessing.yaml"
+        self.perception = HandTrackingRuntime(
+            runtime_config_path=config_directory / "perception-runtime.yaml",
+            sensor_config_path=sensor_config_path,
+            hand_tracking_config_path=config_directory / "live-hand-tracking.yaml",
+        )
         self.video_processing = VideoProcessingService(
             recordings_root,
+            runner=SessionProcessingRunner(
+                sensor_config_path=sensor_config_path,
+                offline_hand_tracking_config_path=config_directory
+                / "offline-hand-tracking.yaml",
+            ),
             on_gpu_job_changed=self._on_gpu_job_changed,
             configuration_provenance_provider=self._configuration_provenance,
         )
@@ -385,22 +400,24 @@ class UnifiedRuntimeHost:
         request: ConfigurationApplyRequest,
     ) -> ConfigApplyResult:
         warnings: list[str] = []
-        hand_values = request.values.get("hand_tracking")
-        if isinstance(hand_values, Mapping):
-            runtime_values = hand_values.get("runtime")
+        live_values = request.values.get("live_hand_tracking")
+        if isinstance(live_values, Mapping):
+            runtime_values = live_values.get("runtime")
             if isinstance(runtime_values, Mapping):
                 await self.perception.apply_runtime_config(
                     HandTrackingRuntimeConfig.model_validate(dict(runtime_values))
                 )
             algorithm_changed = any(
-                change.module_id == "hand_tracking"
+                change.module_id == "live_hand_tracking"
                 and change.field_path.startswith("algorithm.")
                 for change in request.changes
             )
             if algorithm_changed:
                 perception_status = await self.perception.status()
                 if perception_status["offline_processing"]:
-                    warnings.append("离线任务正在占用 GPU，手部模型配置将在下次任务加载")
+                    warnings.append(
+                        "离线任务正在占用 GPU，实时手部模型配置将在实时推理恢复时加载"
+                    )
                 else:
                     await self.perception.reload_tracker_configuration()
 
@@ -420,9 +437,6 @@ class UnifiedRuntimeHost:
             auto_enqueue_on_session_complete=bool(
                 values["auto_enqueue_on_session_complete"]
             ),
-            default_inference_stride_frames=int(
-                values["default_inference_stride_frames"]
-            ),
             default_output_result_type=str(values["default_output_result_type"]),
         )
 
@@ -432,8 +446,8 @@ class UnifiedRuntimeHost:
         sensor = _mutable_configuration_values(
             snapshot.require_module("sensor_preprocessing").values
         )
-        hand = _mutable_configuration_values(
-            snapshot.require_module("hand_tracking").values
+        offline_hand = _mutable_configuration_values(
+            snapshot.require_module("offline_hand_tracking").values
         )
         calibration_path = Path(str(sensor["calibration_file"]))
         if not calibration_path.is_absolute():
@@ -441,20 +455,18 @@ class UnifiedRuntimeHost:
                 self.configuration_service.config_directory / calibration_path
             )
         sensor["calibration_file"] = str(calibration_path.resolve())
-        algorithm = hand["algorithm"]
-        assert isinstance(algorithm, dict)
-        model_directory = Path(str(algorithm["model_directory"]))
+        model_directory = Path(str(offline_hand["model_directory"]))
         if not model_directory.is_absolute():
             model_directory = (
                 self.configuration_service.config_directory / model_directory
             )
-        algorithm["model_directory"] = str(model_directory.resolve())
+        offline_hand["model_directory"] = str(model_directory.resolve())
         execution_snapshot = {
             "sensor_preprocessing": sensor,
             "sensor_calibration": SensorCalibration.load(
                 calibration_path
             ).model_dump(mode="json"),
-            "hand_tracking": algorithm,
+            "offline_hand_tracking": offline_hand,
         }
         return (
             provenance.revision,
@@ -656,18 +668,21 @@ def _configuration_result_from_request(
     provenance: ConfigurationProvenance,
     warnings: tuple[str, ...],
 ) -> ConfigApplyResult:
+    module_order = (
+        "client_runtime",
+        "sensor_preprocessing",
+        "live_hand_tracking",
+        "offline_hand_tracking",
+        "video_processing",
+    )
+
     def modules_for(impact: ConfigImpact) -> tuple[str, ...]:
         selected = {
             change.module_id for change in request.changes if change.impact is impact
         }
         return tuple(
             module_id
-            for module_id in (
-                "client_runtime",
-                "sensor_preprocessing",
-                "hand_tracking",
-                "video_processing",
-            )
+            for module_id in module_order
             if module_id in selected
         )
 
@@ -677,12 +692,7 @@ def _configuration_result_from_request(
     return ConfigApplyResult(
         changed_modules=tuple(
             module_id
-            for module_id in (
-                "client_runtime",
-                "sensor_preprocessing",
-                "hand_tracking",
-                "video_processing",
-            )
+            for module_id in module_order
             if module_id in changed
         ),
         immediate_applied=modules_for(ConfigImpact.IMMEDIATE),

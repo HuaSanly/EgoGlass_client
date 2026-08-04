@@ -5,10 +5,14 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from perception.video_processing import (
     ProcessingCanceled,
     ProcessingJob,
     ProcessingJobState,
+    ProcessingJobStore,
+    ProcessingPreset,
     ProcessingResultStore,
     ProcessingRunSummary,
     VideoProcessingService,
@@ -164,23 +168,49 @@ def test_auto_enqueue_is_persistent_and_idempotent(tmp_path: Path) -> None:
     assert restarted.snapshot().auto_enqueue_on_session_complete
 
 
-def test_default_preset_is_validated_persisted_and_used_for_enqueue(tmp_path: Path) -> None:
+def test_new_jobs_only_accept_and_use_the_per_frame_quality_preset(tmp_path: Path) -> None:
     (tmp_path / ("a" * 32)).mkdir()
     service = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
 
-    assert service.set_default_preset("hand-tracking-preview") == "hand-tracking-preview"
+    assert service.set_default_preset("hand-tracking-quality") == "hand-tracking-quality"
     job = service.enqueue("a" * 32)
-    assert job.preset.preset_id == "hand-tracking-preview"
-    assert service.snapshot().default_preset_id == "hand-tracking-preview"
+    assert job.preset.preset_id == "hand-tracking-quality"
+    assert job.preset.inference_stride_frames == 1
+    assert service.snapshot().default_preset_id == "hand-tracking-quality"
 
     restarted = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
-    assert restarted.snapshot().default_preset_id == "hand-tracking-preview"
+    assert restarted.snapshot().default_preset_id == "hand-tracking-quality"
     try:
-        restarted.set_default_preset("missing")
+        restarted.set_default_preset("hand-tracking-preview")
     except KeyError:
         pass
     else:
         raise AssertionError("unknown preset should be rejected")
+
+
+def test_historical_non_quality_preset_remains_readable_and_retryable(
+    tmp_path: Path,
+) -> None:
+    session_id = "a" * 32
+    (tmp_path / session_id).mkdir()
+    store = ProcessingJobStore(tmp_path / ".processing" / "jobs.sqlite3")
+    historical_preset = ProcessingPreset(
+        preset_id="hand-tracking-preview",
+        display_name="Historical preview",
+        inference_stride_frames=3,
+    )
+    historical = store.enqueue(session_id, None, historical_preset)
+    store.request_cancel(historical.job_id)
+
+    service = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
+    loaded = service.store.require(historical.job_id)
+    retried = service.retry(historical.job_id)
+
+    assert loaded.preset == historical_preset
+    assert retried.preset == historical_preset
+    assert retried.retry_of_job_id == historical.job_id
+    with pytest.raises(KeyError):
+        service.enqueue(session_id, preset_id="hand-tracking-preview")
 
 
 def test_completed_run_with_invalid_result_store_is_not_viewable(tmp_path: Path) -> None:

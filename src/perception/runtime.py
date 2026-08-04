@@ -106,7 +106,7 @@ class HandTrackingRuntime:
         *,
         runtime_config_path: str | Path = "config/perception-runtime.yaml",
         sensor_config_path: str | Path = "config/sensor-preprocessing.yaml",
-        hand_tracking_config_path: str | Path = "config/hand-tracking.yaml",
+        hand_tracking_config_path: str | Path = "config/live-hand-tracking.yaml",
     ) -> None:
         self.runtime_config_path = Path(runtime_config_path).resolve()
         self.config = HandTrackingRuntimeConfig.load(self.runtime_config_path)

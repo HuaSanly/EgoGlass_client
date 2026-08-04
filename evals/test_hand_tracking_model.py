@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 REPOSITORY = Path(__file__).parents[1]
-MODEL_CONFIG = REPOSITORY / "config" / "hand-tracking.yaml"
+MODEL_CONFIG = REPOSITORY / "config" / "offline-hand-tracking.yaml"
 TEASER_URL = (
     "https://raw.githubusercontent.com/geopavlakos/hamer/"
     "3a01849f4148352e9260b69bf28b65d1671a4905/assets/teaser.jpg"

@@ -218,7 +218,9 @@ def _reconstruction(depth: float = 0.6) -> HandReconstruction:
 
 def test_repository_config_is_pinned_and_resolves_local_model_directory() -> None:
     repository = Path(__file__).parents[1]
-    config = HandTrackingConfig.load(repository / "config" / "hand-tracking.yaml")
+    config = HandTrackingConfig.load(
+        repository / "config" / "live-hand-tracking.yaml"
+    )
 
     assert config.require_cuda is True
     assert config.require_hamer is True

@@ -1,4 +1,4 @@
-# HumanEgo-compatible HaMeR hand tracking on native Windows.
+# Low-latency hand tracking for the live preview path.
 schema_version: "1.0"
 
 # Relative paths are resolved from this YAML file. This directory is ignored by Git.
@@ -10,8 +10,7 @@ enable_cuda_amp: true
 require_hamer: true
 download_models: true
 
-# EgoGlass defaults to the lower-latency MediaPipe detector. ViTPose remains an
-# explicit alternative for reproducibility and detector comparisons.
+# Keep the current live detector route: MediaPipe first, with no detector fallback.
 detector: mediapipe
 fallback_detector: none
 allow_mediapipe_reconstruction_fallback: true
@@ -20,13 +19,10 @@ vitpose_variant: s
 detector_keypoint_confidence: 0.3
 detector_min_valid_keypoints: 3
 detector_bbox_padding_ratio: 0.3
-# Applied to every ViTPose candidate to reject tiny or near-full-frame boxes.
 detector_min_bbox_dimension_ratio: 0.05
 detector_max_bbox_area_ratio: 0.35
-# Current Glass3 no-hand replay: 0.3325 false positive; public true hands: >=0.721.
 minimum_hand_confidence: 0.3
 
-# HumanEgo's physical-size fallback for absolute camera-space depth.
 physical_wrist_to_middle_mcp_m: 0.085
 minimum_depth_m: 0.05
 maximum_depth_m: 3.0

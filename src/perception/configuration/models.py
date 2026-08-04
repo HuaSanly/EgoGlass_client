@@ -64,7 +64,6 @@ class VideoProcessingConfig(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     default_preset_id: str = DEFAULT_PRESETS[0].preset_id
     auto_enqueue_on_session_complete: bool = False
-    default_inference_stride_frames: int = Field(default=1, ge=1, le=120)
     default_output_result_type: Literal["structured_results"] = "structured_results"
 
     @field_validator("default_preset_id")

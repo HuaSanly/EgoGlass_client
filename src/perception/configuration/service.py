@@ -39,22 +39,26 @@ from .models import ClientRuntimeConfig, PerceptionRuntimeConfig, VideoProcessin
 _MODULE_ORDER = (
     "client_runtime",
     "sensor_preprocessing",
-    "hand_tracking",
+    "live_hand_tracking",
+    "offline_hand_tracking",
     "video_processing",
 )
 _DISPLAY_NAMES = {
     "client_runtime": "客户端与网关",
     "sensor_preprocessing": "传感器预处理",
-    "hand_tracking": "手部追踪",
+    "live_hand_tracking": "实时手部追踪",
+    "offline_hand_tracking": "离线手部追踪",
     "video_processing": "离线视频处理",
 }
 _FILE_NAMES = {
     "client_runtime": "client-runtime.yaml",
     "perception_runtime": "perception-runtime.yaml",
     "sensor_preprocessing": "sensor-preprocessing.yaml",
-    "hand_tracking_algorithm": "hand-tracking.yaml",
+    "live_hand_tracking": "live-hand-tracking.yaml",
+    "offline_hand_tracking": "offline-hand-tracking.yaml",
     "video_processing": "video-processing.yaml",
 }
+_LEGACY_HAND_TRACKING_FILE = "hand-tracking.yaml"
 
 _CLIENT_DEFAULTS: dict[str, object] = {
     "schema_version": "1.0",
@@ -111,41 +115,63 @@ _HAND_DEFAULTS: dict[str, object] = {
         "mano_weights_revision": "b00adea9a6843bbb4c9042109c5eb29ab2a59dea",
     },
 }
+_OFFLINE_HAND_DEFAULTS: dict[str, object] = {
+    **_HAND_DEFAULTS,
+    "device": "cuda",
+    "require_cuda": True,
+    "enable_cuda_amp": False,
+    "require_hamer": True,
+    "detector": "vitpose",
+    "fallback_detector": "none",
+    "allow_mediapipe_reconstruction_fallback": False,
+    "vitpose_variant": "h",
+}
+_OFFLINE_HAND_INVARIANTS: dict[str, object] = {
+    "device": "cuda",
+    "require_cuda": True,
+    "enable_cuda_amp": False,
+    "require_hamer": True,
+    "detector": "vitpose",
+    "fallback_detector": "none",
+    "allow_mediapipe_reconstruction_fallback": False,
+    "vitpose_variant": "h",
+}
 _VIDEO_DEFAULTS: dict[str, object] = {
     "schema_version": "1.0",
     "default_preset_id": "hand-tracking-quality",
     "auto_enqueue_on_session_complete": False,
-    "default_inference_stride_frames": 1,
     "default_output_result_type": "structured_results",
 }
 _MODULE_DEFAULTS: dict[str, dict[str, object]] = {
     "client_runtime": _CLIENT_DEFAULTS,
     "sensor_preprocessing": _SENSOR_DEFAULTS,
-    "hand_tracking": {
+    "live_hand_tracking": {
         "runtime": _PERCEPTION_DEFAULTS,
         "algorithm": _HAND_DEFAULTS,
     },
+    "offline_hand_tracking": _OFFLINE_HAND_DEFAULTS,
     "video_processing": _VIDEO_DEFAULTS,
 }
 
 _FIELD_IMPACTS: dict[str, dict[str, ConfigImpact]] = {
     "client_runtime": {"*": ConfigImpact.RESTART_CLIENT},
     "sensor_preprocessing": {"*": ConfigImpact.NEXT_SESSION},
-    "hand_tracking": {
+    "live_hand_tracking": {
         "runtime.enabled": ConfigImpact.IMMEDIATE,
         "runtime.max_live_inference_fps": ConfigImpact.IMMEDIATE,
-        "algorithm.*": ConfigImpact.NEXT_TASK,
+        "algorithm.*": ConfigImpact.IMMEDIATE,
     },
+    "offline_hand_tracking": {"*": ConfigImpact.NEXT_TASK},
     "video_processing": {
         "auto_enqueue_on_session_complete": ConfigImpact.IMMEDIATE,
         "default_preset_id": ConfigImpact.IMMEDIATE,
-        "*": ConfigImpact.NEXT_TASK,
+        "default_output_result_type": ConfigImpact.NEXT_TASK,
     },
 }
 
 
 class ConfigurationService:
-    """Typed owner for the five YAML files exposed as four UI modules."""
+    """Typed owner for the managed YAML files exposed as five UI modules."""
 
     def __init__(
         self,
@@ -158,6 +184,7 @@ class ConfigurationService:
         self.config_directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._migration_warnings: list[str] = []
+        self._legacy_hand_tracking_migrated = False
         self._ensure_bootstrap_files()
 
         client_payload = self._read_yaml(self._path("client_runtime"))
@@ -180,6 +207,8 @@ class ConfigurationService:
         self._saved_values = self._load_saved_values()
         self._working_values = copy.deepcopy(self._saved_values)
         self._revision = self._read_revision()
+        if self._legacy_hand_tracking_migrated:
+            self._write_state()
 
     @property
     def module_ids(self) -> tuple[str, ...]:
@@ -357,18 +386,60 @@ class ConfigurationService:
             if not path.exists():
                 self._write_yaml_atomic(path, payload, create_backup=False)
 
+        video_path = self._path("video_processing")
+        video_payload = self._read_yaml(video_path)
+        if video_payload.pop("default_inference_stride_frames", None) is not None:
+            self._write_yaml_atomic(
+                video_path,
+                video_payload,
+                create_backup=True,
+            )
+            self._migration_warnings.append(
+                "已移除离线视频处理的旧推理步长设置，新任务固定逐帧推理"
+            )
+
+        live_path = self._path("live_hand_tracking")
+        offline_path = self._path("offline_hand_tracking")
+        legacy_path = self._path("legacy_hand_tracking")
+        if not live_path.exists():
+            if legacy_path.is_file():
+                self._write_yaml_atomic(
+                    live_path,
+                    self._read_yaml(legacy_path),
+                    create_backup=False,
+                )
+                self._migration_warnings.append(
+                    "已将旧 hand-tracking.yaml 迁移为实时手部追踪配置"
+                )
+                self._legacy_hand_tracking_migrated = True
+            else:
+                self._write_yaml_atomic(
+                    live_path,
+                    _HAND_DEFAULTS,
+                    create_backup=False,
+                )
+        if not offline_path.exists():
+            self._write_yaml_atomic(
+                offline_path,
+                _OFFLINE_HAND_DEFAULTS,
+                create_backup=False,
+            )
+
     def _load_saved_values(self) -> dict[str, dict[str, object]]:
         candidates = {
             "client_runtime": self._read_yaml(self._path("client_runtime")),
             "sensor_preprocessing": self._read_yaml(
                 self._path("sensor_preprocessing")
             ),
-            "hand_tracking": {
+            "live_hand_tracking": {
                 "runtime": self._read_yaml(self._path("perception_runtime")),
                 "algorithm": self._read_yaml(
-                    self._path("hand_tracking_algorithm")
+                    self._path("live_hand_tracking")
                 ),
             },
+            "offline_hand_tracking": self._read_yaml(
+                self._path("offline_hand_tracking")
+            ),
             "video_processing": self._read_yaml(self._path("video_processing")),
         }
         normalized, issues = self._validated_values(candidates)
@@ -410,19 +481,27 @@ class ConfigurationService:
             return self._validate_client(values)
         if module_id == "sensor_preprocessing":
             return self._validate_sensor(values)
-        if module_id == "hand_tracking":
+        if module_id == "live_hand_tracking":
             if set(values) != {"runtime", "algorithm"}:
-                raise ValueError("hand tracking requires runtime and algorithm groups")
+                raise ValueError("live hand tracking requires runtime and algorithm groups")
             runtime = values["runtime"]
             algorithm = values["algorithm"]
             if not isinstance(runtime, Mapping) or not isinstance(algorithm, Mapping):
-                raise TypeError("hand tracking groups must be mappings")
+                raise TypeError("live hand tracking groups must be mappings")
             return {
                 "runtime": PerceptionRuntimeConfig.model_validate(runtime).model_dump(
                     mode="json"
                 ),
                 "algorithm": self._validate_hand_algorithm(algorithm),
             }
+        if module_id == "offline_hand_tracking":
+            normalized = self._validate_hand_algorithm(values)
+            for field_name, required_value in _OFFLINE_HAND_INVARIANTS.items():
+                if normalized[field_name] != required_value:
+                    raise ValueError(
+                        f"offline hand tracking requires {field_name}={required_value!r}"
+                    )
+            return normalized
         if module_id == "video_processing":
             return VideoProcessingConfig.model_validate(values).model_dump(mode="json")
         raise KeyError(f"unknown configuration module {module_id!r}")
@@ -503,17 +582,20 @@ class ConfigurationService:
         self,
         values: Mapping[str, Mapping[str, object]],
     ) -> dict[str, dict[str, object]]:
-        hand = values["hand_tracking"]
-        runtime = hand["runtime"]
-        algorithm = hand["algorithm"]
-        assert isinstance(runtime, Mapping) and isinstance(algorithm, Mapping)
+        live_hand = values["live_hand_tracking"]
+        offline_hand = values["offline_hand_tracking"]
+        runtime = live_hand["runtime"]
+        live_algorithm = live_hand["algorithm"]
+        assert isinstance(runtime, Mapping) and isinstance(live_algorithm, Mapping)
+        assert isinstance(offline_hand, Mapping)
         return {
             "client_runtime": copy.deepcopy(dict(values["client_runtime"])),
             "perception_runtime": copy.deepcopy(dict(runtime)),
             "sensor_preprocessing": copy.deepcopy(
                 dict(values["sensor_preprocessing"])
             ),
-            "hand_tracking_algorithm": copy.deepcopy(dict(algorithm)),
+            "live_hand_tracking": copy.deepcopy(dict(live_algorithm)),
+            "offline_hand_tracking": copy.deepcopy(dict(offline_hand)),
             "video_processing": copy.deepcopy(dict(values["video_processing"])),
         }
 
@@ -561,14 +643,16 @@ class ConfigurationService:
         )
 
     def _source_paths(self, module_id: str) -> tuple[Path, ...]:
-        if module_id == "hand_tracking":
+        if module_id == "live_hand_tracking":
             return (
                 self._path("perception_runtime"),
-                self._path("hand_tracking_algorithm"),
+                self._path("live_hand_tracking"),
             )
         return (self._path(module_id),)
 
     def _path(self, file_id: str) -> Path:
+        if file_id == "legacy_hand_tracking":
+            return self.config_directory / _LEGACY_HAND_TRACKING_FILE
         return self.config_directory / _FILE_NAMES[file_id]
 
     def _resolve_path(self, value: object) -> Path:
@@ -677,6 +761,7 @@ class ConfigurationService:
             "revision": self._revision,
             "updated_at_unix_ns": time.time_ns(),
             "sha256_by_file": dict(self.provenance().sha256_by_file),
+            "migrations": {"hand_tracking_profiles_v2": True},
         }
         self._write_bytes_atomic(
             self._state_path,
@@ -704,6 +789,7 @@ class ConfigurationService:
                 if rows.get("setting:configuration_migrated_v1") == "true":
                     return
                 payload = self._read_yaml(self._path("video_processing"))
+                payload.pop("default_inference_stride_frames", None)
                 auto_enqueue = rows.get("setting:auto_enqueue")
                 preset_id = rows.get("setting:default_preset_id")
                 if auto_enqueue in {"true", "false"}:

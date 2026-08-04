@@ -24,10 +24,11 @@ and leaves preview and recording active. The offline model is released before
 optional online inference may resume.
 
 Automatic enqueue after session finalization is persisted but off by default.
-The operator can enable it from system settings. Default preset, inference
-stride, and output type are stored in `config/video-processing.yaml`, validated
-before save, and applied only to newly submitted jobs. The queue database keeps
-compatibility metadata for older clients but is no longer the source of truth.
+The operator can enable it from system settings. The quality preset and output
+type are stored in `config/video-processing.yaml`, validated before save, and
+applied only to newly submitted jobs. Every new job has inference stride 1. The
+queue database keeps historical preset and stride values for older jobs but is
+no longer the source of truth for new work.
 
 ## Pipeline and outputs
 
@@ -51,9 +52,9 @@ Each attempt writes an immutable directory:
 ```
 
 `run.json` records the job, preset, timestamps, counters, terminal state,
-error, submitted configuration revision, and SHA256 of all five configuration
+error, submitted configuration revision, and SHA256 of all six configuration
 files. The queue also stores the validated preprocessing, calibration, and hand
-tracking snapshot used at submission, so a queued job cannot silently consume
+tracking snapshot under `offline_hand_tracking` used at submission, so a queued job cannot silently consume
 later YAML edits. `results.sqlite` indexes JSON results by `clip_id + frame_index +
 session_time_ns`. `run.log` is flushed during lifecycle transitions.
 
@@ -119,8 +120,9 @@ not decoded again. The 2D overlay and 3D hand pose use the same
 switching navigation unloads the active decoder.
 
 The Pipeline page owns queued and historical jobs, including cancel and retry.
-System Settings persists the default preset, automatic-enqueue policy,
-inference stride, and result type through `ConfigurationService`. The
+System Settings persists the quality preset, automatic-enqueue policy, and
+result type through `ConfigurationService`. Real-time and offline hand tracking
+have separate settings modules and files. The
 workbench's Process Current Video command always submits the current clip with
 that saved configuration and records its provenance in the queue entry.
 

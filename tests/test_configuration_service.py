@@ -27,7 +27,8 @@ def _config_copy(tmp_path: Path) -> Path:
         "client-runtime.yaml",
         "perception-runtime.yaml",
         "sensor-preprocessing.yaml",
-        "hand-tracking.yaml",
+        "live-hand-tracking.yaml",
+        "offline-hand-tracking.yaml",
         "video-processing.yaml",
         "sensor-calibration-640x480-sample.json",
     ):
@@ -35,7 +36,7 @@ def _config_copy(tmp_path: Path) -> Path:
     return destination
 
 
-def test_service_exposes_four_typed_modules_backed_by_five_files(tmp_path: Path) -> None:
+def test_service_exposes_five_typed_modules_backed_by_six_files(tmp_path: Path) -> None:
     config = _config_copy(tmp_path)
     service = ConfigurationService(config, recordings_root=tmp_path / "recordings")
 
@@ -44,22 +45,28 @@ def test_service_exposes_four_typed_modules_backed_by_five_files(tmp_path: Path)
     assert tuple(module.module_id for module in snapshot.modules) == (
         "client_runtime",
         "sensor_preprocessing",
-        "hand_tracking",
+        "live_hand_tracking",
+        "offline_hand_tracking",
         "video_processing",
     )
     assert not snapshot.dirty
-    hand = snapshot.require_module("hand_tracking")
-    assert tuple(path.name for path in hand.source_paths) == (
+    live = snapshot.require_module("live_hand_tracking")
+    assert tuple(path.name for path in live.source_paths) == (
         "perception-runtime.yaml",
-        "hand-tracking.yaml",
+        "live-hand-tracking.yaml",
     )
-    assert hand.values["runtime"]["max_live_inference_fps"] == 6.0  # type: ignore[index]
-    assert hand.values["algorithm"]["enable_cuda_amp"] is True  # type: ignore[index]
+    assert live.values["runtime"]["max_live_inference_fps"] == 6.0  # type: ignore[index]
+    assert live.values["algorithm"]["detector"] == "mediapipe"  # type: ignore[index]
+    offline = snapshot.require_module("offline_hand_tracking")
+    assert offline.values["detector"] == "vitpose"
+    assert offline.values["vitpose_variant"] == "h"
+    assert offline.values["enable_cuda_amp"] is False
     assert set(service.provenance().sha256_by_file) == {
         "client-runtime.yaml",
         "perception-runtime.yaml",
         "sensor-preprocessing.yaml",
-        "hand-tracking.yaml",
+        "live-hand-tracking.yaml",
+        "offline-hand-tracking.yaml",
         "video-processing.yaml",
     }
 
@@ -100,6 +107,33 @@ def test_validation_rejects_unknown_fields_and_invalid_calibration(tmp_path: Pat
     assert yaml.safe_load((config / "client-runtime.yaml").read_text(encoding="utf-8"))[
         "port"
     ] == 8770
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("detector", "mediapipe"),
+        ("vitpose_variant", "s"),
+        ("enable_cuda_amp", True),
+        ("require_hamer", False),
+        ("allow_mediapipe_reconstruction_fallback", True),
+    ),
+)
+def test_offline_quality_policy_cannot_be_downgraded(
+    tmp_path: Path,
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    config = _config_copy(tmp_path)
+    service = ConfigurationService(config, recordings_root=tmp_path / "recordings")
+
+    issues = service.validate(
+        {"offline_hand_tracking": {field_name: invalid_value}}
+    )
+
+    assert len(issues) == 1
+    assert issues[0].module_id == "offline_hand_tracking"
+    assert "offline hand tracking requires" in issues[0].message
 
 
 def test_stage_discard_and_restore_defaults_do_not_write_early(tmp_path: Path) -> None:
@@ -209,18 +243,18 @@ def test_legacy_processing_metadata_migrates_once_and_stays_compatible(
     service = ConfigurationService(config, jobs_database_path=database)
     values = service.snapshot().require_module("video_processing").values
     assert values["auto_enqueue_on_session_complete"] is True
-    assert values["default_preset_id"] == "hand-tracking-preview"
+    assert values["default_preset_id"] == "hand-tracking-quality"
 
     service.save(
         {
             "video_processing": {
                 "auto_enqueue_on_session_complete": False,
-                "default_preset_id": "hand-tracking-balanced",
+                "default_preset_id": "hand-tracking-quality",
             }
         }
     )
     assert store.setting("auto_enqueue", "missing") == "false"
-    assert store.setting("default_preset_id", "missing") == "hand-tracking-balanced"
+    assert store.setting("default_preset_id", "missing") == "hand-tracking-quality"
 
     store.set_setting("default_preset_id", "hand-tracking-preview")
     restarted = ConfigurationService(config, jobs_database_path=database)
@@ -228,7 +262,39 @@ def test_legacy_processing_metadata_migrates_once_and_stays_compatible(
         restarted.snapshot().require_module("video_processing").values[
             "default_preset_id"
         ]
-        == "hand-tracking-balanced"
+        == "hand-tracking-quality"
+    )
+
+
+def test_legacy_hand_tracking_file_migrates_once_to_live_profile(tmp_path: Path) -> None:
+    config = _config_copy(tmp_path)
+    legacy = config / "hand-tracking.yaml"
+    shutil.copy2(config / "live-hand-tracking.yaml", legacy)
+    (config / "live-hand-tracking.yaml").unlink()
+    (config / "offline-hand-tracking.yaml").unlink()
+    recordings = tmp_path / "recordings"
+
+    service = ConfigurationService(config, recordings_root=recordings)
+
+    live = service.snapshot().require_module("live_hand_tracking").values
+    offline = service.snapshot().require_module("offline_hand_tracking").values
+    assert live["algorithm"]["detector"] == "mediapipe"  # type: ignore[index]
+    assert offline["detector"] == "vitpose"
+    assert offline["vitpose_variant"] == "h"
+    state = json.loads(
+        (recordings / ".processing" / "configuration-state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["migrations"]["hand_tracking_profiles_v2"] is True
+
+    legacy.write_text("invalid: [", encoding="utf-8")
+    restarted = ConfigurationService(config, recordings_root=recordings)
+    assert (
+        restarted.snapshot().require_module("live_hand_tracking").values["algorithm"][
+            "detector"
+        ]
+        == "mediapipe"
     )
 
 
@@ -239,21 +305,27 @@ def test_change_impacts_and_runtime_apply_request_are_explicit(tmp_path: Path) -
     result = service.save(
         {
             "sensor_preprocessing": {"image": {"undistort": False}},
-            "hand_tracking": {
+            "live_hand_tracking": {
                 "runtime": {"enabled": True},
                 "algorithm": {"minimum_hand_confidence": 0.4},
             },
+            "offline_hand_tracking": {"minimum_hand_confidence": 0.6},
         }
     )
 
-    assert result.immediate_applied == ("hand_tracking",)
-    assert result.pending_next_task == ("hand_tracking",)
+    assert result.immediate_applied == ("live_hand_tracking",)
+    assert result.pending_next_task == ("offline_hand_tracking",)
     assert result.pending_next_session == ("sensor_preprocessing",)
     assert {(change.field_path, change.impact) for change in result.changes} == {
         ("image.undistort", ConfigImpact.NEXT_SESSION),
         ("runtime.enabled", ConfigImpact.IMMEDIATE),
-        ("algorithm.minimum_hand_confidence", ConfigImpact.NEXT_TASK),
+        ("algorithm.minimum_hand_confidence", ConfigImpact.IMMEDIATE),
+        ("minimum_hand_confidence", ConfigImpact.NEXT_TASK),
     }
     request = service.apply_request(result)
     assert request.revision == 1
-    assert set(request.values) == {"sensor_preprocessing", "hand_tracking"}
+    assert set(request.values) == {
+        "sensor_preprocessing",
+        "live_hand_tracking",
+        "offline_hand_tracking",
+    }

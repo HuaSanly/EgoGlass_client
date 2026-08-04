@@ -5,7 +5,6 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import replace
 from pathlib import Path
 
 from .contracts import (
@@ -56,7 +55,6 @@ class VideoProcessingService:
             if any(preset.preset_id == stored_preset for preset in DEFAULT_PRESETS)
             else DEFAULT_PRESETS[0].preset_id
         )
-        self._default_inference_stride_frames = 1
         self._default_output_result_type = "structured_results"
         self._revision = 0
 
@@ -103,10 +101,6 @@ class VideoProcessingService:
         preset = next((item for item in self.presets if item.preset_id == preset_id), None)
         if preset is None:
             raise KeyError(f"unknown processing preset {preset_id!r}")
-        preset = replace(
-            preset,
-            inference_stride_frames=self._default_inference_stride_frames,
-        )
         configuration_revision, configuration_hashes, configuration_snapshot = (
             self._configuration_provenance()
         )
@@ -160,21 +154,17 @@ class VideoProcessingService:
         *,
         default_preset_id: str,
         auto_enqueue_on_session_complete: bool,
-        default_inference_stride_frames: int,
         default_output_result_type: str,
     ) -> None:
         """Apply defaults to jobs submitted after this call."""
 
         if not any(preset.preset_id == default_preset_id for preset in self.presets):
             raise KeyError(f"unknown processing preset {default_preset_id!r}")
-        if default_inference_stride_frames < 1:
-            raise ValueError("default inference stride must be positive")
         if default_output_result_type != "structured_results":
             raise ValueError("unsupported default output result type")
         with self._condition:
             self._default_preset_id = default_preset_id
             self._auto_enqueue = bool(auto_enqueue_on_session_complete)
-            self._default_inference_stride_frames = default_inference_stride_frames
             self._default_output_result_type = default_output_result_type
             self._revision += 1
 
@@ -197,7 +187,6 @@ class VideoProcessingService:
             self._auto_enqueue,
             self.store.list_jobs(),
             self._default_preset_id,
-            self._default_inference_stride_frames,
             self._default_output_result_type,
         )
 

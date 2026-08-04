@@ -33,13 +33,15 @@ From the client repository:
 ```powershell
 .\scripts\setup_client.ps1
 conda run -n egoglass python scripts\download_hand_tracking_models.py `
-  --config config\hand-tracking.yaml
+  --config config\live-hand-tracking.yaml `
+  --config config\offline-hand-tracking.yaml
 ```
 
 The setup follows HumanEgo's Python 3.11, PyTorch 2.5.1, torchvision 0.20.1,
-and CUDA 12.1 versions. MediaPipe is the default detector; HaMeR remains the 3D
-reconstructor. ViTPose-S is pinned as an explicit comparison backend selected
-with `detector: vitpose`. The setup applies HumanEgo's Chumpy/HaMeR
+and CUDA 12.1 versions. The live profile uses MediaPipe detection, HaMeR
+reconstruction, CUDA AMP, and newest-frame scheduling. The offline profile uses
+ViTPose-H detection and required HaMeR reconstruction on CUDA in FP32. The
+setup applies HumanEgo's Chumpy/HaMeR
 compatibility patches. It does not run `setup.sh`, import a HumanEgo package,
 or add the reference repository to `PYTHONPATH`.
 
@@ -49,15 +51,17 @@ Weights are downloaded by EgoGlass code to
 
 ## Runtime
 
-The ingest gateway submits each decoded `av.VideoFrame` to one enqueue-only
+`HandTrackingRuntime` reads `config/live-hand-tracking.yaml`. The ingest gateway
+submits each decoded `av.VideoFrame` to one enqueue-only
 perception sink. A single worker serializes CUDA access. Its pending buffer
 holds only the newest frame, so HaMeR latency cannot delay the WebRTC receive
 loop. Live receipt time is explicitly reported as estimated until device clock
 alignment is available.
 
-MediaPipe is the normal 2D detection path. HaMeR runs under PyTorch inference
-mode, and optional ViTPose does the same when selected. CUDA uses FP16 autocast
-when `enable_cuda_amp` is true; CPU always stays in full precision. All detector
+MediaPipe is the normal live 2D detection path. Offline processing reads
+`config/offline-hand-tracking.yaml` and runs every frame through ViTPose-H and
+HaMeR. CUDA uses FP16 autocast only in the live profile; offline processing
+stays in full precision. All detector
 crops from one frame are collated into one HaMeR batch and one model forward.
 Each result reports preparation, detector, reconstruction, and postprocessing
 durations, reconstruction batch size, and whether AMP was active. This version
@@ -98,7 +102,7 @@ from perception.spatial_perception.hand_tracking import (
 )
 
 hands = HumanEgoHandTrackingPipeline.from_config_file(
-    "config/hand-tracking.yaml"
+    "config/offline-hand-tracking.yaml"
 )
 
 for bundle in sensor_pipeline.iter_recorded_session(session_directory):

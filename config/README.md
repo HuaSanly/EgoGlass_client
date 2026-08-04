@@ -5,12 +5,14 @@ files. It validates all edited modules before saving, replaces each YAML file
 atomically, and retains the previous contents as `<name>.yaml.bak`. The native
 UI must use that service instead of parsing or constructing YAML directly.
 
-The settings page exposes four modules backed by five files:
+The settings page exposes five modules backed by six managed YAML files:
 
 - `client-runtime.yaml`: gateway binding, discovery, and recordings root.
 - `sensor-preprocessing.yaml`: calibration selection and frame/IMU preparation.
-- `perception-runtime.yaml` plus `hand-tracking.yaml`: live scheduling and the
-  HumanEgo-compatible hand-tracking algorithm.
+- `perception-runtime.yaml` plus `live-hand-tracking.yaml`: live scheduling and
+  the low-latency MediaPipe-first hand-tracking profile.
+- `offline-hand-tracking.yaml`: quality-first ViTPose-H + HaMeR processing on
+  CUDA in FP32.
 - `video-processing.yaml`: defaults captured by newly submitted offline jobs.
 
 Saved fields carry one of four application levels: `immediate`, `next_session`,
@@ -28,9 +30,17 @@ for controlled comparisons. Both assume an upright decoded frame and contain
 unmeasured intrinsics, distortion, IMU noise, and Camera-to-IMU values. The
 pipeline loads whichever calibration file `sensor-preprocessing.yaml` selects.
 
-`hand-tracking.yaml` selects the native Windows CUDA device, detector fallback,
-confidence/geometry thresholds, ignored model directory, and exact upstream
-code and model revisions for the HumanEgo-compatible HaMeR pipeline.
+`live-hand-tracking.yaml` and `offline-hand-tracking.yaml` independently select
+their thresholds, model directory, and pinned upstream revisions. The offline
+quality policy fixes ViTPose-H, HaMeR, CUDA, FP32, and disables detector and
+reconstruction fallback. Its remaining thresholds take effect only for newly
+submitted tasks.
+
+If an installation contains only the former `hand-tracking.yaml`, the
+configuration service copies it once into `live-hand-tracking.yaml`, creates the
+offline quality profile, and records `hand_tracking_profiles_v2` in
+`configuration-state.json`. Runtime code never reads the legacy path after the
+migration.
 
 On first use, valid `auto_enqueue` and `default_preset_id` metadata from
 `<recordings-root>/.processing/jobs.sqlite3` is migrated to
@@ -41,6 +51,6 @@ the existing processing service still reads it.
 Each successful save increments a revision in
 `<recordings-root>/.processing/configuration-state.json`. Call
 `ConfigurationService.provenance()` when an offline run is submitted to capture
-that revision and the SHA256 of all five YAML files in its `run.json`. The queue
-also stores the validated sensor calibration and perception values captured at
+that revision and the SHA256 of all six YAML files in its `run.json`. The queue
+also stores the validated sensor calibration and offline perception values captured at
 submission, so later edits cannot change an already queued task.

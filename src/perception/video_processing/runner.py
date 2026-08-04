@@ -34,11 +34,13 @@ class SessionProcessingRunner:
         self,
         *,
         sensor_config_path: str | Path = "config/sensor-preprocessing.yaml",
-        hand_tracking_config_path: str | Path = "config/hand-tracking.yaml",
+        offline_hand_tracking_config_path: str | Path = "config/offline-hand-tracking.yaml",
         tracker_factory: Callable[[], HumanEgoHandTrackingPipeline] | None = None,
     ) -> None:
         self.sensor_config_path = Path(sensor_config_path).resolve()
-        self.hand_tracking_config_path = Path(hand_tracking_config_path).resolve()
+        self.offline_hand_tracking_config_path = Path(
+            offline_hand_tracking_config_path
+        ).resolve()
         self._tracker_factory = tracker_factory
         self._tracker: HumanEgoHandTrackingPipeline | None = None
 
@@ -182,7 +184,7 @@ class SessionProcessingRunner:
                 self._tracker = HumanEgoHandTrackingPipeline.from_config(config)
             else:
                 self._tracker = HumanEgoHandTrackingPipeline.from_config_file(
-                    str(self.hand_tracking_config_path)
+                    str(self.offline_hand_tracking_config_path)
                 )
         return self._tracker
 
@@ -257,7 +259,9 @@ def _processing_configuration(
         raise ValueError("processing configuration snapshot must be an object")
     sensor_payload = payload.get("sensor_preprocessing")
     calibration_payload = payload.get("sensor_calibration")
-    hand_payload = payload.get("hand_tracking")
+    hand_payload = payload.get("offline_hand_tracking")
+    if hand_payload is None:
+        hand_payload = payload.get("hand_tracking")
     if not all(
         isinstance(value, dict)
         for value in (sensor_payload, calibration_payload, hand_payload)
