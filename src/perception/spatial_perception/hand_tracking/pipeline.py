@@ -51,6 +51,15 @@ class HumanEgoHandTrackingPipeline:
     def from_config_file(cls, path: str) -> HumanEgoHandTrackingPipeline:
         """Load config, pinned weights, HumanEgo detector, and HaMeR model."""
 
+        return cls.from_config(HandTrackingConfig.load(path))
+
+    @classmethod
+    def from_config(
+        cls,
+        config: HandTrackingConfig,
+    ) -> HumanEgoHandTrackingPipeline:
+        """Build from a validated immutable configuration snapshot."""
+
         from .humanego_hamer import (
             HumanEgoHaMeRModel,
             HumanEgoMediaPipeDetector,
@@ -58,7 +67,6 @@ class HumanEgoHandTrackingPipeline:
         )
         from .weights import ensure_hand_tracking_weights
 
-        config = HandTrackingConfig.load(path)
         weights = ensure_hand_tracking_weights(config)
         detector: HandDetector
         if config.detector == "vitpose":

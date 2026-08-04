@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import logging
 import queue
 import secrets
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +25,17 @@ from ingest_gateway.recording import RecordingRuntime
 from ingest_gateway.recording_models import RecordingLibrary, RecordingState
 from ingest_gateway.webrtc_models import StreamControlAction, StreamControlCommand
 from ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
-from perception.runtime import HandTrackingRuntime
+from perception.configuration import (
+    ConfigApplyResult,
+    ConfigImpact,
+    ConfigSnapshot,
+    ConfigurationApplyRequest,
+    ConfigurationProvenance,
+    ConfigurationService,
+    ValidationIssue,
+)
+from perception.runtime import HandTrackingRuntime, HandTrackingRuntimeConfig
+from perception.sensor_preprocessing import SensorCalibration
 from perception.video_processing import ProcessingRunInfo, VideoProcessingService
 
 from .state import CommandResult, RuntimeSnapshot
@@ -58,7 +69,12 @@ class _CommandDetail:
 class UnifiedRuntimeHost:
     """Run gateway, recording, perception, and UI state collection in one process."""
 
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        configuration_service: ConfigurationService | None = None,
+    ) -> None:
         self.config = config
         self.pairing_token = config.pairing_token or secrets.token_urlsafe(24)
         self.frame_buffer = LiveFrameBuffer()
@@ -69,6 +85,9 @@ class UnifiedRuntimeHost:
             display_imu_sink=self.imu_preview,
         )
         recordings_root = config.recordings_root.expanduser().resolve()
+        self.configuration_service = configuration_service or ConfigurationService(
+            recordings_root=recordings_root,
+        )
         self.recording = RecordingRuntime(
             recordings_root,
             lambda: self.webrtc.recording_source(),
@@ -77,6 +96,12 @@ class UnifiedRuntimeHost:
         self.video_processing = VideoProcessingService(
             recordings_root,
             on_gpu_job_changed=self._on_gpu_job_changed,
+            configuration_provenance_provider=self._configuration_provenance,
+        )
+        self._apply_video_processing_defaults(
+            self.configuration_service.snapshot()
+            .require_module("video_processing")
+            .values
         )
         self.discovery = (
             LanDiscoveryService(
@@ -127,6 +152,9 @@ class UnifiedRuntimeHost:
         self._record_event(f"runtime listening on {self.config.host}:{self.config.port}")
 
     def stop(self, timeout_seconds: float = 20.0) -> None:
+        if self._thread is None:
+            asyncio.run(self._close_local_resources())
+            return
         server = self._server
         if server is not None and not server.should_exit:
             try:
@@ -140,6 +168,16 @@ class UnifiedRuntimeHost:
             thread.join(timeout_seconds)
         if thread is not None and thread.is_alive():
             raise TimeoutError("EgoGlass runtime did not stop cleanly")
+
+    async def _close_local_resources(self) -> None:
+        """Release resources for hosts constructed by tests or embedding code."""
+
+        await self.webrtc.close()
+        await self.frame_buffer.close()
+        await self.perception.close()
+        await self.imu_preview.close()
+        await self.recording.close()
+        await asyncio.to_thread(self.video_processing.close)
 
     def snapshot(self) -> RuntimeSnapshot:
         with self._snapshot_lock:
@@ -230,23 +268,53 @@ class UnifiedRuntimeHost:
             ),
         )
 
-    def request_processing_auto_queue(self, enabled: bool) -> None:
-        self._track_sync_command(
-            "processing-auto-queue",
-            lambda: _CommandDetail(
-                "自动入队已开启"
-                if self.video_processing.set_auto_enqueue(enabled)
-                else "自动入队已关闭"
+    def configuration_snapshot(self) -> ConfigSnapshot:
+        return self.configuration_service.snapshot()
+
+    def stage_configuration(self, values: Mapping[str, object]) -> ConfigSnapshot:
+        return self.configuration_service.stage(values)
+
+    def validate_configuration(
+        self,
+        values: Mapping[str, object] | None = None,
+    ) -> tuple[ValidationIssue, ...]:
+        return self.configuration_service.validate(values)
+
+    def discard_configuration(self) -> ConfigSnapshot:
+        self.configuration_service.discard()
+        return self.configuration_service.snapshot()
+
+    def restore_configuration_defaults(self, module_id: str) -> ConfigSnapshot:
+        self.configuration_service.restore_defaults(module_id)
+        return self.configuration_service.snapshot()
+
+    def request_configuration_save(
+        self,
+        values: Mapping[str, object] | None = None,
+        *,
+        apply: bool,
+    ) -> concurrent.futures.Future[ConfigApplyResult]:
+        async def save() -> ConfigApplyResult:
+            result = await asyncio.to_thread(self.configuration_service.save, values)
+            if apply and result.changed_modules:
+                request = self.configuration_service.apply_request(result)
+                result = await self._apply_configuration(request)
+            return result
+
+        return self._track_command(
+            "configuration-save",
+            save(),
+            detail_provider=lambda result: _configuration_result_detail(
+                result,
+                applied=apply,
             ),
         )
 
-    def request_processing_default_preset(self, preset_id: str) -> None:
-        self._track_sync_command(
-            "processing-default-preset",
-            lambda: _CommandDetail(
-                f"默认处理方案已切换为 {self.video_processing.set_default_preset(preset_id)}"
-            ),
-        )
+    def apply_configuration(
+        self,
+        request: ConfigurationApplyRequest,
+    ) -> concurrent.futures.Future[ConfigApplyResult]:
+        return self.submit(self._apply_configuration(request))
 
     def request_library_refresh(self) -> None:
         self._track_command("refresh-library", self._refresh_library())
@@ -312,13 +380,105 @@ class UnifiedRuntimeHost:
         self.imu_preview.reset_orientation()
         return _CommandDetail("IMU pose reset")
 
-    def _track_command(self, name: str, coroutine: Coroutine[Any, Any, Any]) -> None:
+    async def _apply_configuration(
+        self,
+        request: ConfigurationApplyRequest,
+    ) -> ConfigApplyResult:
+        warnings: list[str] = []
+        hand_values = request.values.get("hand_tracking")
+        if isinstance(hand_values, Mapping):
+            runtime_values = hand_values.get("runtime")
+            if isinstance(runtime_values, Mapping):
+                await self.perception.apply_runtime_config(
+                    HandTrackingRuntimeConfig.model_validate(dict(runtime_values))
+                )
+            algorithm_changed = any(
+                change.module_id == "hand_tracking"
+                and change.field_path.startswith("algorithm.")
+                for change in request.changes
+            )
+            if algorithm_changed:
+                perception_status = await self.perception.status()
+                if perception_status["offline_processing"]:
+                    warnings.append("离线任务正在占用 GPU，手部模型配置将在下次任务加载")
+                else:
+                    await self.perception.reload_tracker_configuration()
+
+        video_values = request.values.get("video_processing")
+        if isinstance(video_values, Mapping):
+            self._apply_video_processing_defaults(video_values)
+
+        return _configuration_result_from_request(
+            request,
+            self.configuration_service.provenance(),
+            tuple(warnings),
+        )
+
+    def _apply_video_processing_defaults(self, values: Mapping[str, object]) -> None:
+        self.video_processing.set_configuration_defaults(
+            default_preset_id=str(values["default_preset_id"]),
+            auto_enqueue_on_session_complete=bool(
+                values["auto_enqueue_on_session_complete"]
+            ),
+            default_inference_stride_frames=int(
+                values["default_inference_stride_frames"]
+            ),
+            default_output_result_type=str(values["default_output_result_type"]),
+        )
+
+    def _configuration_provenance(self) -> tuple[int, Mapping[str, str], str]:
+        provenance = self.configuration_service.provenance()
+        snapshot = self.configuration_service.snapshot()
+        sensor = _mutable_configuration_values(
+            snapshot.require_module("sensor_preprocessing").values
+        )
+        hand = _mutable_configuration_values(
+            snapshot.require_module("hand_tracking").values
+        )
+        calibration_path = Path(str(sensor["calibration_file"]))
+        if not calibration_path.is_absolute():
+            calibration_path = (
+                self.configuration_service.config_directory / calibration_path
+            )
+        sensor["calibration_file"] = str(calibration_path.resolve())
+        algorithm = hand["algorithm"]
+        assert isinstance(algorithm, dict)
+        model_directory = Path(str(algorithm["model_directory"]))
+        if not model_directory.is_absolute():
+            model_directory = (
+                self.configuration_service.config_directory / model_directory
+            )
+        algorithm["model_directory"] = str(model_directory.resolve())
+        execution_snapshot = {
+            "sensor_preprocessing": sensor,
+            "sensor_calibration": SensorCalibration.load(
+                calibration_path
+            ).model_dump(mode="json"),
+            "hand_tracking": algorithm,
+        }
+        return (
+            provenance.revision,
+            provenance.sha256_by_file,
+            json.dumps(execution_snapshot, ensure_ascii=False, sort_keys=True),
+        )
+
+    def _track_command(
+        self,
+        name: str,
+        coroutine: Coroutine[Any, Any, Any],
+        *,
+        detail_provider: Callable[[Any], str] | None = None,
+    ) -> concurrent.futures.Future[Any]:
         future = self.submit(coroutine)
 
         def completed(done: concurrent.futures.Future[Any]) -> None:
             try:
                 result = done.result()
-                detail = getattr(result, "detail", None) or "completed"
+                detail = (
+                    detail_provider(result)
+                    if detail_provider is not None
+                    else getattr(result, "detail", None) or "completed"
+                )
                 self._record_event(f"{name}: {detail}")
                 self._command_results.put(CommandResult(name, True, str(detail)))
             except Exception as error:
@@ -327,6 +487,7 @@ class UnifiedRuntimeHost:
                 self._command_results.put(CommandResult(name, False, str(error)))
 
         future.add_done_callback(completed)
+        return future
 
     def _track_sync_command(self, name: str, operation: Callable[[], object]) -> None:
         async def run() -> object:
@@ -488,3 +649,94 @@ def _perception_result_key(
     ):
         return None
     return session_id, sequence_id, frame_index
+
+
+def _configuration_result_from_request(
+    request: ConfigurationApplyRequest,
+    provenance: ConfigurationProvenance,
+    warnings: tuple[str, ...],
+) -> ConfigApplyResult:
+    def modules_for(impact: ConfigImpact) -> tuple[str, ...]:
+        selected = {
+            change.module_id for change in request.changes if change.impact is impact
+        }
+        return tuple(
+            module_id
+            for module_id in (
+                "client_runtime",
+                "sensor_preprocessing",
+                "hand_tracking",
+                "video_processing",
+            )
+            if module_id in selected
+        )
+
+    changed = {
+        change.module_id for change in request.changes
+    }
+    return ConfigApplyResult(
+        changed_modules=tuple(
+            module_id
+            for module_id in (
+                "client_runtime",
+                "sensor_preprocessing",
+                "hand_tracking",
+                "video_processing",
+            )
+            if module_id in changed
+        ),
+        immediate_applied=modules_for(ConfigImpact.IMMEDIATE),
+        pending_restart=modules_for(ConfigImpact.RESTART_CLIENT),
+        pending_next_task=modules_for(ConfigImpact.NEXT_TASK),
+        pending_next_session=modules_for(ConfigImpact.NEXT_SESSION),
+        warnings=warnings,
+        changes=request.changes,
+        provenance=provenance,
+    )
+
+
+def _configuration_result_detail(result: ConfigApplyResult, *, applied: bool) -> str:
+    if not result.changed_modules:
+        return "配置没有变化"
+    details = [f"已保存 {len(result.changed_modules)} 个模块"]
+    if applied and result.immediate_applied:
+        details.append("可热更新参数已应用")
+    if result.pending_next_session:
+        details.append("部分参数将在下次会话生效")
+    if result.pending_next_task:
+        details.append("部分参数将在下次任务生效")
+    if result.pending_restart:
+        details.append("部分参数需要重启客户端")
+    return "；".join(details)
+
+
+def _configuration_result_detail(
+    result: ConfigApplyResult,
+    *,
+    applied: bool,
+) -> str:
+    if not result.changed_modules:
+        return "No configuration changes"
+    details = [f"Saved {len(result.changed_modules)} module(s)"]
+    if applied and result.immediate_applied:
+        details.append("Immediate values applied")
+    if result.pending_next_session:
+        details.append("Some values apply next session")
+    if result.pending_next_task:
+        details.append("Some values apply next task")
+    if result.pending_restart:
+        details.append("Some values require a client restart")
+    return "; ".join(details)
+
+
+def _mutable_configuration_values(value: object) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _mutable_configuration_values(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return [_mutable_configuration_values(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value

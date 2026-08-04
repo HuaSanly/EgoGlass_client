@@ -24,9 +24,10 @@ and leaves preview and recording active. The offline model is released before
 optional online inference may resume.
 
 Automatic enqueue after session finalization is persisted but off by default.
-The operator can enable it from system settings. The default processing preset
-is stored in the same queue database, validated against the built-in presets,
-and shared by manual clip processing and automatic session enqueue.
+The operator can enable it from system settings. Default preset, inference
+stride, and output type are stored in `config/video-processing.yaml`, validated
+before save, and applied only to newly submitted jobs. The queue database keeps
+compatibility metadata for older clients but is no longer the source of truth.
 
 ## Pipeline and outputs
 
@@ -49,8 +50,11 @@ Each attempt writes an immutable directory:
   run.log
 ```
 
-`run.json` records the job, preset, timestamps, counters, terminal state, and
-error. `results.sqlite` indexes JSON results by `clip_id + frame_index +
+`run.json` records the job, preset, timestamps, counters, terminal state,
+error, submitted configuration revision, and SHA256 of all five configuration
+files. The queue also stores the validated preprocessing, calibration, and hand
+tracking snapshot used at submission, so a queued job cannot silently consume
+later YAML edits. `results.sqlite` indexes JSON results by `clip_id + frame_index +
 session_time_ns`. `run.log` is flushed during lifecycle transitions.
 
 The original MP4, telemetry database, session manifest, and quality report are
@@ -115,9 +119,10 @@ not decoded again. The 2D overlay and 3D hand pose use the same
 switching navigation unloads the active decoder.
 
 The Pipeline page owns queued and historical jobs, including cancel and retry.
-System Settings persists the default preset and automatic-enqueue policy in
-`jobs.sqlite3`. The workbench's Process Current Video command always submits
-the current clip with that persisted default.
+System Settings persists the default preset, automatic-enqueue policy,
+inference stride, and result type through `ConfigurationService`. The
+workbench's Process Current Video command always submits the current clip with
+that saved configuration and records its provenance in the queue entry.
 
 ## Verification
 
@@ -127,6 +132,9 @@ conda run -n egoglass python -m pytest -q `
   tests\test_video_processing_service.py `
   tests\test_video_processing_runner.py `
   tests\test_video_processing_export.py `
+  tests\test_configuration_service.py `
+  tests\test_configuration_runtime.py `
+  tests\test_ui_processing_settings.py `
   tests\test_ui_replay_player.py `
   tests\test_ui_video_hall.py `
   tests\test_ui_native_views.py

@@ -71,9 +71,18 @@ candidate and marker regions are visibly read-only placeholders: they expose no
 editor, annotation store, or file-write path until a slicing algorithm exists.
 
 Pipeline owns task progress, cancel, retry, elapsed time, and failure history.
-System Settings owns the persisted default preset and the disabled-by-default
-automatic enqueue switch. These controls are no longer embedded in the video
-workbench.
+System Settings contains an internal Fluent navigation rail for Client and
+Gateway, Sensor Preprocessing, Hand Tracking, and Offline Video Processing.
+Each module uses typed controls, shows the field's application level, and keeps
+edits in memory until Save or Save and Apply. Discard restores the last saved
+revision; Restore Defaults affects only the selected module. Calibration JSON
+is selected as a file and validated rather than edited as a matrix form.
+
+Settings never parse YAML directly. `ConfigurationService` validates and writes
+the five configuration files, while `UnifiedRuntimeHost` applies live inference
+and future-job defaults. Restart-bound gateway values remain visibly pending.
+Device capture resolution and bitrate are read-only because the glasses own
+those settings.
 
 `SpatialSyncCanvas` uses pyqtgraph's `GLViewWidget` and PyOpenGL. It renders the
 glasses mesh, camera origin, camera XYZ axes, frustum, recorded IMU orientation,

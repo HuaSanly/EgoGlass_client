@@ -14,7 +14,7 @@ from .contracts import (
     ProcessingPreset,
 )
 
-_SCHEMA_VERSION = "2"
+_SCHEMA_VERSION = "4"
 
 
 class ProcessingJobStore:
@@ -33,10 +33,14 @@ class ProcessingJobStore:
         preset: ProcessingPreset,
         *,
         retry_of_job_id: str | None = None,
+        configuration_revision: int = 0,
+        configuration_sha256_by_file: tuple[tuple[str, str], ...] = (),
+        configuration_snapshot_json: str = "{}",
     ) -> ProcessingJob:
         _validate_identifier(session_id, "session_id")
         if clip_id is not None:
             _validate_identifier(clip_id, "clip_id")
+        _validate_configuration_snapshot(configuration_snapshot_json)
         now_ns = time.time_ns()
         job_id = uuid.uuid4().hex
         with self._connect() as connection:
@@ -44,8 +48,10 @@ class ProcessingJobStore:
                 """
                 INSERT INTO jobs (
                     job_id, session_id, clip_id, preset_json, state,
-                    created_at_unix_ns, updated_at_unix_ns, detail, retry_of_job_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at_unix_ns, updated_at_unix_ns, detail, retry_of_job_id,
+                    configuration_revision, configuration_sha256_json
+                    , configuration_snapshot_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -57,6 +63,13 @@ class ProcessingJobStore:
                     now_ns,
                     "等待处理",
                     retry_of_job_id,
+                    configuration_revision,
+                    json.dumps(
+                        dict(configuration_sha256_by_file),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    configuration_snapshot_json,
                 ),
             )
         return self.require(job_id)
@@ -164,7 +177,14 @@ class ProcessingJobStore:
             detail="已取消",
         )
 
-    def retry(self, job_id: str) -> ProcessingJob:
+    def retry(
+        self,
+        job_id: str,
+        *,
+        configuration_revision: int = 0,
+        configuration_sha256_by_file: tuple[tuple[str, str], ...] = (),
+        configuration_snapshot_json: str = "{}",
+    ) -> ProcessingJob:
         job = self.require(job_id)
         if job.state not in {
             ProcessingJobState.FAILED,
@@ -172,7 +192,15 @@ class ProcessingJobStore:
             ProcessingJobState.CANCELED,
         }:
             raise ValueError("only failed, interrupted, or canceled jobs can be retried")
-        return self.enqueue(job.session_id, job.clip_id, job.preset, retry_of_job_id=job.job_id)
+        return self.enqueue(
+            job.session_id,
+            job.clip_id,
+            job.preset,
+            retry_of_job_id=job.job_id,
+            configuration_revision=configuration_revision,
+            configuration_sha256_by_file=configuration_sha256_by_file,
+            configuration_snapshot_json=configuration_snapshot_json,
+        )
 
     def recover_interrupted(self) -> int:
         values = tuple(state.value for state in ACTIVE_JOB_STATES)
@@ -290,7 +318,10 @@ class ProcessingJobStore:
                     run_id TEXT,
                     retry_of_job_id TEXT REFERENCES jobs(job_id),
                     started_at_unix_ns INTEGER,
-                    finished_at_unix_ns INTEGER
+                    finished_at_unix_ns INTEGER,
+                    configuration_revision INTEGER NOT NULL DEFAULT 0,
+                    configuration_sha256_json TEXT NOT NULL DEFAULT '{}',
+                    configuration_snapshot_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS jobs_state_created
                     ON jobs(state, created_at_unix_ns);
@@ -304,7 +335,7 @@ class ProcessingJobStore:
                     "INSERT INTO metadata(key, value) VALUES ('schema_version', ?)",
                     (_SCHEMA_VERSION,),
                 )
-            elif row["value"] == "1":
+            elif row["value"] in {"1", "2", "3"}:
                 columns = {
                     str(item["name"])
                     for item in connection.execute("PRAGMA table_info(jobs)").fetchall()
@@ -316,6 +347,21 @@ class ProcessingJobStore:
                 if "finished_at_unix_ns" not in columns:
                     connection.execute(
                         "ALTER TABLE jobs ADD COLUMN finished_at_unix_ns INTEGER"
+                    )
+                if "configuration_revision" not in columns:
+                    connection.execute(
+                        "ALTER TABLE jobs ADD COLUMN configuration_revision "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "configuration_sha256_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE jobs ADD COLUMN configuration_sha256_json "
+                        "TEXT NOT NULL DEFAULT '{}'"
+                    )
+                if "configuration_snapshot_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE jobs ADD COLUMN configuration_snapshot_json "
+                        "TEXT NOT NULL DEFAULT '{}'"
                     )
                 connection.execute(
                     "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
@@ -347,6 +393,9 @@ def _preset_json(preset: ProcessingPreset) -> str:
 
 def _job_from_row(row: sqlite3.Row) -> ProcessingJob:
     payload = json.loads(row["preset_json"])
+    configuration_hashes = json.loads(row["configuration_sha256_json"])
+    if not isinstance(configuration_hashes, dict):
+        raise RuntimeError("invalid processing job configuration provenance")
     return ProcessingJob(
         job_id=row["job_id"],
         session_id=row["session_id"],
@@ -362,6 +411,11 @@ def _job_from_row(row: sqlite3.Row) -> ProcessingJob:
         retry_of_job_id=row["retry_of_job_id"],
         started_at_unix_ns=row["started_at_unix_ns"],
         finished_at_unix_ns=row["finished_at_unix_ns"],
+        configuration_revision=row["configuration_revision"],
+        configuration_sha256_by_file=tuple(
+            sorted((str(key), str(value)) for key, value in configuration_hashes.items())
+        ),
+        configuration_snapshot_json=row["configuration_snapshot_json"],
     )
 
 
@@ -369,3 +423,12 @@ def _validate_identifier(value: str, name: str) -> None:
     allowed = "abcdefghijklmnopqrstuvwxyz0123456789_.-"
     if not value.strip() or any(character not in allowed for character in value.lower()):
         raise ValueError(f"{name} contains unsupported characters")
+
+
+def _validate_configuration_snapshot(value: str) -> None:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError("configuration snapshot must be valid JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("configuration snapshot must be a JSON object")

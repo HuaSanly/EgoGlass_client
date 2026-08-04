@@ -76,6 +76,9 @@ class ProcessingJob:
     retry_of_job_id: str | None = None
     started_at_unix_ns: int | None = None
     finished_at_unix_ns: int | None = None
+    configuration_revision: int = 0
+    configuration_sha256_by_file: tuple[tuple[str, str], ...] = ()
+    configuration_snapshot_json: str = "{}"
 
     @property
     def progress_fraction(self) -> float:
@@ -131,3 +134,5 @@ class ProcessingServiceSnapshot:
     auto_enqueue_on_session_complete: bool
     jobs: tuple[ProcessingJob, ...]
     default_preset_id: str = DEFAULT_PRESETS[0].preset_id
+    default_inference_stride_frames: int = 1
+    default_output_result_type: str = "structured_results"

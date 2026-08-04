@@ -43,6 +43,8 @@ def test_case_vp_005_pipeline_preserves_frame_identity_through_result_index(
         ProcessingJobState.RUNNING,
         1,
         1,
+        configuration_revision=9,
+        configuration_sha256_by_file=(("sensor-preprocessing.yaml", "feedface"),),
     )
     output = session / "derived" / "video-processing" / "eval-run"
 
@@ -66,6 +68,11 @@ def test_case_vp_005_pipeline_preserves_frame_identity_through_result_index(
     ]
 
     assert manifest["state"] == "completed"
+    assert manifest["configuration"] == {
+        "revision": 9,
+        "sha256_by_file": {"sensor-preprocessing.yaml": "feedface"},
+        "snapshot": {},
+    }
     assert [
         (
             result["sequence_id"],

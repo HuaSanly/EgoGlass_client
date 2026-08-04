@@ -626,35 +626,6 @@ def test_entering_and_leaving_workbench_opens_once_then_unloads_decoder() -> Non
         window.close()
 
 
-def test_processing_settings_bind_persisted_defaults() -> None:
-    runtime = RuntimeStub()
-    runtime.snapshot_value = RuntimeSnapshot(
-        processing=ProcessingServiceSnapshot(
-            revision=5,
-            active_job_id=None,
-            auto_enqueue_on_session_complete=True,
-            jobs=(),
-            default_preset_id="hand-tracking-balanced",
-        )
-    )
-    window = MainWindow(runtime)  # type: ignore[arg-type]
-    try:
-        settings = window.settings_view
-        settings._update_status()
-        assert settings.preset_combo.currentData() == "hand-tracking-balanced"
-        assert settings.auto_switch.isChecked()
-
-        settings.preset_combo.setCurrentIndex(
-            settings.preset_combo.findData("hand-tracking-preview")
-        )
-        settings.auto_switch.setChecked(False)
-
-        assert runtime.processing_default_presets == ["hand-tracking-preview"]
-        assert runtime.processing_auto_queue == [False]
-    finally:
-        window.close()
-
-
 def test_run_index_refresh_is_not_lost_while_an_older_query_is_in_flight() -> None:
     runtime = RuntimeStub()
     window = MainWindow(runtime)  # type: ignore[arg-type]

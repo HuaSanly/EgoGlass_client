@@ -45,6 +45,29 @@ def test_queue_cancel_distinguishes_waiting_and_running_jobs(tmp_path) -> None:
     assert store.mark_canceled(running.job_id).state is ProcessingJobState.CANCELED
 
 
+def test_job_queue_persists_submission_configuration_provenance(tmp_path) -> None:
+    path = tmp_path / "jobs.sqlite3"
+    store = ProcessingJobStore(path)
+
+    job = store.enqueue(
+        "a" * 32,
+        None,
+        ProcessingPreset(),
+        configuration_revision=7,
+        configuration_sha256_by_file=(("hand-tracking.yaml", "abc123"),),
+        configuration_snapshot_json='{"hand_tracking": {"detector": "mediapipe"}}',
+    )
+
+    restarted = ProcessingJobStore(path).require(job.job_id)
+    assert restarted.configuration_revision == 7
+    assert restarted.configuration_sha256_by_file == (
+        ("hand-tracking.yaml", "abc123"),
+    )
+    assert restarted.configuration_snapshot_json == (
+        '{"hand_tracking": {"detector": "mediapipe"}}'
+    )
+
+
 def test_completed_run_wins_a_cancel_requested_after_its_last_frame(tmp_path) -> None:
     store = ProcessingJobStore(tmp_path / "jobs.sqlite3")
     job = store.enqueue("a" * 32, None, ProcessingPreset())
@@ -92,8 +115,14 @@ def test_queue_migrates_v1_timestamps_without_losing_history(tmp_path) -> None:
         version = connection.execute(
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()
-    assert {"started_at_unix_ns", "finished_at_unix_ns"} <= columns
-    assert version == ("2",)
+    assert {
+        "started_at_unix_ns",
+        "finished_at_unix_ns",
+        "configuration_revision",
+        "configuration_sha256_json",
+        "configuration_snapshot_json",
+    } <= columns
+    assert version == ("4",)
 
 
 def test_results_are_addressed_by_clip_frame_and_session_time(tmp_path) -> None:

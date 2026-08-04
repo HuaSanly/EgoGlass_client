@@ -108,7 +108,8 @@ class HandTrackingRuntime:
         sensor_config_path: str | Path = "config/sensor-preprocessing.yaml",
         hand_tracking_config_path: str | Path = "config/hand-tracking.yaml",
     ) -> None:
-        self.config = HandTrackingRuntimeConfig.load(runtime_config_path)
+        self.runtime_config_path = Path(runtime_config_path).resolve()
+        self.config = HandTrackingRuntimeConfig.load(self.runtime_config_path)
         self.sensor_config_path = Path(sensor_config_path).resolve()
         self.hand_tracking_config_path = Path(hand_tracking_config_path).resolve()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hand-tracking")
@@ -119,6 +120,7 @@ class HandTrackingRuntime:
         self._live_worker: asyncio.Task[None] | None = None
         self._live_enabled = self.config.enabled
         self._offline_processing = False
+        self._reloading_tracker = False
         self._state = (
             HandTrackingRuntimeState.IDLE
             if self._live_enabled
@@ -139,7 +141,7 @@ class HandTrackingRuntime:
     async def submit_live_frame(self, frame: LiveHandTrackingFrame) -> None:
         """Keep at most one newest decoded frame while CUDA inference is in flight."""
 
-        if not self._live_enabled or self._offline_processing:
+        if not self._live_enabled or self._offline_processing or self._reloading_tracker:
             return
         minimum_interval_ns = round(1_000_000_000 / self.config.max_live_inference_fps)
         async with self._lock:
@@ -229,6 +231,42 @@ class HandTrackingRuntime:
                 await asyncio.gather(live_worker, return_exceptions=True)
             await self._release_tracker()
 
+    async def apply_runtime_config(self, config: HandTrackingRuntimeConfig) -> None:
+        """Apply live controls without reconstructing the media path."""
+
+        self.config = config
+        if config.enabled != self._live_enabled:
+            await self.set_live_enabled(config.enabled)
+            return
+        async with self._lock:
+            self._publish_status_locked()
+
+    async def reload_tracker_configuration(self) -> None:
+        """Drain one in-flight inference and recreate the tracker on demand."""
+
+        live_worker: asyncio.Task[None] | None
+        async with self._lock:
+            self._reloading_tracker = True
+            if self._pending_live_frame is not None:
+                self._live_frames_dropped += 1
+                self._pending_live_frame = None
+            live_worker = self._live_worker
+        try:
+            if live_worker is not None and live_worker is not asyncio.current_task():
+                await asyncio.gather(live_worker, return_exceptions=True)
+            await self._release_tracker()
+            async with self._lock:
+                self._latest_result = None
+                self._detail = (
+                    "waiting for the first decoded frame"
+                    if self._live_enabled
+                    else "disabled"
+                )
+                self._publish_status_locked()
+        finally:
+            async with self._lock:
+                self._reloading_tracker = False
+
     async def set_offline_processing(self, active: bool) -> None:
         """Pause live inference while the offline worker exclusively owns the GPU."""
 
@@ -299,7 +337,7 @@ class HandTrackingRuntime:
     async def _run_live_worker(self) -> None:
         while True:
             async with self._lock:
-                if self._offline_processing or not self._live_enabled:
+                if self._offline_processing or not self._live_enabled or self._reloading_tracker:
                     if self._pending_live_frame is not None:
                         self._live_frames_dropped += 1
                         self._pending_live_frame = None

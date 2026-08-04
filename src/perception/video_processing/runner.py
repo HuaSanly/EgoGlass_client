@@ -8,10 +8,13 @@ from pathlib import Path
 
 from perception.sensor_preprocessing import (
     CaptureSessionReader,
+    SensorCalibration,
+    SensorPreprocessingConfig,
     SensorPreprocessingPipeline,
     derive_recorded_clock_mapping,
 )
 from perception.spatial_perception.hand_tracking import (
+    HandTrackingConfig,
     HumanEgoHandTrackingPipeline,
     release_pipeline_resources,
 )
@@ -36,11 +39,7 @@ class SessionProcessingRunner:
     ) -> None:
         self.sensor_config_path = Path(sensor_config_path).resolve()
         self.hand_tracking_config_path = Path(hand_tracking_config_path).resolve()
-        self._tracker_factory = tracker_factory or (
-            lambda: HumanEgoHandTrackingPipeline.from_config_file(
-                str(self.hand_tracking_config_path)
-            )
-        )
+        self._tracker_factory = tracker_factory
         self._tracker: HumanEgoHandTrackingPipeline | None = None
 
     def inspect(self, session_path: Path, clip_id: str | None) -> int:
@@ -88,10 +87,22 @@ class SessionProcessingRunner:
             frame_evidence,
             imu_evidence,
         )
-        preprocessing = SensorPreprocessingPipeline.from_config_file(
-            self.sensor_config_path,
-            recorded_mapping.mapper,
-        )
+        snapshotted = _processing_configuration(job)
+        if snapshotted is None:
+            preprocessing = SensorPreprocessingPipeline.from_config_file(
+                self.sensor_config_path,
+                recorded_mapping.mapper,
+            )
+            hand_config = None
+        else:
+            sensor_config, calibration, hand_config = snapshotted
+            preprocessing = SensorPreprocessingPipeline(
+                calibration,
+                recorded_mapping.mapper,
+                recorded_config=sensor_config.recorded,
+                image_config=sensor_config.image,
+                live_config=sensor_config.live,
+            )
         selected = None if job.clip_id is None else {job.clip_id}
         total = sum(
             clip.frame_count
@@ -104,7 +115,7 @@ class SessionProcessingRunner:
         input_count = 0
         inferred_count = 0
         detected_count = 0
-        tracker = self._tracker_for_worker()
+        tracker = self._tracker_for_worker(hand_config)
         try:
             for bundle in preprocessing.iter_recorded_session(
                 session_path,
@@ -160,9 +171,19 @@ class SessionProcessingRunner:
             completed_at_unix_ns=completed_ns,
         )
 
-    def _tracker_for_worker(self) -> HumanEgoHandTrackingPipeline:
+    def _tracker_for_worker(
+        self,
+        config: HandTrackingConfig | None,
+    ) -> HumanEgoHandTrackingPipeline:
         if self._tracker is None:
-            self._tracker = self._tracker_factory()
+            if self._tracker_factory is not None:
+                self._tracker = self._tracker_factory()
+            elif config is not None:
+                self._tracker = HumanEgoHandTrackingPipeline.from_config(config)
+            else:
+                self._tracker = HumanEgoHandTrackingPipeline.from_config_file(
+                    str(self.hand_tracking_config_path)
+                )
         return self._tracker
 
     def release_gpu(self) -> None:
@@ -206,6 +227,11 @@ class SessionProcessingRunner:
                 "display_name": job.preset.display_name,
                 "inference_stride_frames": job.preset.inference_stride_frames,
             },
+            "configuration": {
+                "revision": job.configuration_revision,
+                "sha256_by_file": dict(job.configuration_sha256_by_file),
+                "snapshot": json.loads(job.configuration_snapshot_json),
+            },
             "started_at_unix_ns": started_at_unix_ns,
             "completed_at_unix_ns": completed_at_unix_ns,
             "input_frame_count": input_frame_count,
@@ -219,3 +245,41 @@ class SessionProcessingRunner:
             encoding="utf-8",
         )
         os.replace(temporary, path)
+
+
+def _processing_configuration(
+    job: ProcessingJob,
+) -> tuple[SensorPreprocessingConfig, SensorCalibration, HandTrackingConfig] | None:
+    payload = json.loads(job.configuration_snapshot_json)
+    if not payload:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("processing configuration snapshot must be an object")
+    sensor_payload = payload.get("sensor_preprocessing")
+    calibration_payload = payload.get("sensor_calibration")
+    hand_payload = payload.get("hand_tracking")
+    if not all(
+        isinstance(value, dict)
+        for value in (sensor_payload, calibration_payload, hand_payload)
+    ):
+        raise ValueError("processing configuration snapshot is incomplete")
+    assert isinstance(sensor_payload, dict)
+    assert isinstance(calibration_payload, dict)
+    assert isinstance(hand_payload, dict)
+    sensor_values = dict(sensor_payload)
+    sensor_values["calibration_file"] = Path(str(sensor_values["calibration_file"]))
+    hand_values = dict(hand_payload)
+    hand_values["model_directory"] = Path(str(hand_values["model_directory"]))
+    return (
+        SensorPreprocessingConfig.model_validate(sensor_values),
+        SensorCalibration.model_validate(_tupleize(calibration_payload)),
+        HandTrackingConfig.model_validate(hand_values),
+    )
+
+
+def _tupleize(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _tupleize(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return tuple(_tupleize(item) for item in value)
+    return value

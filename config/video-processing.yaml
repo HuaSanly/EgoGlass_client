@@ -1,0 +1,6 @@
+# Defaults captured when a new offline video-processing task is submitted.
+schema_version: "1.0"
+default_preset_id: hand-tracking-quality
+auto_enqueue_on_session_complete: false
+default_inference_stride_frames: 1
+default_output_result_type: structured_results

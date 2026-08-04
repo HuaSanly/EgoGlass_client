@@ -16,3 +16,4 @@ recordings/
 local-data/
 *.mp4
 *.parquet
+config/*.yaml.bak

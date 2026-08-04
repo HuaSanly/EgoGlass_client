@@ -1,0 +1,9 @@
+# Unified native client and gateway settings. These values require a client restart.
+schema_version: "1.0"
+host: 0.0.0.0
+port: 8770
+discovery_port: 8771
+enable_discovery: true
+
+# Relative paths are resolved from this YAML file's directory.
+recordings_root: ../local-data/recordings

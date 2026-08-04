@@ -1,9 +1,22 @@
 # Client Configuration
 
-This directory holds shared client configuration. Runtime values belong in
-named files such as `capture.toml`, `spatial-perception.toml`,
-`interaction-processing.toml`, and `dataset-builder.toml` only after their
-contracts and supported parameters are defined.
+`perception.configuration.ConfigurationService` is the single writer for these
+files. It validates all edited modules before saving, replaces each YAML file
+atomically, and retains the previous contents as `<name>.yaml.bak`. The native
+UI must use that service instead of parsing or constructing YAML directly.
+
+The settings page exposes four modules backed by five files:
+
+- `client-runtime.yaml`: gateway binding, discovery, and recordings root.
+- `sensor-preprocessing.yaml`: calibration selection and frame/IMU preparation.
+- `perception-runtime.yaml` plus `hand-tracking.yaml`: live scheduling and the
+  HumanEgo-compatible hand-tracking algorithm.
+- `video-processing.yaml`: defaults captured by newly submitted offline jobs.
+
+Saved fields carry one of four application levels: `immediate`, `next_session`,
+`next_task`, or `restart_client`. Saving does not interrupt an active recording,
+tracker inference, or offline GPU job. The runtime applies immediate changes and
+reports the remaining levels to the operator.
 
 `sensor-preprocessing.yaml` is the sensor-preprocessing runtime configuration.
 It selects the calibration JSON and controls the common recorded, image, and
@@ -18,3 +31,16 @@ pipeline loads whichever calibration file `sensor-preprocessing.yaml` selects.
 `hand-tracking.yaml` selects the native Windows CUDA device, detector fallback,
 confidence/geometry thresholds, ignored model directory, and exact upstream
 code and model revisions for the HumanEgo-compatible HaMeR pipeline.
+
+On first use, valid `auto_enqueue` and `default_preset_id` metadata from
+`<recordings-root>/.processing/jobs.sqlite3` is migrated to
+`video-processing.yaml`. A migration marker prevents old values from overwriting
+later edits. New saves mirror those two values back to the legacy metadata while
+the existing processing service still reads it.
+
+Each successful save increments a revision in
+`<recordings-root>/.processing/configuration-state.json`. Call
+`ConfigurationService.provenance()` when an offline run is submitted to capture
+that revision and the SHA256 of all five YAML files in its `run.json`. The queue
+also stores the validated sensor calibration and perception values captured at
+submission, so later edits cannot change an already queued task.

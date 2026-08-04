@@ -8,7 +8,12 @@ from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
 from ingest_gateway.capture_session import CaptureSessionDatabase
 from ingest_gateway.webrtc_matcher import FrameMetadataMatch
 from ingest_gateway.webrtc_models import VideoFrameMetadata
-from perception.sensor_preprocessing import PreparedFrameBundle
+from perception.sensor_preprocessing import (
+    PreparedFrameBundle,
+    SensorCalibration,
+    SensorPreprocessingConfig,
+)
+from perception.spatial_perception.hand_tracking import HandTrackingConfig
 from perception.video_processing import (
     ProcessingJob,
     ProcessingJobState,
@@ -24,6 +29,8 @@ from tests.test_sensor_preprocessing_pipeline import (
     _write_calibration,
     _write_preprocessing_config,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _FakeTracker:
@@ -128,6 +135,22 @@ def test_session_runner_writes_complete_immutable_run_from_capture_evidence(
         sensor_config_path=sensor_config,
         tracker_factory=lambda: tracker,  # type: ignore[arg-type]
     )
+    configuration_snapshot = json.dumps(
+        {
+            "sensor_preprocessing": SensorPreprocessingConfig.load(
+                sensor_config
+            ).model_dump(mode="json"),
+            "sensor_calibration": SensorCalibration.load(calibration).model_dump(
+                mode="json"
+            ),
+            "hand_tracking": HandTrackingConfig.load(
+                PROJECT_ROOT / "config" / "hand-tracking.yaml"
+            ).model_dump(mode="json"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    sensor_config.write_text("invalid: [", encoding="utf-8")
     job = ProcessingJob(
         job_id="job-test",
         session_id=SESSION_ID,
@@ -136,6 +159,9 @@ def test_session_runner_writes_complete_immutable_run_from_capture_evidence(
         state=ProcessingJobState.RUNNING,
         created_at_unix_ns=1,
         updated_at_unix_ns=1,
+        configuration_revision=4,
+        configuration_sha256_by_file=(("hand-tracking.yaml", "deadbeef"),),
+        configuration_snapshot_json=configuration_snapshot,
     )
     output = session / "derived" / "video-processing" / "run-test"
     progress: list[tuple[int, int]] = []
@@ -160,6 +186,11 @@ def test_session_runner_writes_complete_immutable_run_from_capture_evidence(
     assert tracker.frames[1][2] > tracker.frames[0][2]
     assert manifest["state"] == "completed"
     assert manifest["input_frame_count"] == 2
+    assert manifest["configuration"] == {
+        "revision": 4,
+        "sha256_by_file": {"hand-tracking.yaml": "deadbeef"},
+        "snapshot": json.loads(configuration_snapshot),
+    }
     assert results.count() == 2
     assert (output / "run.log").read_text(encoding="utf-8").endswith(
         "run completed\n"

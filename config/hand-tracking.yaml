@@ -6,6 +6,7 @@ model_directory: ../local-data/models/hand-tracking
 
 device: cuda
 require_cuda: true
+enable_cuda_amp: true
 require_hamer: true
 download_models: true
 

@@ -4,7 +4,8 @@ import json
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 
 from .contracts import (
@@ -32,6 +33,9 @@ class VideoProcessingService:
         *,
         runner: SessionProcessingRunner | None = None,
         on_gpu_job_changed: Callable[[bool], None] | None = None,
+        configuration_provenance_provider: (
+            Callable[[], tuple[int, Mapping[str, str], str]] | None
+        ) = None,
     ) -> None:
         self.recordings_root = Path(recordings_root).expanduser().resolve()
         self.recordings_root.mkdir(parents=True, exist_ok=True)
@@ -40,6 +44,7 @@ class VideoProcessingService:
         )
         self.runner = runner or SessionProcessingRunner()
         self.on_gpu_job_changed = on_gpu_job_changed
+        self.configuration_provenance_provider = configuration_provenance_provider
         self._condition = threading.Condition()
         self._stop_requested = False
         self._thread: threading.Thread | None = None
@@ -51,6 +56,8 @@ class VideoProcessingService:
             if any(preset.preset_id == stored_preset for preset in DEFAULT_PRESETS)
             else DEFAULT_PRESETS[0].preset_id
         )
+        self._default_inference_stride_frames = 1
+        self._default_output_result_type = "structured_results"
         self._revision = 0
 
     @property
@@ -96,7 +103,21 @@ class VideoProcessingService:
         preset = next((item for item in self.presets if item.preset_id == preset_id), None)
         if preset is None:
             raise KeyError(f"unknown processing preset {preset_id!r}")
-        job = self.store.enqueue(session_id, clip_id, preset)
+        preset = replace(
+            preset,
+            inference_stride_frames=self._default_inference_stride_frames,
+        )
+        configuration_revision, configuration_hashes, configuration_snapshot = (
+            self._configuration_provenance()
+        )
+        job = self.store.enqueue(
+            session_id,
+            clip_id,
+            preset,
+            configuration_revision=configuration_revision,
+            configuration_sha256_by_file=tuple(sorted(configuration_hashes.items())),
+            configuration_snapshot_json=configuration_snapshot,
+        )
         self._notify_changed()
         return job
 
@@ -106,7 +127,15 @@ class VideoProcessingService:
         return job
 
     def retry(self, job_id: str) -> ProcessingJob:
-        job = self.store.retry(job_id)
+        configuration_revision, configuration_hashes, configuration_snapshot = (
+            self._configuration_provenance()
+        )
+        job = self.store.retry(
+            job_id,
+            configuration_revision=configuration_revision,
+            configuration_sha256_by_file=tuple(sorted(configuration_hashes.items())),
+            configuration_snapshot_json=configuration_snapshot,
+        )
         self._notify_changed()
         return job
 
@@ -125,6 +154,29 @@ class VideoProcessingService:
             self.store.set_setting("default_preset_id", preset_id)
             self._revision += 1
         return preset_id
+
+    def set_configuration_defaults(
+        self,
+        *,
+        default_preset_id: str,
+        auto_enqueue_on_session_complete: bool,
+        default_inference_stride_frames: int,
+        default_output_result_type: str,
+    ) -> None:
+        """Apply defaults to jobs submitted after this call."""
+
+        if not any(preset.preset_id == default_preset_id for preset in self.presets):
+            raise KeyError(f"unknown processing preset {default_preset_id!r}")
+        if default_inference_stride_frames < 1:
+            raise ValueError("default inference stride must be positive")
+        if default_output_result_type != "structured_results":
+            raise ValueError("unsupported default output result type")
+        with self._condition:
+            self._default_preset_id = default_preset_id
+            self._auto_enqueue = bool(auto_enqueue_on_session_complete)
+            self._default_inference_stride_frames = default_inference_stride_frames
+            self._default_output_result_type = default_output_result_type
+            self._revision += 1
 
     def enqueue_completed_session(self, session_id: str) -> ProcessingJob | None:
         with self._condition:
@@ -145,7 +197,16 @@ class VideoProcessingService:
             self._auto_enqueue,
             self.store.list_jobs(),
             self._default_preset_id,
+            self._default_inference_stride_frames,
+            self._default_output_result_type,
         )
+
+    def _configuration_provenance(self) -> tuple[int, dict[str, str], str]:
+        provider = self.configuration_provenance_provider
+        if provider is None:
+            return 0, {}, "{}"
+        revision, values, snapshot = provider()
+        return revision, dict(values), snapshot
 
     def result_for_frame(
         self,
