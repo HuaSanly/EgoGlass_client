@@ -10,6 +10,7 @@ from typing import Literal
 from PyQt6.QtCore import QSignalBlocker, Qt, QTimer
 from PyQt6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QStackedWidget,
     QVBoxLayout,
@@ -45,6 +46,7 @@ from ui.runtime import UnifiedRuntimeHost
 # Display metadata is intentionally compact and may contain long localized descriptions.
 # ruff: noqa: E501
 FieldKind = Literal["bool", "choice", "int", "float", "text", "path", "file"]
+_SETTINGS_BACKGROUND = "#f7f9fc"
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,14 +328,30 @@ class _ModulePage(QWidget):
         super().__init__(parent)
         self.module_id = module_id
         self.cards: dict[str, _ParameterCard] = {}
+        self.setObjectName(f"{module_id}SettingsPage")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"#{self.objectName()} {{ background-color: {_SETTINGS_BACKGROUND}; }}"
+        )
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         scroll = SmoothScrollArea(self)
+        scroll.setObjectName(f"{module_id}SettingsScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(SmoothScrollArea.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.setStyleSheet(
+            f"QScrollArea#{scroll.objectName()} {{ "
+            f"background-color: {_SETTINGS_BACKGROUND}; border: none; }}"
+        )
+        scroll.viewport().setStyleSheet(
+            f"background-color: {_SETTINGS_BACKGROUND}; border: none;"
+        )
         content = QWidget(scroll)
         content.setObjectName(f"{module_id}SettingsContent")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        content.setStyleSheet(
+            f"#{content.objectName()} {{ background-color: {_SETTINGS_BACKGROUND}; }}"
+        )
         layout = QVBoxLayout(content)
         layout.setContentsMargins(2, 2, 12, 24)
         layout.setSpacing(18)
@@ -342,6 +360,12 @@ class _ModulePage(QWidget):
             group = groups.get(spec.group)
             if group is None:
                 group = SettingCardGroup(spec.group, content)
+                group.setObjectName(f"{module_id}{spec.group}SettingsGroup")
+                group.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+                group.setStyleSheet(
+                    group.styleSheet()
+                    + f"\nSettingCardGroup {{ background-color: {_SETTINGS_BACKGROUND}; }}"
+                )
                 groups[spec.group] = group
                 layout.addWidget(group)
             impact = _field_impact(impacts, spec.path)
@@ -439,6 +463,11 @@ class ProcessingSettingsView(QWidget):
         root.addWidget(self.module_navigation)
 
         body = QWidget(self)
+        body.setObjectName("settingsBody")
+        body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        body.setStyleSheet(
+            f"#settingsBody {{ background-color: {_SETTINGS_BACKGROUND}; }}"
+        )
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(28, 20, 28, 18)
         body_layout.setSpacing(12)
@@ -458,6 +487,12 @@ class ProcessingSettingsView(QWidget):
         body_layout.addLayout(header)
 
         self.stack = QStackedWidget(self)
+        self.stack.setObjectName("settingsPageStack")
+        self.stack.setFrameShape(QFrame.Shape.NoFrame)
+        self.stack.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.stack.setStyleSheet(
+            f"#settingsPageStack {{ background-color: {_SETTINGS_BACKGROUND}; border: none; }}"
+        )
         body_layout.addWidget(self.stack, 1)
         action_row = QHBoxLayout()
         action_row.setSpacing(10)

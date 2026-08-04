@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from perception.configuration import ConfigurationService
 from ui.state import RuntimeSnapshot
@@ -61,6 +61,10 @@ def test_parameter_workspace_keeps_navigation_and_actions_visible(
         assert view.stack.width() > 700
         assert view.stack.height() > 600
         assert view.apply_button.isVisible()
+        assert "background-color: #f7f9fc" in view.pages["sensor_preprocessing"].styleSheet()
+        body = view.findChild(QWidget, "settingsBody")
+        assert body is not None
+        assert "background-color: #f7f9fc" in body.styleSheet()
         for module_id in view.pages:
             view._select_module(module_id)
             qt_application.processEvents()
