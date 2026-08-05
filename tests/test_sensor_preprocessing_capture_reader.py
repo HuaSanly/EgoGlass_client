@@ -7,24 +7,24 @@ from pathlib import Path
 
 import pytest
 
-from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
-from ingest_gateway.capture_session import CaptureSessionDatabase
-from ingest_gateway.recording_models import (
+from sensor_preprocessing import (
+    CaptureSessionReader,
+    CaptureSessionReadError,
+    ImuSensorType,
+    MetadataMatchStatus,
+)
+from ui.gateway.adapters.mp4_recorder import RecordedVideoFrame
+from ui.gateway.capture_session import CaptureSessionDatabase
+from ui.gateway.recording_models import (
     CaptureSessionClip,
     CaptureSessionLifecycle,
     CaptureSessionManifest,
     CaptureSessionTimeOrigin,
     CaptureVideoProfile,
 )
-from ingest_gateway.webrtc_matcher import FrameMetadataMatch
-from ingest_gateway.webrtc_models import ImuSample, VideoFrameMetadata
-from ingest_gateway.webrtc_models import ImuSensorType as GatewayImuSensorType
-from perception.sensor_preprocessing import (
-    CaptureSessionReader,
-    CaptureSessionReadError,
-    ImuSensorType,
-    MetadataMatchStatus,
-)
+from ui.gateway.webrtc_matcher import FrameMetadataMatch
+from ui.gateway.webrtc_models import ImuSample, VideoFrameMetadata
+from ui.gateway.webrtc_models import ImuSensorType as GatewayImuSensorType
 
 SESSION_ID = "a" * 32
 CLIP_ID = "b" * 32

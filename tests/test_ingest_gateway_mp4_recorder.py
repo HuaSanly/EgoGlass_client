@@ -8,8 +8,8 @@ import av
 import pytest
 from aiortc import MediaStreamError
 
-from ingest_gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
-from ingest_gateway.recording_inspection import inspect_recording
+from ui.gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
+from ui.gateway.recording_inspection import inspect_recording
 
 
 class NonMonotonicVideoTrack:
@@ -24,7 +24,7 @@ class NonMonotonicVideoTrack:
 
     @staticmethod
     def _frame(pts: int) -> av.VideoFrame:
-        frame = av.VideoFrame(1280, 720, "yuv420p")
+        frame = av.VideoFrame(640, 480, "yuv420p")
         frame.pts = pts
         frame.time_base = Fraction(1, 90_000)
         return frame
@@ -66,6 +66,7 @@ def test_recorder_normalizes_non_monotonic_webrtc_timestamps(tmp_path: Path) -> 
         await recorder.stop()
 
         inspection = inspect_recording(path)
+        assert (inspection.width, inspection.height) == (640, 480)
         assert inspection.decoded_frames == 4
         assert recorder.frames_received == 4
         assert [

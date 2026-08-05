@@ -1,4 +1,4 @@
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     ClockId,
     ClockMappingSegment,
     SegmentedClockMapper,

@@ -4,9 +4,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from annotation.models import ProposalRequest, SaveDraftRequest
-from annotation.store import AnnotationStore
 from tests.conftest import CLIP_ID, SESSION_ID, complete_episode, create_capture_session
+from ui.annotation.models import ProposalRequest, SaveDraftRequest
+from ui.annotation.store import AnnotationStore
 
 
 def test_eval_manual_review_publishes_traceable_non_destructive_revision(

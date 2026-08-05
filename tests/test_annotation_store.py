@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from annotation.models import ProposalRequest, SaveDraftRequest
-from annotation.store import (
+from tests.conftest import CLIP_ID, SESSION_ID, complete_episode, create_capture_session
+from ui.annotation.models import ProposalRequest, SaveDraftRequest
+from ui.annotation.store import (
     AnnotationReadOnlyError,
     AnnotationStore,
     AnnotationValidationError,
     RevisionConflictError,
 )
-from tests.conftest import CLIP_ID, SESSION_ID, complete_episode, create_capture_session
 
 
 def test_workspace_discovers_capture_sessions_and_declares_real_capabilities(

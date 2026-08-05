@@ -1,36 +1,39 @@
 # EgoGlass Client
 
 The Windows client receives Glass3 video and IMU, records capture sessions,
-runs online perception, replays stored media, and provides a native operator UI.
+processes stored video, optionally runs online perception, and provides a native UI.
 The runtime uses one Python process and one Conda environment named `egoglass`.
 
 ## Layout
 
 ```text
-ui/                         # Dear PyGui application and native views
 src/
-  annotation/               # Annotation contracts, editor state, and persistence
-  ingest_gateway/           # WebRTC ingress, recording, and raw sessions
-  perception/               # Independently reusable research/runtime core
-    sensor_preprocessing/   # Time mapping, calibration, and prepared inputs
-    spatial_perception/     # Hand tracking; planned VIO and coordinate fusion
+  schemas/                  # Public frame, IMU, playback, and result types
+  sensor_preprocessing/     # Time mapping, calibration, and prepared inputs
+  hand_tracking/            # Live and offline hand-tracking algorithms
+  slam_vio/                 # Reserved SLAM/VIO algorithm package
+  process_video.py          # Thin no-UI offline processing entry point
+ui/
+  application/              # Runtime lifecycle and native client host
+  gateway/                  # WebRTC ingress, recording, and raw sessions
+  processing/               # UI-backed queue, results, and export
 config/                     # Shared client configuration
 tests/                      # Deterministic gate tests
 evals/                      # Periodic quality evaluations and device evidence
-scripts/                    # Setup, launch, build, benchmark, and inspection
-packaging/                  # Windows executable packaging assets
+scripts/                    # Setup, launch, benchmark, and inspection
 docs/                       # Component operation notes
 ```
 
-Dear PyGui owns the main thread. WebRTC and Uvicorn use one asyncio thread;
-RGB conversion, inference, recording, replay, and IMU orientation use bounded
+PyQt owns the main thread. WebRTC and Uvicorn use one asyncio thread;
+RGB conversion, inference, recording, playback, and IMU orientation use bounded
 workers inside that same process. The native UI calls runtime objects directly.
 HTTP port `8770` remains available for Glass3 signaling and external diagnostics.
 
 Hand tracking adapts HumanEgo's MediaPipe/ViTPose + HaMeR flow. Source and
 license records for adapted model code live beside the hand-tracking module.
 
-See [native UI](docs/native-ui.md), [ingest gateway](docs/ingest-gateway.md),
+See [native UI](docs/native-ui.md), [video processing](docs/video-processing.md),
+[ingest gateway](docs/ingest-gateway.md),
 [sensor preprocessing](docs/sensor-preprocessing.md),
 [hand tracking](docs/hand-tracking.md), [spatial perception](docs/spatial-perception.md),
 [interaction processing](docs/interaction-processing.md), and
@@ -67,13 +70,20 @@ Completed recordings live under ignored path `local-data/recordings/`.
 Annotation revisions are written beneath each session's `annotations/`
 directory and do not modify source MP4 or telemetry files.
 
-Build the local Windows executable with:
+For a single no-UI offline run, use the thin CLI against a complete capture
+session. It does not start the gateway or Qt:
 
 ```powershell
-.\scripts\build-desktop.ps1
+conda run -n egoglass python src\process_video.py `
+  --session local-data\recordings\<session-id> `
+  --output local-data\headless-runs\<run-id>
 ```
 
-The ignored output is `dist/EgoGlass/EgoGlass.exe`.
+## License
+
+The client source is licensed under GPLv3 because its native UI links PyQt6
+and PyQt6-Fluent-Widgets. Dependency license details are recorded in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Verification
 

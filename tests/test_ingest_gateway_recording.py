@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
@@ -9,10 +10,10 @@ from pathlib import Path
 import av
 import pytest
 
-from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
-from ingest_gateway.adapters.webrtc import WebRtcVideoRecordingSource
-from ingest_gateway.capture_session import CaptureSessionDatabase
-from ingest_gateway.recording import (
+from ui.gateway.adapters.mp4_recorder import RecordedVideoFrame
+from ui.gateway.adapters.webrtc import WebRtcVideoRecordingSource
+from ui.gateway.capture_session import CaptureSessionDatabase
+from ui.gateway.recording import (
     COUNTDOWN_SECONDS,
     RecordingClipNotFoundError,
     RecordingConflictError,
@@ -21,8 +22,8 @@ from ingest_gateway.recording import (
     RecordingSessionNotFoundError,
     RecordingUnavailableError,
 )
-from ingest_gateway.recording_inspection import inspect_recording
-from ingest_gateway.recording_models import (
+from ui.gateway.recording_inspection import inspect_recording
+from ui.gateway.recording_models import (
     RecordingCommandRequest,
     RecordingSessionRenameRequest,
 )
@@ -52,8 +53,19 @@ class ControlledCountdown:
 
 
 class FakeRecorder:
-    def __init__(self, path: Path, _track: object) -> None:
+    def __init__(
+        self,
+        path: Path,
+        _track: object,
+        *,
+        width: int,
+        height: int,
+        fps: int,
+    ) -> None:
         self.path = path
+        self.width = width
+        self.height = height
+        self.fps = fps
         self.started = False
         self.frames_received = 1
         self.finished = asyncio.Event()
@@ -96,14 +108,21 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
 ) -> None:
     async def scenario() -> None:
         source = FakeVideoSource()
-        video = WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720, 1)
+        video = WebRtcVideoRecordingSource(SESSION_ID, source, 640, 480, 1)
         countdown = ControlledCountdown()
         writers: list[FakeRecorder] = []
         wall_ms = [1_000_000]
         monotonic_ns = [5_000_000_000]
 
-        def factory(path: Path, track: object) -> FakeRecorder:
-            writer = FakeRecorder(path, track)
+        def factory(
+            path: Path,
+            track: object,
+            *,
+            width: int,
+            height: int,
+            fps: int,
+        ) -> FakeRecorder:
+            writer = FakeRecorder(path, track, width=width, height=height, fps=fps)
             writers.append(writer)
             return writer
 
@@ -119,12 +138,21 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
         countdown_status = await runtime.start()
         assert countdown_status.state == "countdown"
         assert countdown_status.recording_starts_at_unix_ms == 1_003_000
+        assert (countdown_status.output.width, countdown_status.output.height) == (
+            640,
+            480,
+        )
         assert source.subscriptions == []
 
         await countdown.started.wait()
         wall_ms[0] = 1_003_006
         countdown.release.set()
         await advance_until(lambda: bool(writers and writers[0].started))
+        assert (writers[0].width, writers[0].height, writers[0].fps) == (
+            640,
+            480,
+            30,
+        )
         recording_status = await runtime.status()
         assert recording_status.state == "recording"
         assert recording_status.recording_started_at_unix_ms == 1_003_006
@@ -144,6 +172,7 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
         assert library.sessions[0].state == "active"
         assert len(library.sessions[0].clips) == 1
         clip = library.sessions[0].clips[0]
+        assert (clip.width, clip.height) == (640, 480)
         assert clip.frame_count == 1
         assert clip.file_size_bytes == len(b"finalized-mp4")
         assert await runtime.media_path(SESSION_ID, clip.clip_id) == (
@@ -154,6 +183,14 @@ def test_three_second_countdown_then_completed_clip_is_grouped_by_session(
         manifest_path = tmp_path / SESSION_ID / "session.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["contract_id"] == "capture-session-v1"
+        assert manifest["provenance"]["capture_config"] == {
+            "capture_config_id": None,
+            "source": "glasses_negotiated",
+            "width": 640,
+            "height": 480,
+            "nominal_fps": 30.0,
+            "target_bitrate_bps": 8_000_000,
+        }
         assert manifest["storage"]["telemetry_database_path"] == (
             "telemetry/telemetry.sqlite"
         )
@@ -217,8 +254,15 @@ def test_source_end_finalizes_current_recording(tmp_path: Path) -> None:
         countdown = ControlledCountdown()
         writers: list[FakeRecorder] = []
 
-        def factory(path: Path, track: object) -> FakeRecorder:
-            writer = FakeRecorder(path, track)
+        def factory(
+            path: Path,
+            track: object,
+            *,
+            width: int,
+            height: int,
+            fps: int,
+        ) -> FakeRecorder:
+            writer = FakeRecorder(path, track, width=width, height=height, fps=fps)
             writers.append(writer)
             return writer
 
@@ -284,13 +328,46 @@ def test_session_replacement_during_countdown_publishes_nothing(tmp_path: Path) 
     asyncio.run(scenario())
 
 
-def test_recording_rejects_non_hd_source(tmp_path: Path) -> None:
+def test_dimension_change_during_countdown_publishes_nothing(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        countdown = ControlledCountdown()
+        source = FakeVideoSource()
+        sources = [
+            WebRtcVideoRecordingSource(SESSION_ID, source, 640, 480, 1),
+            WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720, 1),
+        ]
+
+        async def source_provider() -> WebRtcVideoRecordingSource:
+            return sources.pop(0)
+
+        runtime = RecordingRuntime(
+            tmp_path,
+            source_provider,
+            recorder_factory=FakeRecorder,
+            sleep=countdown.sleep,
+            session_id_factory=lambda: SESSION_ID,
+        )
+        await runtime.start()
+        countdown.release.set()
+        await advance_until(lambda: not sources)
+
+        status = await runtime.status()
+        assert status.state == "error"
+        assert status.detail == "recording failed: RecordingUnavailableError"
+        assert source.subscriptions == []
+        assert (await runtime.library()).sessions[0].clips == []
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_recording_rejects_odd_source_dimensions(tmp_path: Path) -> None:
     async def scenario() -> None:
         source = WebRtcVideoRecordingSource(
             SESSION_ID,
             FakeVideoSource(),
-            1920,
-            1080,
+            641,
+            480,
             1,
         )
         runtime = RecordingRuntime(
@@ -298,7 +375,7 @@ def test_recording_rejects_non_hd_source(tmp_path: Path) -> None:
             lambda: asyncio.sleep(0, result=source),
             recorder_factory=FakeRecorder,
         )
-        with pytest.raises(RecordingUnavailableError, match="must be 1280x720"):
+        with pytest.raises(RecordingUnavailableError, match="dimensions are invalid"):
             await runtime.start()
         assert not list(tmp_path.iterdir())
 
@@ -369,8 +446,15 @@ def test_delete_clip_updates_manifest_and_removes_empty_session(
         video = WebRtcVideoRecordingSource(SESSION_ID, source, 1280, 720, 1)
         writers: list[FakeRecorder] = []
 
-        def factory(path: Path, track: object) -> FakeRecorder:
-            writer = FakeRecorder(path, track)
+        def factory(
+            path: Path,
+            track: object,
+            *,
+            width: int,
+            height: int,
+            fps: int,
+        ) -> FakeRecorder:
+            writer = FakeRecorder(path, track, width=width, height=height, fps=fps)
             writers.append(writer)
             return writer
 
@@ -458,6 +542,73 @@ def test_recording_request_rejects_unknown_fields() -> None:
         RecordingSessionRenameRequest(display_name="厨房\n采集")
 
 
+def test_library_scan_does_not_block_the_media_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        runtime = RecordingRuntime(tmp_path, lambda: asyncio.sleep(0, result=None))
+        started = threading.Event()
+        release = threading.Event()
+        scan_library = runtime._scan_library
+
+        def blocked_scan():
+            started.set()
+            if not release.wait(1.0):
+                raise TimeoutError("test did not release recording library scan")
+            return scan_library()
+
+        monkeypatch.setattr(runtime, "_scan_library", blocked_scan)
+        scan_task = asyncio.create_task(runtime.library())
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=0.2)
+
+        heartbeat_ran = False
+
+        async def heartbeat() -> None:
+            nonlocal heartbeat_ran
+            await asyncio.sleep(0)
+            heartbeat_ran = True
+
+        await asyncio.wait_for(heartbeat(), timeout=0.2)
+        assert heartbeat_ran
+        assert not scan_task.done()
+        release.set()
+        assert (await scan_task).sessions == []
+
+    asyncio.run(scenario())
+
+
+def test_library_scan_serializes_with_recording_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        runtime = RecordingRuntime(tmp_path, lambda: asyncio.sleep(0, result=None))
+        started = threading.Event()
+        release = threading.Event()
+        scan_library = runtime._scan_library
+
+        def blocked_scan():
+            started.set()
+            if not release.wait(1.0):
+                raise TimeoutError("test did not release recording library scan")
+            return scan_library()
+
+        monkeypatch.setattr(runtime, "_scan_library", blocked_scan)
+        scan_task = asyncio.create_task(runtime.library())
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=0.2)
+
+        status_task = asyncio.create_task(runtime.status())
+        await asyncio.sleep(0)
+        assert not status_task.done()
+
+        release.set()
+        assert (await scan_task).sessions == []
+        assert (await status_task).state == "unavailable"
+
+    asyncio.run(scenario())
+
+
 def test_failed_whole_session_delete_leaves_unpublished_tombstone(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -471,7 +622,7 @@ def test_failed_whole_session_delete_leaves_unpublished_tombstone(
         def fail_delete(_path: Path) -> None:
             raise OSError("locked file")
 
-        monkeypatch.setattr("ingest_gateway.recording.shutil.rmtree", fail_delete)
+        monkeypatch.setattr("ui.gateway.recording.shutil.rmtree", fail_delete)
         with pytest.raises(RecordingFailureError, match="tombstone"):
             await runtime.delete_session(SESSION_ID)
 

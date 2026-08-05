@@ -25,8 +25,8 @@ def test_repeated_media_errors_are_rate_limited_and_counted() -> None:
 def test_non_media_logs_are_never_rate_limited() -> None:
     error_filter = RepeatedMediaErrorFilter(clock=lambda: 0.0)
 
-    assert error_filter.filter(_record("ingest_gateway.webrtc_runtime"))
-    assert error_filter.filter(_record("ingest_gateway.webrtc_runtime"))
+    assert error_filter.filter(_record("ui.gateway.webrtc_runtime"))
+    assert error_filter.filter(_record("ui.gateway.webrtc_runtime"))
 
 
 def test_ctrl_c_exits_native_client_without_propagating_traceback(monkeypatch) -> None:
@@ -40,6 +40,15 @@ def test_ctrl_c_exits_native_client_without_propagating_traceback(monkeypatch) -
         disable_discovery=True,
     )
 
+    class RuntimeStub:
+        def __init__(self) -> None:
+            self.stop_calls = 0
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    runtime = RuntimeStub()
+
     class InterruptingApplication:
         def __init__(self, _runtime: object) -> None:
             pass
@@ -48,8 +57,9 @@ def test_ctrl_c_exits_native_client_without_propagating_traceback(monkeypatch) -
             raise KeyboardInterrupt
 
     monkeypatch.setattr(app, "parse_args", lambda _argv: args)
-    monkeypatch.setattr(app, "UnifiedRuntimeHost", lambda _config: object())
+    monkeypatch.setattr(app, "UnifiedRuntimeHost", lambda _config: runtime)
     monkeypatch.setattr(app, "NativeApplication", InterruptingApplication)
     monkeypatch.setattr(app, "configure_logging", lambda: None)
 
     assert app.main([]) == 0
+    assert runtime.stop_calls == 1

@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from annotation.controller import AnnotationController
-from annotation.models import EpisodeLabels, PhaseKind
-from annotation.store import AnnotationStore
 from tests.conftest import SESSION_ID
+from ui.annotation.controller import AnnotationController
+from ui.annotation.models import EpisodeLabels, PhaseKind
+from ui.annotation.store import AnnotationStore
 
 
 def test_controller_edits_undoes_saves_and_publishes(recordings_root: Path) -> None:

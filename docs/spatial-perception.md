@@ -12,7 +12,7 @@ perception algorithm or third-party source has been copied into the package.
 
 | Path | Purpose |
 | --- | --- |
-| `src/perception/spatial_perception/` | Planned spatial-perception package. |
+| `src/hand_tracking/` and `src/slam_vio/` | Hand tracking and planned SLAM/VIO services. |
 | `tests/` | Shared fast tests, identified by `test_spatial_perception_` filenames. |
 | `evals/` | Shared periodic evaluations, identified by `test_spatial_perception_` filenames. |
 | `config/` | Shared versioned client configuration. |

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from aiortc import RTCBundlePolicy
 from aiortc.mediastreams import MediaStreamError
 
-from ingest_gateway.adapters.aiortc_peer import (
+from ui.gateway.adapters.aiortc_peer import (
     FRAME_METADATA_CHANNEL_LABEL,
     IMU_TELEMETRY_CHANNEL_LABEL,
     STREAM_CONTROL_CHANNEL_LABEL,
@@ -16,7 +16,7 @@ from ingest_gateway.adapters.aiortc_peer import (
     lan_rtc_configuration,
     negotiated_video_codec_from_sdp,
 )
-from ingest_gateway.adapters.webrtc import WebRtcPeerCallbacks
+from ui.gateway.adapters.webrtc import WebRtcPeerCallbacks
 
 
 class FakeDataChannel:

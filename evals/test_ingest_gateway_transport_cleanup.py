@@ -1,10 +1,11 @@
 from pathlib import Path
 
-from ingest_gateway.app import create_app
+import ui.gateway as gateway
+from ui.gateway.app import create_app
 
 
 def test_retired_platform_fallback_is_absent_from_the_ingest_service() -> None:
-    package = Path(__import__("ingest_gateway").__path__[0])
+    package = Path(gateway.__path__[0])
     source_root = package.parent
     app_source = (package / "app.py").read_text(encoding="utf-8")
     service_root = source_root.parent

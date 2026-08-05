@@ -107,26 +107,29 @@ sorts mapped IMU evidence, and emits immutable
 the IMU samples assigned to its frame interval, plus the exact calibration and
 time-mapping provenance required by VIO and hand tracking.
 
-The two input paths share all preparation after frame acquisition:
+The input paths share all preparation after frame acquisition:
 
 - `process_live_frame()` accepts an aiortc/PyAV `VideoFrame` that the gateway
-  has already decoded. It never decodes or encodes video. A proportional
-  WebRTC transport downscale is resized back to the calibrated source raster
-  before rotation and undistortion; upscales and aspect-ratio changes are
-  rejected.
+  has already decoded. This remains the direct-gateway compatibility boundary.
+- `process_live_rgb_frame()` accepts the canonical immutable RGB array already
+  produced for the native display. The unified client uses this path so
+  perception never reads a PyAV frame while the display converter is reading
+  it. Neither live path decodes or encodes video. A proportional WebRTC
+  transport downscale is resized back to the calibrated source raster before
+  rotation and undistortion; upscales and aspect-ratio changes are rejected.
 - `iter_recorded_session()` verifies the completed capture, decodes each MP4
   frame once, checks decoded PTS against the stored exact frame index, and feeds
   the same image preparation and output contract.
 
 Live hand tracking can run from decoded frames and a connection-local receipt
 timeline because it does not consume IMU. That does not prove a recording is
-ready for strict video/IMU replay. Offline replay first derives and persists the
+ready for strict video/IMU processing. Offline processing first derives the
 recorded clock mapping, then requires every used video frame and IMU sample to
 resolve through that one mapper. There is no video-only fallback.
 
 The pipeline does not persist decoded RGB frames. Long-term capture remains
-compressed MP4 plus immutable metadata and IMU; the same decoded frame can be
-shared with live VIO, hand tracking, and visualization in memory.
+compressed MP4 plus immutable metadata and IMU. The canonical immutable RGB
+array can be shared with live VIO, hand tracking, and visualization in memory.
 
 `config/sensor-preprocessing.yaml` selects the calibration file and contains
 the common runtime controls: media-hash verification, FFmpeg decode thread
@@ -134,11 +137,13 @@ count, undistortion and remap modes, and the live pending-IMU limit. Relative
 calibration paths are resolved from the YAML directory. Unknown settings and
 wrong value types are rejected.
 
-`config/sensor-calibration.sample.json` assumes the decoded 1280x720 Glass3
-frame is already upright, so it applies zero image rotation. It contains guessed
-intrinsics, zero distortion, an identity Camera-to-IMU transform, and unmeasured
-IMU noise. It exists to exercise the interface. The pipeline uses whichever
-valid calibration JSON the YAML selects. Replace the sample values with
+`config/sensor-calibration-640x480-sample.json` is currently selected for the
+horizontal 4:3 Glass3 trial and assumes the decoded frame is already upright, so
+it applies zero image rotation. The previous
+`config/sensor-calibration.sample.json` retains the 1280x720 comparison profile.
+Both contain guessed intrinsics, zero distortion, an identity Camera-to-IMU
+transform, and unmeasured IMU noise. The pipeline uses whichever valid
+calibration JSON the YAML selects. Replace the selected sample values with
 parameters from a measured external calibration before collecting algorithm
 results.
 
@@ -175,13 +180,13 @@ with a complete time, uncertainty, and mapping-segment reference.
 The current reader deliberately does not decode video, sort/filter/resample IMU,
 fit clocks, infer exposure time, bind calibration, or split sequences. Those are
 separate preprocessing stages. It also has no runtime import dependency on
-`ingest_gateway`, `annotation`, `ui`, or `spatial_perception`; only tests use the
+`ui.gateway`, `ui.annotation`, `ui`, or `hand_tracking`; only tests use the
 real gateway writer to produce contract-compatible synthetic fixtures.
 
 ## Public API
 
 ```python
-from perception.sensor_preprocessing import CaptureSessionReader
+from sensor_preprocessing import CaptureSessionReader
 
 reader = CaptureSessionReader.open(session_directory)
 frames = reader.iter_frames(clip_id)
@@ -189,7 +194,7 @@ imu_samples = reader.iter_imu_samples()
 ```
 
 ```python
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     ClockId,
     ClockMappingSegment,
     SegmentedClockMapper,
@@ -232,7 +237,7 @@ aligned = mapper.map(
 ```
 
 ```python
-from perception.sensor_preprocessing import SensorPreprocessingPipeline
+from sensor_preprocessing import SensorPreprocessingPipeline
 
 pipeline = SensorPreprocessingPipeline.from_config_file(
     "config/sensor-preprocessing.yaml",
@@ -243,12 +248,12 @@ for bundle in pipeline.iter_recorded_session("recordings/session-id"):
     spatial_perception.process(bundle)
 ```
 
-The hand-tracking replay runtime performs the strict derivation before creating
+`VideoProcessingService` performs the strict derivation before creating
 the preprocessing pipeline. Callers using the pipeline directly must supply the
 same mapper explicitly:
 
 ```python
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     CaptureSessionReader,
     derive_recorded_clock_mapping,
     persist_recorded_clock_mapping,

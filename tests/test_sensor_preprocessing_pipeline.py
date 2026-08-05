@@ -12,18 +12,7 @@ import pytest
 import yaml
 from av import VideoFrame
 
-from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
-from ingest_gateway.capture_session import CaptureSessionDatabase
-from ingest_gateway.recording_models import (
-    CaptureSessionClip,
-    CaptureSessionLifecycle,
-    CaptureSessionManifest,
-    CaptureSessionTimeOrigin,
-    CaptureVideoProfile,
-)
-from ingest_gateway.webrtc_models import ImuSample
-from ingest_gateway.webrtc_models import ImuSensorType as GatewayImuSensorType
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     AlignmentStatus,
     CaptureSessionReader,
     ClockId,
@@ -43,6 +32,17 @@ from perception.sensor_preprocessing import (
     glasses_elapsed_source_instance_id,
     mp4_source_instance_id,
 )
+from ui.gateway.adapters.mp4_recorder import RecordedVideoFrame
+from ui.gateway.capture_session import CaptureSessionDatabase
+from ui.gateway.recording_models import (
+    CaptureSessionClip,
+    CaptureSessionLifecycle,
+    CaptureSessionManifest,
+    CaptureSessionTimeOrigin,
+    CaptureVideoProfile,
+)
+from ui.gateway.webrtc_models import ImuSample
+from ui.gateway.webrtc_models import ImuSensorType as GatewayImuSensorType
 
 SESSION_ID = "a" * 32
 CONNECTION_ID = "b" * 32
@@ -218,14 +218,15 @@ def test_repository_config_selects_sample_calibration() -> None:
     calibration = SensorCalibration.load(config.calibration_file)
 
     assert config.calibration_file == (
-        config_directory / "sensor-calibration.sample.json"
+        config_directory / "sensor-calibration-640x480-sample.json"
     ).resolve()
-    assert calibration.profile_name == "rokid-glass3-720p30-sample"
+    assert calibration.profile_name == "rokid-glass3-640x480p30-sample"
+    assert calibration.capture_config_id == "640x480p30"
     assert calibration.rotation_degrees == 0
-    assert calibration.calibrated_width == 1280
-    assert calibration.calibrated_height == 720
-    assert calibration.camera_matrix[0][2] == 640.0
-    assert calibration.camera_matrix[1][2] == 360.0
+    assert calibration.calibrated_width == 640
+    assert calibration.calibrated_height == 480
+    assert calibration.camera_matrix[0][2] == 320.0
+    assert calibration.camera_matrix[1][2] == 240.0
     assert calibration.calibration_profile_id.startswith("sensor-calibration-v1-")
 
 
@@ -314,6 +315,27 @@ def test_live_pipeline_normalizes_balanced_webrtc_resolution_to_calibration(
     assert bundle.image_bgr.shape == (8, 6, 3)
     assert np.all(bundle.image_bgr == 37)
     assert bundle.calibration is calibration
+
+
+def test_live_pipeline_accepts_canonical_rgb_without_mutating_it(tmp_path: Path) -> None:
+    calibration = SensorCalibration.load(
+        _write_calibration(tmp_path / "calibration.json", rotation_degrees=90)
+    )
+    pipeline = _pipeline(calibration)
+    image_rgb = np.empty((6, 8, 3), dtype=np.uint8)
+    image_rgb[:] = (10, 20, 30)
+    image_rgb.setflags(write=False)
+
+    bundle = pipeline.process_live_rgb_frame(
+        image_rgb,
+        _live_frame_input(0, 20_000_000),
+    )
+
+    assert bundle.image_bgr.shape == (8, 6, 3)
+    assert np.all(bundle.image_bgr == np.asarray((30, 20, 10), dtype=np.uint8))
+    assert not bundle.image_bgr.flags.writeable
+    assert not image_rgb.flags.writeable
+    assert np.all(image_rgb == np.asarray((10, 20, 30), dtype=np.uint8))
 
 
 def test_live_pipeline_rejects_transport_scaling_with_different_aspect_ratio(

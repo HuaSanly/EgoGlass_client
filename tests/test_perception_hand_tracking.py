@@ -10,15 +10,7 @@ import numpy as np
 import pytest
 import torch
 
-from perception.sensor_preprocessing import (
-    CalibrationProvenance,
-    ImuCalibration,
-    PreparedFrameBundle,
-    SensorCalibration,
-    TimestampSemantic,
-    TimeStatus,
-)
-from perception.spatial_perception.hand_tracking import (
+from hand_tracking import (
     DetectedHand,
     Handedness,
     HandReconstruction,
@@ -32,12 +24,20 @@ from perception.spatial_perception.hand_tracking import (
     rotated_image_points_to_source,
     source_image_dimensions,
 )
-from perception.spatial_perception.hand_tracking.models import (
+from hand_tracking.models import (
     detector_bbox_has_valid_geometry,
     readonly_float_array,
 )
-from perception.spatial_perception.hand_tracking.weights import (
+from hand_tracking.weights import (
     ensure_hand_tracking_weights,
+)
+from sensor_preprocessing import (
+    CalibrationProvenance,
+    ImuCalibration,
+    PreparedFrameBundle,
+    SensorCalibration,
+    TimestampSemantic,
+    TimeStatus,
 )
 
 REPOSITORY = Path(__file__).parents[1]
@@ -56,7 +56,7 @@ class FakeDetector:
 
 def test_hand_tracking_runtime_does_not_reference_humanego_checkout() -> None:
     runtime_files = list(
-        (REPOSITORY / "src" / "perception" / "spatial_perception").rglob("*.py")
+        (REPOSITORY / "src" / "hand_tracking").rglob("*.py")
     )
     runtime_files.extend(
         (
@@ -218,7 +218,9 @@ def _reconstruction(depth: float = 0.6) -> HandReconstruction:
 
 def test_repository_config_is_pinned_and_resolves_local_model_directory() -> None:
     repository = Path(__file__).parents[1]
-    config = HandTrackingConfig.load(repository / "config" / "hand-tracking.yaml")
+    config = HandTrackingConfig.load(
+        repository / "config" / "live-hand-tracking.yaml"
+    )
 
     assert config.require_cuda is True
     assert config.require_hamer is True
@@ -316,7 +318,7 @@ def test_two_hands_share_one_hamer_batch_and_keep_detection_mapping(tmp_path: Pa
 def test_hamer_adapter_collates_two_crops_into_one_model_forward(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from perception.spatial_perception.hand_tracking.humanego_hamer import (
+    from hand_tracking.humanego_hamer import (
         HumanEgoHaMeRModel,
     )
 
@@ -524,7 +526,7 @@ def test_result_payload_is_json_serializable_and_keeps_camera_frame_name(
 
 
 def test_amp_is_never_enabled_for_cpu_inference(tmp_path: Path) -> None:
-    from perception.spatial_perception.hand_tracking.humanego_hamer import (
+    from hand_tracking.humanego_hamer import (
         _cuda_amp_enabled,
     )
 
@@ -539,7 +541,7 @@ def test_amp_is_never_enabled_for_cpu_inference(tmp_path: Path) -> None:
 
 
 def test_vitpose_amp_heatmaps_return_to_fp32_before_opencv_postprocess() -> None:
-    from perception.spatial_perception.hand_tracking.humanego_hamer import (
+    from hand_tracking.humanego_hamer import (
         _install_vitpose_fp32_postprocess,
     )
 

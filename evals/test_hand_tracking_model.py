@@ -12,18 +12,18 @@ import numpy as np
 import pytest
 import torch
 
-from perception.sensor_preprocessing import (
+from hand_tracking import (
+    HandTrackingResult,
+    HumanEgoHandTrackingPipeline,
+    ReconstructionBackend,
+)
+from sensor_preprocessing import (
     CalibrationProvenance,
     ImuCalibration,
     PreparedFrameBundle,
     SensorCalibration,
     TimestampSemantic,
     TimeStatus,
-)
-from perception.spatial_perception.hand_tracking import (
-    HandTrackingResult,
-    HumanEgoHandTrackingPipeline,
-    ReconstructionBackend,
 )
 
 RUN_MODEL_EVAL = os.environ.get("EGOGLASS_RUN_HAND_MODEL_EVAL") == "1"
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 REPOSITORY = Path(__file__).parents[1]
-MODEL_CONFIG = REPOSITORY / "config" / "hand-tracking.yaml"
+MODEL_CONFIG = REPOSITORY / "config" / "offline-hand-tracking.yaml"
 TEASER_URL = (
     "https://raw.githubusercontent.com/geopavlakos/hamer/"
     "3a01849f4148352e9260b69bf28b65d1671a4905/assets/teaser.jpg"
@@ -53,7 +53,7 @@ RECORDING = (
 def model_pipeline() -> HumanEgoHandTrackingPipeline:
     pipeline = HumanEgoHandTrackingPipeline.from_config_file(str(MODEL_CONFIG))
     runtime_module = importlib.import_module(
-        "perception.spatial_perception.hand_tracking.humanego_hamer"
+        "hand_tracking.humanego_hamer"
     )
     runtime_path = Path(runtime_module.__file__).resolve()
     assert runtime_path.is_relative_to(REPOSITORY / "src")

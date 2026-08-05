@@ -1,0 +1,37 @@
+# Quality-first hand tracking for offline video processing.
+schema_version: "1.0"
+
+# Relative paths are resolved from this YAML file. This directory is ignored by Git.
+model_directory: ../local-data/models/hand-tracking
+
+device: cuda
+require_cuda: true
+enable_cuda_amp: false
+require_hamer: true
+download_models: true
+
+# Offline processing always uses the heaviest HumanEgo detector and HaMeR path.
+detector: vitpose
+fallback_detector: none
+allow_mediapipe_reconstruction_fallback: false
+vitpose_variant: h
+
+detector_keypoint_confidence: 0.3
+detector_min_valid_keypoints: 3
+detector_bbox_padding_ratio: 0.3
+detector_min_bbox_dimension_ratio: 0.05
+detector_max_bbox_area_ratio: 0.35
+minimum_hand_confidence: 0.3
+
+physical_wrist_to_middle_mcp_m: 0.085
+minimum_depth_m: 0.05
+maximum_depth_m: 3.0
+grasp_ratio_threshold: 1.0
+
+sources:
+  hamer_code_revision: 3a01849f4148352e9260b69bf28b65d1671a4905
+  hamer_weights_revision: f64df318d49e7e014a6a7f5d0547cba87d6e4317
+  vitpose_code_revision: bb9860359e55b099a507c8000e360d48a27cc36d
+  vitpose_weights_revision: e83805274e89428969355ec4afffcbc413e79188
+  mediapipe_weights_revision: 6ed55322affd263688b9dfffda68a10545f15b95
+  mano_weights_revision: b00adea9a6843bbb4c9042109c5eb29ab2a59dea

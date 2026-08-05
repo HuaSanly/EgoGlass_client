@@ -4,7 +4,7 @@ import asyncio
 import json
 import socket
 
-from ingest_gateway.discovery import (
+from ui.gateway.discovery import (
     DISCOVERY_MAX_DATAGRAM_BYTES,
     ClientDiscoveryResponse,
     DiscoveryResponder,

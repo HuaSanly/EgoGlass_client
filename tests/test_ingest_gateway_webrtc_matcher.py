@@ -1,10 +1,10 @@
 import pytest
 
-from ingest_gateway.webrtc_matcher import (
+from ui.gateway.webrtc_matcher import (
     DuplicateMetadataError,
     FrameMetadataMatcher,
 )
-from ingest_gateway.webrtc_models import VideoFrameMetadata
+from ui.gateway.webrtc_models import VideoFrameMetadata
 
 
 def metadata(

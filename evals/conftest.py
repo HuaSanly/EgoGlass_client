@@ -1,3 +1,3 @@
-from tests.conftest import recordings_root
+from tests.conftest import qt_application, recordings_root
 
-__all__ = ["recordings_root"]
+__all__ = ["qt_application", "recordings_root"]

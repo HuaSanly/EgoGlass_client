@@ -7,14 +7,14 @@ from fractions import Fraction
 import pytest
 from av import VideoFrame
 
-from ingest_gateway.adapters.webrtc import (
+from ui.gateway.adapters.webrtc import (
     DecodedVideoFrame,
     WebRtcControlChannel,
     WebRtcImuChannel,
     WebRtcPeerCallbacks,
     WebRtcReceiverStats,
 )
-from ingest_gateway.webrtc_models import (
+from ui.gateway.webrtc_models import (
     ImuChannelState,
     StreamControlAction,
     StreamControlCommand,
@@ -22,7 +22,7 @@ from ingest_gateway.webrtc_models import (
     WebRtcOffer,
     WebRtcPhase,
 )
-from ingest_gateway.webrtc_runtime import (
+from ui.gateway.webrtc_runtime import (
     IMU_MAX_PAYLOAD_BYTES,
     RECORDING_FRAME_MAX_AGE_NS,
     PairingTokenError,

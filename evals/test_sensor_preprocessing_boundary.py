@@ -4,19 +4,19 @@ import ast
 import inspect
 from pathlib import Path
 
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     CaptureSessionReader,
     RawFrameRef,
     RawImuSample,
 )
 
 SOURCE_ROOT = (
-    Path(__file__).parents[1] / "src" / "perception" / "sensor_preprocessing"
+    Path(__file__).parents[1] / "src" / "sensor_preprocessing"
 )
 FORBIDDEN_IMPORT_PREFIXES = (
-    "ingest_gateway",
+    "ui.gateway",
     "annotation",
-    "perception.spatial_perception",
+    "hand_tracking",
     "ui",
 )
 

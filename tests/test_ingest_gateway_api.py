@@ -3,20 +3,21 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-import ingest_gateway.app as app_module
-from ingest_gateway.app import create_app
-from ingest_gateway.recording import (
+import ui.gateway.app as app_module
+from ui.gateway.app import create_app
+from ui.gateway.live_frames import LiveFrameBuffer
+from ui.gateway.recording import (
     RecordingClipNotFoundError,
     RecordingSessionNotFoundError,
 )
-from ingest_gateway.recording_models import (
+from ui.gateway.recording_models import (
     RecordingClip,
     RecordingLibrary,
     RecordingSession,
     RecordingState,
     RecordingStatus,
 )
-from ingest_gateway.webrtc_models import (
+from ui.gateway.webrtc_models import (
     ImuChannelState,
     ImuSensorStatus,
     ImuSensorType,
@@ -26,7 +27,7 @@ from ingest_gateway.webrtc_models import (
     StreamControlStatus,
     WebRtcOffer,
 )
-from ingest_gateway.webrtc_runtime import (
+from ui.gateway.webrtc_runtime import (
     StreamControlCommandError,
     StreamControlCommandTimeoutError,
     StreamControlUnavailableError,
@@ -37,9 +38,7 @@ PAIRING_TOKEN = "api-pairing-token-123456"
 
 
 class HandTrackingApiRuntime:
-    def __init__(self, video_path: Path) -> None:
-        self.video_path = video_path
-        self.replay_requests: list[str] = []
+    def __init__(self, _video_path: Path) -> None:
         self.closed = False
 
     async def status(self) -> dict[str, object]:
@@ -52,29 +51,12 @@ class HandTrackingApiRuntime:
             "live_inferences": 2,
             "latest_result": None,
             "last_error": None,
-            "replay": {
-                "state": "idle",
-                "detail": "no replay requested",
-                "frames_processed": 0,
-                "frame_total": 0,
-                "report": None,
-            },
         }
-
-    async def start_replay(self, session_id: str) -> None:
-        self.replay_requests.append(session_id)
 
     async def status_events(self):
         yield await self.status()
         yield None
 
-    async def replay_video_path(
-        self,
-        _session_id: str,
-        _run_id: str,
-        _clip_id: str,
-    ) -> Path:
-        return self.video_path
 
     async def close(self) -> None:
         self.closed = True
@@ -235,6 +217,29 @@ def test_health_and_removed_fallback_routes() -> None:
     assert health.json()["service"] == "ingest-gateway"
     assert status.status_code == 404
     assert probe.status_code == 404
+
+
+def test_native_display_status_exposes_bounded_presentation_metrics() -> None:
+    frame_buffer = LiveFrameBuffer()
+    app = create_app(
+        live_frame_buffer=frame_buffer,
+        viewer_allowed_hosts=frozenset({"testclient"}),
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/v1/native-display/status")
+
+    assert response.status_code == 200
+    assert response.json()["presentation_queue_depth"] == 0
+    assert response.json()["presentation_frames_dropped"] == 0
+    assert response.json()["presentation_starvations"] == 0
+    assert response.json()["presentation_interval_ms"] == 33.333
+    assert response.json()["display_poll_fps"] == 0.0
+    assert response.json()["presentation_fps"] == 0.0
+    assert response.json()["presentation_frames_presented"] == 0
+    assert response.json()["conversion_gap_p95_ms"] == 0.0
+    assert response.json()["conversion_gap_max_ms"] == 0.0
+    assert response.json()["source_pts_gap_p95_ms"] == 0.0
+    assert response.json()["source_pts_gap_max_ms"] == 0.0
 
 
 def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:
@@ -444,8 +449,8 @@ def test_recording_api_is_loopback_only_and_serves_only_registered_media(
     assert status.status_code == 200
     assert status.json()["detail"] == ""
     assert status.json()["output"] == {
-        "width": 1280,
-        "height": 720,
+        "width": 640,
+        "height": 480,
         "fps": 30,
         "container": "mp4",
         "video_codec": "h264",
@@ -556,7 +561,9 @@ def test_cli_disables_high_frequency_preview_access_logs(monkeypatch, capsys) ->
     assert captured["app"].state.discovery_service is not None
 
 
-def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> None:
+def test_hand_tracking_status_is_loopback_only_and_legacy_replay_routes_are_removed(
+    tmp_path: Path,
+) -> None:
     video = tmp_path / "replay.mp4"
     video.write_bytes(b"mp4-data")
     runtime = HandTrackingApiRuntime(video)
@@ -592,9 +599,8 @@ def test_hand_tracking_status_and_replay_are_loopback_only(tmp_path: Path) -> No
     assert "event: status\ndata: " in events.text
     assert '"live_inferences":2' in events.text
     assert events.text.endswith(": heartbeat\n\n")
-    assert replay.status_code == 202
-    assert runtime.replay_requests == [session_id]
-    assert media.content == b"mp4-data"
+    assert replay.status_code == 404
+    assert media.status_code == 404
     assert runtime.closed is True
 
     remote_app = create_app(perception_runtime=HandTrackingApiRuntime(video))  # type: ignore[arg-type]

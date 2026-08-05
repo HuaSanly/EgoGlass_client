@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from ingest_gateway.recording_inspection import inspect_recording
+from ui.gateway.recording_inspection import inspect_recording
 
 
 def main() -> int:

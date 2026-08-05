@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PyQt6.QtWidgets import QApplication
+
 SESSION_ID = "1" * 32
 CLIP_ID = "2" * 32
+
+
+@pytest.fixture(scope="session")
+def qt_application() -> QApplication:
+    return QApplication.instance() or QApplication([])
 
 
 @pytest.fixture
