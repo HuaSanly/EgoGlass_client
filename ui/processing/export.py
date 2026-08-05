@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from av import VideoFrame
 
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     AlignmentStatus,
     CaptureSessionReader,
     derive_recorded_clock_mapping,

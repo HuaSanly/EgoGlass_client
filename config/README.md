@@ -1,6 +1,6 @@
 # Client Configuration
 
-`perception.configuration.ConfigurationService` is the single writer for these
+`ui.configuration.ConfigurationService` is the single writer for these
 files. It validates all edited modules before saving, replaces each YAML file
 atomically, and retains the previous contents as `<name>.yaml.bak`. The native
 UI must use that service instead of parsing or constructing YAML directly.

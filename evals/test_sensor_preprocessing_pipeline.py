@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from av import VideoFrame
 
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     ClockId,
     ClockMappingSegment,
     ImuSensorType,

@@ -39,9 +39,9 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from perception.configuration import ConfigApplyResult, ConfigImpact, ConfigSnapshot
-from perception.video_processing import DEFAULT_PRESETS
-from ui.runtime import UnifiedRuntimeHost
+from ui.application.runtime_host import UnifiedRuntimeHost
+from ui.configuration import ConfigApplyResult, ConfigImpact, ConfigSnapshot
+from ui.processing import DEFAULT_PRESETS
 
 # Display metadata is intentionally compact and may contain long localized descriptions.
 # ruff: noqa: E501

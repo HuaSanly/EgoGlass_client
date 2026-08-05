@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 from av import VideoFrame
 
-from perception.runtime import HandTrackingRuntime, LiveHandTrackingFrame
-from perception.sensor_preprocessing import (
+from hand_tracking.runtime import HandTrackingRuntime, LiveHandTrackingFrame
+from sensor_preprocessing import (
     CaptureSessionReader,
     ClockId,
     TimeObservation,

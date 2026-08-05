@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from .models import Handedness, HandTrackingResult
+from schemas.hand_tracking import Handedness, HandTrackingResult
 
 _BONES = (
     (5, 6),

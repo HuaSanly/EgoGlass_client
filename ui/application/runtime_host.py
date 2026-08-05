@@ -17,15 +17,9 @@ from typing import Any
 
 import uvicorn
 
-from ingest_gateway.app import create_app
-from ingest_gateway.discovery import DISCOVERY_PORT, LanDiscoveryService
-from ingest_gateway.imu_preview import ImuPreviewRuntime
-from ingest_gateway.live_frames import LiveFrame, LiveFrameBuffer
-from ingest_gateway.recording import RecordingRuntime
-from ingest_gateway.recording_models import RecordingLibrary, RecordingState
-from ingest_gateway.webrtc_models import StreamControlAction, StreamControlCommand
-from ingest_gateway.webrtc_runtime import WebRtcSessionRuntime
-from perception.configuration import (
+from hand_tracking.runtime import HandTrackingRuntime, HandTrackingRuntimeConfig
+from sensor_preprocessing import SensorCalibration
+from ui.configuration import (
     ConfigApplyResult,
     ConfigImpact,
     ConfigSnapshot,
@@ -34,15 +28,21 @@ from perception.configuration import (
     ConfigurationService,
     ValidationIssue,
 )
-from perception.runtime import HandTrackingRuntime, HandTrackingRuntimeConfig
-from perception.sensor_preprocessing import SensorCalibration
-from perception.video_processing import (
+from ui.gateway.app import create_app
+from ui.gateway.discovery import DISCOVERY_PORT, LanDiscoveryService
+from ui.gateway.imu_preview import ImuPreviewRuntime
+from ui.gateway.live_frames import LiveFrame, LiveFrameBuffer
+from ui.gateway.recording import RecordingRuntime
+from ui.gateway.recording_models import RecordingLibrary, RecordingState
+from ui.gateway.webrtc_models import StreamControlAction, StreamControlCommand
+from ui.gateway.webrtc_runtime import WebRtcSessionRuntime
+from ui.processing import (
     ProcessingRunInfo,
     SessionProcessingRunner,
     VideoProcessingService,
 )
 
-from .state import CommandResult, RuntimeSnapshot
+from .runtime_state import CommandResult, RuntimeSnapshot
 
 LOGGER = logging.getLogger(__name__)
 

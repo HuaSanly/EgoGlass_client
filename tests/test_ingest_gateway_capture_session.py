@@ -7,20 +7,20 @@ from pathlib import Path
 
 import pytest
 
-from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
-from ingest_gateway.adapters.webrtc import WebRtcVideoRecordingSource
-from ingest_gateway.capture_session import (
+from ui.gateway.adapters.mp4_recorder import RecordedVideoFrame
+from ui.gateway.adapters.webrtc import WebRtcVideoRecordingSource
+from ui.gateway.capture_session import (
     CaptureSessionDatabase,
     CaptureSessionWriter,
     read_capture_quality,
 )
-from ingest_gateway.recording import RecordingRuntime
-from ingest_gateway.recording_models import (
+from ui.gateway.recording import RecordingRuntime
+from ui.gateway.recording_models import (
     CaptureSessionClip,
     CaptureVideoProfile,
 )
-from ingest_gateway.webrtc_matcher import FrameMetadataMatch
-from ingest_gateway.webrtc_models import (
+from ui.gateway.webrtc_matcher import FrameMetadataMatch
+from ui.gateway.webrtc_models import (
     ImuSample,
     ImuSensorType,
     VideoFrameMetadata,

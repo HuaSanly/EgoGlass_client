@@ -23,10 +23,10 @@ from qfluentwidgets import (
     ToggleToolButton,
 )
 
-from ingest_gateway.recording_models import RecordingState
-from ingest_gateway.webrtc_models import StreamControlAction, StreamControlState
-from ui.runtime import UnifiedRuntimeHost
-from ui.state import RuntimeSnapshot
+from ui.application.runtime_host import UnifiedRuntimeHost
+from ui.application.runtime_state import RuntimeSnapshot
+from ui.gateway.recording_models import RecordingState
+from ui.gateway.webrtc_models import StreamControlAction, StreamControlState
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas

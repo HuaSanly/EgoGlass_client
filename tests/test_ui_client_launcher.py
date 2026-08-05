@@ -13,7 +13,7 @@ def test_workspace_launcher_runs_one_unified_native_process() -> None:
     assert "--discovery-port" in script
     assert "--recordings-root" in script
     assert "Start-Process" not in script
-    assert "ingest_gateway.app" not in script
+    assert "ui.gateway.app" not in script
     assert "operator_console" not in script
     assert "client-process-lifecycle" not in script
 

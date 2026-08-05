@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ingest_gateway.imu_preview import ImuPoseSnapshot
-from ingest_gateway.live_frames import LiveFrameStatus
-from ingest_gateway.recording_models import RecordingLibrary, RecordingStatus
-from ingest_gateway.webrtc_models import (
+from ui.gateway.imu_preview import ImuPoseSnapshot
+from ui.gateway.live_frames import LiveFrameStatus
+from ui.gateway.recording_models import RecordingLibrary, RecordingStatus
+from ui.gateway.webrtc_models import (
     ImuTelemetryStatus,
     StreamControlStatus,
     WebRtcStatus,
 )
-from perception.video_processing import ProcessingServiceSnapshot
+from ui.processing import ProcessingServiceSnapshot
 
 
 @dataclass(frozen=True, slots=True)

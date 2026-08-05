@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 from PyQt6.QtWidgets import QWidget
 
-from perception.configuration import ConfigApplyResult, ConfigurationService
-from ui.state import RuntimeSnapshot
+from ui.application.runtime_state import RuntimeSnapshot
+from ui.configuration import ConfigApplyResult, ConfigurationService
 from ui.views.processing_settings import ProcessingSettingsView
 
 

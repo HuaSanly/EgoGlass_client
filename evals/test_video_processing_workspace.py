@@ -12,16 +12,16 @@ from PyQt6.QtCore import QPoint, QRect
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QWidget
 
-from perception.video_processing import (
+from ui.app import MainWindow
+from ui.application.runtime_state import RuntimeSnapshot
+from ui.processing import (
     ProcessingJob,
     ProcessingJobState,
     ProcessingPreset,
     ProcessingRunInfo,
     ProcessingRunState,
 )
-from ui.app import MainWindow
 from ui.replay.player import PlaybackClipSpan, PlaybackFrame, ReplaySnapshot, ReplayState
-from ui.state import RuntimeSnapshot
 from ui.video_processing.hall import VideoHall
 from ui.views.video_processing import _processing_states, _Selection
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
@@ -111,7 +111,7 @@ def test_workbench_keeps_video_and_space_visible_at_supported_sizes(
 def test_video_hall_cards_fill_rows_before_wrapping(
     qt_application: QApplication,
 ) -> None:
-    from ingest_gateway.recording_models import CaptureSessionState
+    from ui.gateway.recording_models import CaptureSessionState
 
     def clip(index: int) -> SimpleNamespace:
         return SimpleNamespace(
@@ -332,8 +332,8 @@ def test_slice_placeholders_have_no_annotation_or_file_write_path() -> None:
         )
     )
 
-    assert "\nfrom annotation" not in sources
-    assert "\nimport annotation" not in sources
+    assert "\nfrom ui.annotation" not in sources
+    assert "\nimport ui.annotation" not in sources
     assert "write_text" not in sources
     assert "write_bytes" not in sources
     assert "只读占位" in sources

@@ -6,9 +6,9 @@ import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from perception.configuration import ConfigurationService
-from perception.runtime import HandTrackingRuntime, HandTrackingRuntimeConfig
-from ui.runtime import RuntimeConfig, UnifiedRuntimeHost
+from hand_tracking.runtime import HandTrackingRuntime, HandTrackingRuntimeConfig
+from ui.application.runtime_host import RuntimeConfig, UnifiedRuntimeHost
+from ui.configuration import ConfigurationService
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

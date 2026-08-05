@@ -13,17 +13,19 @@ from PyQt6.QtWidgets import QApplication, QWidget
 from pyqtgraph.opengl import GLViewWidget
 from qfluentwidgets import HeaderCardWidget, SimpleCardWidget, TitleLabel
 
-from ingest_gateway.imu_preview import ImuPoseSnapshot
-from ingest_gateway.live_frames import LiveFrame
-from ingest_gateway.recording_models import (
+from sensor_preprocessing import RecordedImuPose
+from ui.app import MainWindow
+from ui.application.runtime_state import RuntimeSnapshot
+from ui.gateway.imu_preview import ImuPoseSnapshot
+from ui.gateway.live_frames import LiveFrame
+from ui.gateway.recording_models import (
     CaptureSessionState,
     RecordingClip,
     RecordingLibrary,
     RecordingSession,
 )
-from ingest_gateway.webrtc_models import StreamControlAction
-from perception.sensor_preprocessing import RecordedImuPose
-from perception.video_processing import (
+from ui.gateway.webrtc_models import StreamControlAction
+from ui.processing import (
     ProcessingJob,
     ProcessingJobState,
     ProcessingPreset,
@@ -31,9 +33,7 @@ from perception.video_processing import (
     ProcessingRunState,
     ProcessingServiceSnapshot,
 )
-from ui.app import MainWindow
 from ui.replay.player import PlaybackFrame, ReplayState
-from ui.state import RuntimeSnapshot
 from ui.views.home import HomeView, _confidence_body
 from ui.views.video_processing import _processing_states, _result_counts, _Selection
 from ui.widgets.spatial_sync_canvas import (

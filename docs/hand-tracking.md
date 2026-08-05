@@ -97,7 +97,7 @@ from immutable timing evidence. Missing timing evidence fails the job; there is
 no video-only or unchecked-clock mode. Raw capture files remain unchanged.
 
 ```python
-from perception.spatial_perception.hand_tracking import (
+from hand_tracking import (
     HumanEgoHandTrackingPipeline,
 )
 

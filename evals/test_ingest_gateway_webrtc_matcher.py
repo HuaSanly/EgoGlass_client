@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from ingest_gateway.webrtc_matcher import (
+from ui.gateway.webrtc_matcher import (
     MAX_TIMESTAMP_ERROR_90KHZ,
     FrameMetadataMatcher,
 )
-from ingest_gateway.webrtc_models import VideoFrameMetadata
+from ui.gateway.webrtc_models import VideoFrameMetadata
 
 
 def _metadata(frame_id: int, rtp_timestamp: int) -> VideoFrameMetadata:

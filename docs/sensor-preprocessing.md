@@ -180,13 +180,13 @@ with a complete time, uncertainty, and mapping-segment reference.
 The current reader deliberately does not decode video, sort/filter/resample IMU,
 fit clocks, infer exposure time, bind calibration, or split sequences. Those are
 separate preprocessing stages. It also has no runtime import dependency on
-`ingest_gateway`, `annotation`, `ui`, or `spatial_perception`; only tests use the
+`ui.gateway`, `ui.annotation`, `ui`, or `hand_tracking`; only tests use the
 real gateway writer to produce contract-compatible synthetic fixtures.
 
 ## Public API
 
 ```python
-from perception.sensor_preprocessing import CaptureSessionReader
+from sensor_preprocessing import CaptureSessionReader
 
 reader = CaptureSessionReader.open(session_directory)
 frames = reader.iter_frames(clip_id)
@@ -194,7 +194,7 @@ imu_samples = reader.iter_imu_samples()
 ```
 
 ```python
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     ClockId,
     ClockMappingSegment,
     SegmentedClockMapper,
@@ -237,7 +237,7 @@ aligned = mapper.map(
 ```
 
 ```python
-from perception.sensor_preprocessing import SensorPreprocessingPipeline
+from sensor_preprocessing import SensorPreprocessingPipeline
 
 pipeline = SensorPreprocessingPipeline.from_config_file(
     "config/sensor-preprocessing.yaml",
@@ -253,7 +253,7 @@ the preprocessing pipeline. Callers using the pipeline directly must supply the
 same mapper explicitly:
 
 ```python
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     CaptureSessionReader,
     derive_recorded_clock_mapping,
     persist_recorded_clock_mapping,

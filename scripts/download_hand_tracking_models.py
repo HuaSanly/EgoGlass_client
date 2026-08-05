@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from perception.spatial_perception.hand_tracking import HandTrackingConfig
-from perception.spatial_perception.hand_tracking.weights import (
+from hand_tracking import HandTrackingConfig
+from hand_tracking.weights import (
     ensure_hand_tracking_weights,
 )
 

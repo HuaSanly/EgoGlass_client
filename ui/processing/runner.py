@@ -6,20 +6,20 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from perception.sensor_preprocessing import (
+from hand_tracking import (
+    HandTrackingConfig,
+    HumanEgoHandTrackingPipeline,
+    release_pipeline_resources,
+)
+from sensor_preprocessing import (
     CaptureSessionReader,
     SensorCalibration,
     SensorPreprocessingConfig,
     SensorPreprocessingPipeline,
     derive_recorded_clock_mapping,
 )
-from perception.spatial_perception.hand_tracking import (
-    HandTrackingConfig,
-    HumanEgoHandTrackingPipeline,
-    release_pipeline_resources,
-)
 
-from .contracts import ProcessingJob, ProcessingRunSummary
+from .models import ProcessingJob, ProcessingRunSummary
 from .results import ProcessingResultStore
 
 

@@ -3,13 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from perception.video_processing import (
-    ProcessingJob,
-    ProcessingJobState,
-    ProcessingPreset,
-    ProcessingResultStore,
-    SessionProcessingRunner,
-)
 from tests.test_sensor_preprocessing_pipeline import (
     SESSION_ID,
     _recorded_session,
@@ -17,6 +10,13 @@ from tests.test_sensor_preprocessing_pipeline import (
     _write_preprocessing_config,
 )
 from tests.test_video_processing_runner import _add_strict_frame_evidence, _FakeTracker
+from ui.processing import (
+    ProcessingJob,
+    ProcessingJobState,
+    ProcessingPreset,
+    ProcessingResultStore,
+    SessionProcessingRunner,
+)
 
 
 def test_case_vp_005_pipeline_preserves_frame_identity_through_result_index(

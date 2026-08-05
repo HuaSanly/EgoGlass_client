@@ -17,7 +17,7 @@ if str(CLIENT_ROOT) not in sys.path:
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from ingest_gateway.live_frames import LiveFrame  # noqa: E402
+from ui.gateway.live_frames import LiveFrame  # noqa: E402
 from ui.widgets.video_canvas import VideoCanvas  # noqa: E402
 
 

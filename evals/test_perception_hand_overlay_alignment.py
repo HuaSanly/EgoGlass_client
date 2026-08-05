@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from perception.spatial_perception.hand_tracking import (
+from hand_tracking import (
     rotated_image_bbox_to_source,
     rotated_image_points_to_source,
     source_image_dimensions,

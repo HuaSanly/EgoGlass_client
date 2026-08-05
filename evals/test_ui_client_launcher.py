@@ -10,13 +10,15 @@ def test_one_command_launcher_has_one_application_process_owner() -> None:
     assert "Start-Process" not in script
     assert "Wait-Process" not in script
     assert "Stop-Process" not in script
-    assert "ingest_gateway.app" not in script
+    assert "ui.gateway.app" not in script
     assert "operator_console" not in script
 
 
 def test_one_command_launcher_keeps_pairing_secret_process_local() -> None:
     script = (CLIENT_ROOT / "scripts" / "start-client.ps1").read_text(encoding="utf-8")
-    runtime = (CLIENT_ROOT / "ui" / "runtime.py").read_text(encoding="utf-8")
+    runtime = (CLIENT_ROOT / "ui" / "application" / "runtime_host.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "EGOGLASS_PAIRING_TOKEN" not in script
     assert "Set-Content" not in script

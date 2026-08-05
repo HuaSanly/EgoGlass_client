@@ -14,6 +14,8 @@ from typing import Protocol
 import numpy as np
 from av import VideoFrame
 
+from schemas.frame import FramePacket
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -36,6 +38,19 @@ class LiveFrame:
     @property
     def height(self) -> int:
         return int(self.image_rgb.shape[0])
+
+    def to_frame_packet(self) -> FramePacket:
+        """Expose the decoded frame through the algorithm-facing public schema."""
+
+        return FramePacket(
+            session_id=self.session_id,
+            stream_id=self.connection_session_id,
+            frame_index=self.frame_index,
+            captured_at_ns=None,
+            received_at_ns=self.received_at_client_monotonic_ns,
+            pts_ns=self.video_pts_ns,
+            image_rgb=self.image_rgb,
+        )
 
 
 @dataclass(frozen=True, slots=True)

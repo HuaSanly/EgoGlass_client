@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from perception.video_processing import cleanup_legacy_hand_tracking
+from ui.processing import cleanup_legacy_hand_tracking
 
 
 def _session(root: Path, name: str) -> Path:

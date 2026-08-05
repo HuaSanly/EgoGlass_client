@@ -15,10 +15,10 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication
 from qfluentwidgets import FluentIcon, FluentWindow, Theme, setTheme, setThemeColor
 
-from perception.configuration import ClientRuntimeConfig
+from ui.configuration import ClientRuntimeConfig
 
+from .application.runtime_host import RuntimeConfig, UnifiedRuntimeHost
 from .logging_config import configure_logging
-from .runtime import RuntimeConfig, UnifiedRuntimeHost
 from .views.home import HomeView
 from .views.processing_pipeline import ProcessingPipelineView
 from .views.processing_settings import ProcessingSettingsView

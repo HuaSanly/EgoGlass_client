@@ -7,8 +7,8 @@ from fractions import Fraction
 import numpy as np
 from av import VideoFrame
 
-from ingest_gateway.app import create_app
-from ingest_gateway.live_frames import LiveFrame, LiveFrameBuffer, LiveFramePacer
+from ui.gateway.app import create_app
+from ui.gateway.live_frames import LiveFrame, LiveFrameBuffer, LiveFramePacer
 
 
 def _frame(value: int) -> VideoFrame:

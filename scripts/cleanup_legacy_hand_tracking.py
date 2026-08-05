@@ -11,7 +11,7 @@ CLIENT_ROOT = Path(__file__).resolve().parents[1]
 if str(CLIENT_ROOT) not in sys.path:
     sys.path.insert(0, str(CLIENT_ROOT))
 
-from perception.video_processing import cleanup_legacy_hand_tracking  # noqa: E402
+from ui.processing import cleanup_legacy_hand_tracking  # noqa: E402
 
 
 def main() -> int:

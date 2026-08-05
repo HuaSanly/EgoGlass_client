@@ -13,7 +13,7 @@ or other third-party source has been copied into the package.
 
 | Path | Purpose |
 | --- | --- |
-| `src/perception/dataset_builder/` | Planned dataset-assembly package. |
+| `src/dataset_builder/` | Planned dataset-assembly package. |
 | `tests/` | Shared fast tests, identified by `test_dataset_builder_` filenames. |
 | `evals/` | Shared periodic evaluations, identified by `test_dataset_builder_` filenames. |
 | `config/` | Shared versioned client configuration. |

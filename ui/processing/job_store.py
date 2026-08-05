@@ -6,7 +6,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .contracts import (
+from .models import (
     ACTIVE_JOB_STATES,
     TERMINAL_JOB_STATES,
     ProcessingJob,

@@ -7,10 +7,10 @@ from PyQt6.QtCore import QEvent, QTimer
 from PyQt6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 from qfluentwidgets import InfoBar
 
-from ingest_gateway.recording_models import RecordingLibrary, RecordingSession
-from perception.video_processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo
+from ui.application.runtime_host import UnifiedRuntimeHost
+from ui.gateway.recording_models import RecordingLibrary, RecordingSession
+from ui.processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo
 from ui.replay.player import PlaybackFrame, ReplayPlayer, ReplayState
-from ui.runtime import UnifiedRuntimeHost
 from ui.video_processing import ProcessingWorkbench, VideoHall, VideoThumbnailService
 
 

@@ -4,22 +4,11 @@ import json
 from fractions import Fraction
 from pathlib import Path
 
-from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
-from ingest_gateway.capture_session import CaptureSessionDatabase
-from ingest_gateway.webrtc_matcher import FrameMetadataMatch
-from ingest_gateway.webrtc_models import VideoFrameMetadata
-from perception.sensor_preprocessing import (
+from hand_tracking import HandTrackingConfig
+from sensor_preprocessing import (
     PreparedFrameBundle,
     SensorCalibration,
     SensorPreprocessingConfig,
-)
-from perception.spatial_perception.hand_tracking import HandTrackingConfig
-from perception.video_processing import (
-    ProcessingJob,
-    ProcessingJobState,
-    ProcessingPreset,
-    ProcessingResultStore,
-    SessionProcessingRunner,
 )
 from tests.test_sensor_preprocessing_pipeline import (
     CLIP_ID,
@@ -28,6 +17,17 @@ from tests.test_sensor_preprocessing_pipeline import (
     _recorded_session,
     _write_calibration,
     _write_preprocessing_config,
+)
+from ui.gateway.adapters.mp4_recorder import RecordedVideoFrame
+from ui.gateway.capture_session import CaptureSessionDatabase
+from ui.gateway.webrtc_matcher import FrameMetadataMatch
+from ui.gateway.webrtc_models import VideoFrameMetadata
+from ui.processing import (
+    ProcessingJob,
+    ProcessingJobState,
+    ProcessingPreset,
+    ProcessingResultStore,
+    SessionProcessingRunner,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

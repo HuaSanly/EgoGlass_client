@@ -9,7 +9,7 @@ from collections.abc import Iterable, Iterator, Mapping
 
 import numpy as np
 
-from perception.sensor_preprocessing import PreparedFrameBundle
+from sensor_preprocessing import PreparedFrameBundle
 
 from .models import (
     DetectedHand,

@@ -1,8 +1,9 @@
 # Ingest Gateway
 
 The ingest gateway terminates and decodes the direct Glass3 WebRTC stream,
-submits frames to in-process RGB display and perception consumers, receives IMU
-telemetry, and records operator-selected clips. It does not depend on the UI.
+submits frames to in-process RGB display and algorithm consumers, receives IMU
+telemetry, and records operator-selected clips. It lives under `ui/gateway`,
+but does not import Qt widgets.
 
 ## Direct WebRTC path
 
@@ -22,7 +23,7 @@ For isolated signaling diagnostics only, start the gateway directly and pass
 the generated runtime values through Intent extras:
 
 ~~~powershell
-conda run -n egoglass python -m ingest_gateway.app --host 0.0.0.0 --port 8770
+conda run -n egoglass python -m ui.gateway.app --host 0.0.0.0 --port 8770
 ~~~
 
 ~~~powershell
@@ -133,7 +134,7 @@ Set the root with `--recordings-root` or `EGOGLASS_RECORDINGS_ROOT`. The CLI
 default is `local-data/recordings` relative to the launch directory:
 
 ~~~powershell
-conda run -n egoglass python -m ingest_gateway.app `
+conda run -n egoglass python -m ui.gateway.app `
   --recordings-root F:\data\Project\EgoGlass\EgoGlass_client\local-data\recordings
 ~~~
 
@@ -210,7 +211,7 @@ This service uses PyAV, the maintained Python binding for FFmpeg, so a separate
 system ffmpeg.exe is not required.
 
 ~~~powershell
-conda run -n egoglass python -m ingest_gateway.app
+conda run -n egoglass python -m ui.gateway.app
 ~~~
 
 The CLI binds to `0.0.0.0:8770` by default for Glass3 signaling. Control, IMU,

@@ -8,11 +8,11 @@ from pathlib import Path
 import numpy as np
 from av import VideoFrame
 
-from perception.runtime import (
+from hand_tracking.runtime import (
     HandTrackingRuntime,
     LiveHandTrackingFrame,
 )
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     ClockId,
     TimeObservation,
     TimestampSemantic,

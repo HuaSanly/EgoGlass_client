@@ -16,11 +16,11 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from perception.sensor_preprocessing import (
+from hand_tracking import HandTrackingConfig
+from sensor_preprocessing import (
     SensorCalibration,
     SensorPreprocessingConfig,
 )
-from perception.spatial_perception.hand_tracking import HandTrackingConfig
 
 from .contracts import (
     ConfigApplyResult,

@@ -1,10 +1,12 @@
+import ast
 from pathlib import Path
 
 CLIENT_ROOT = Path(__file__).parents[1]
 EXPECTED_PACKAGES = {
-    "annotation",
-    "ingest_gateway",
-    "perception",
+    "schemas",
+    "sensor_preprocessing",
+    "hand_tracking",
+    "slam_vio",
 }
 
 
@@ -25,12 +27,14 @@ def test_client_uses_one_flat_python_workspace() -> None:
     assert not any(path.name.startswith("egoglass_") for path in (CLIENT_ROOT / "src").iterdir())
 
 
-def test_perception_owns_sensor_preprocessing_package() -> None:
-    perception = CLIENT_ROOT / "src" / "perception"
+def test_algorithms_are_top_level_source_packages() -> None:
+    source_root = CLIENT_ROOT / "src"
 
-    assert (perception / "__init__.py").is_file()
-    assert (perception / "sensor_preprocessing" / "__init__.py").is_file()
-    assert (perception / "sensor_preprocessing" / "models.py").is_file()
+    assert (source_root / "schemas" / "__init__.py").is_file()
+    assert (source_root / "sensor_preprocessing" / "__init__.py").is_file()
+    assert (source_root / "hand_tracking" / "__init__.py").is_file()
+    assert (source_root / "slam_vio" / "__init__.py").is_file()
+    assert (source_root / "process_video.py").is_file()
 
 
 def test_packages_do_not_restore_nested_project_scaffolds() -> None:
@@ -40,6 +44,27 @@ def test_packages_do_not_restore_nested_project_scaffolds() -> None:
         assert not (package / "environment.yml").exists()
         assert not (package / "tests").exists()
         assert not (package / "evals").exists()
+
+
+def test_algorithm_source_has_no_ui_or_legacy_perception_imports() -> None:
+    source_root = CLIENT_ROOT / "src"
+    for source_path in source_root.rglob("*.py"):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                imported = [node.module or ""]
+            else:
+                continue
+            assert not any(
+                name == "ui"
+                or name.startswith("ui.")
+                or name == "perception"
+                or name.startswith("perception.")
+                or name.startswith("src.perception")
+                for name in imported
+            ), f"algorithm module imports UI or legacy perception: {source_path}"
 
 
 def test_documented_commands_use_the_single_conda_environment() -> None:

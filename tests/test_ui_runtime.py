@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import ui.runtime as runtime_module
-from ingest_gateway.recording_models import RecordingLibrary
-from ui.runtime import UnifiedRuntimeHost
-from ui.state import RuntimeSnapshot
+import ui.application.runtime_host as runtime_module
+from ui.application.runtime_host import UnifiedRuntimeHost
+from ui.application.runtime_state import RuntimeSnapshot
+from ui.gateway.recording_models import RecordingLibrary
 
 
 class _RecordingStatusStub:

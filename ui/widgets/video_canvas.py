@@ -8,8 +8,8 @@ from PyQt6.QtCore import QLineF, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
-from ingest_gateway.live_frames import LiveFrame
-from ui.replay.player import PlaybackFrame
+from schemas.playback import PlaybackFrame
+from ui.gateway.live_frames import LiveFrame
 
 HAND_CONNECTIONS = (
     (5, 6),

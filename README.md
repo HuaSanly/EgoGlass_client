@@ -7,14 +7,16 @@ The runtime uses one Python process and one Conda environment named `egoglass`.
 ## Layout
 
 ```text
-ui/                         # PyQt Fluent processing workspace and live capture view
 src/
-  annotation/               # Annotation contracts, editor state, and persistence
-  ingest_gateway/           # WebRTC ingress, recording, and raw sessions
-  perception/               # Independently reusable research/runtime core
-    sensor_preprocessing/   # Time mapping, calibration, and prepared inputs
-    spatial_perception/     # Hand tracking; planned VIO and coordinate fusion
-    video_processing/       # Persistent offline queue, results, and export
+  schemas/                  # Public frame, IMU, playback, and result types
+  sensor_preprocessing/     # Time mapping, calibration, and prepared inputs
+  hand_tracking/            # Live and offline hand-tracking algorithms
+  slam_vio/                 # Reserved SLAM/VIO algorithm package
+  process_video.py          # Thin no-UI offline processing entry point
+ui/
+  application/              # Runtime lifecycle and native client host
+  gateway/                  # WebRTC ingress, recording, and raw sessions
+  processing/               # UI-backed queue, results, and export
 config/                     # Shared client configuration
 tests/                      # Deterministic gate tests
 evals/                      # Periodic quality evaluations and device evidence
@@ -67,6 +69,15 @@ Active capture sessions are finalized before shutdown.
 Completed recordings live under ignored path `local-data/recordings/`.
 Annotation revisions are written beneath each session's `annotations/`
 directory and do not modify source MP4 or telemetry files.
+
+For a single no-UI offline run, use the thin CLI against a complete capture
+session. It does not start the gateway or Qt:
+
+```powershell
+conda run -n egoglass python src\process_video.py `
+  --session local-data\recordings\<session-id> `
+  --output local-data\headless-runs\<run-id>
+```
 
 ## License
 

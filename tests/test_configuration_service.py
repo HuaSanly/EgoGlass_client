@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from perception.configuration import (
+from ui.configuration import (
     ClientRuntimeConfig,
     ConfigImpact,
     ConfigurationError,
     ConfigurationService,
     ConfigurationValidationError,
 )
-from perception.video_processing import ProcessingJobStore
+from ui.processing import ProcessingJobStore
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

@@ -5,8 +5,8 @@ import time
 
 import numpy as np
 
-from ingest_gateway.imu_preview import ImuPreviewRuntime
-from ingest_gateway.webrtc_models import ImuSample, ImuSensorType
+from ui.gateway.imu_preview import ImuPreviewRuntime
+from ui.gateway.webrtc_models import ImuSample, ImuSensorType
 
 
 def _sample(

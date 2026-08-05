@@ -8,8 +8,8 @@ import av
 import pytest
 from aiortc import MediaStreamError
 
-from ingest_gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
-from ingest_gateway.recording_inspection import inspect_recording
+from ui.gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
+from ui.gateway.recording_inspection import inspect_recording
 
 
 class NonMonotonicVideoTrack:

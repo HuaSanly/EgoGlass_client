@@ -15,7 +15,7 @@ import yaml
 from av import VideoFrame
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     ClockId,
     ClockMappingSegment,
     LiveFrameInput,
@@ -27,8 +27,9 @@ from perception.sensor_preprocessing import (
     TimeStatus,
     client_perf_source_instance_id,
 )
-from perception.spatial_perception.hand_tracking import (
-    HandTrackingResult,
+
+from .models import HandTrackingResult
+from .pipeline import (
     HumanEgoHandTrackingPipeline,
     release_pipeline_resources,
 )

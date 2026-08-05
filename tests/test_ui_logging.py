@@ -25,8 +25,8 @@ def test_repeated_media_errors_are_rate_limited_and_counted() -> None:
 def test_non_media_logs_are_never_rate_limited() -> None:
     error_filter = RepeatedMediaErrorFilter(clock=lambda: 0.0)
 
-    assert error_filter.filter(_record("ingest_gateway.webrtc_runtime"))
-    assert error_filter.filter(_record("ingest_gateway.webrtc_runtime"))
+    assert error_filter.filter(_record("ui.gateway.webrtc_runtime"))
+    assert error_filter.filter(_record("ui.gateway.webrtc_runtime"))
 
 
 def test_ctrl_c_exits_native_client_without_propagating_traceback(monkeypatch) -> None:

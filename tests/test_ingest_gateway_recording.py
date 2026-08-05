@@ -10,10 +10,10 @@ from pathlib import Path
 import av
 import pytest
 
-from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
-from ingest_gateway.adapters.webrtc import WebRtcVideoRecordingSource
-from ingest_gateway.capture_session import CaptureSessionDatabase
-from ingest_gateway.recording import (
+from ui.gateway.adapters.mp4_recorder import RecordedVideoFrame
+from ui.gateway.adapters.webrtc import WebRtcVideoRecordingSource
+from ui.gateway.capture_session import CaptureSessionDatabase
+from ui.gateway.recording import (
     COUNTDOWN_SECONDS,
     RecordingClipNotFoundError,
     RecordingConflictError,
@@ -22,8 +22,8 @@ from ingest_gateway.recording import (
     RecordingSessionNotFoundError,
     RecordingUnavailableError,
 )
-from ingest_gateway.recording_inspection import inspect_recording
-from ingest_gateway.recording_models import (
+from ui.gateway.recording_inspection import inspect_recording
+from ui.gateway.recording_models import (
     RecordingCommandRequest,
     RecordingSessionRenameRequest,
 )
@@ -622,7 +622,7 @@ def test_failed_whole_session_delete_leaves_unpublished_tombstone(
         def fail_delete(_path: Path) -> None:
             raise OSError("locked file")
 
-        monkeypatch.setattr("ingest_gateway.recording.shutil.rmtree", fail_delete)
+        monkeypatch.setattr("ui.gateway.recording.shutil.rmtree", fail_delete)
         with pytest.raises(RecordingFailureError, match="tombstone"):
             await runtime.delete_session(SESSION_ID)
 

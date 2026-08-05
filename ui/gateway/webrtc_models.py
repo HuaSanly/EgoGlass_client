@@ -5,6 +5,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from schemas.imu import ImuPacket, ImuSensor
+
 
 class WebRtcPhase(StrEnum):
     IDLE = "idle"
@@ -175,6 +177,19 @@ class ImuSample(BaseModel):
     received_at_elapsed_realtime_ns: int = Field(ge=0)
     accuracy: int = Field(ge=-1, le=3)
     values: tuple[float, float, float]
+
+    def to_packet(self, session_id: str) -> ImuPacket:
+        """Convert device telemetry to the algorithm-facing IMU schema."""
+
+        return ImuPacket(
+            session_id=session_id,
+            sensor=ImuSensor(self.sensor_type.value),
+            sequence_number=self.sequence_number,
+            sensor_event_ns=self.sensor_event_monotonic_ns,
+            received_at_ns=self.received_at_elapsed_realtime_ns,
+            values=self.values,
+            accuracy=self.accuracy,
+        )
 
     @model_validator(mode="after")
     def validate_android_sensor_type(self) -> ImuSample:

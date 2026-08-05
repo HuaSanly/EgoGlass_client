@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     AlignmentStatus,
     ClockId,
     ImuSensorType,

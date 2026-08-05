@@ -20,7 +20,7 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from ingest_gateway.recording_models import (
+from ui.gateway.recording_models import (
     CaptureSessionState,
     RecordingClip,
     RecordingLibrary,

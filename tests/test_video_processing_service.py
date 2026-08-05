@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from perception.video_processing import (
+from ui.processing import (
     ProcessingCanceled,
     ProcessingJob,
     ProcessingJobState,

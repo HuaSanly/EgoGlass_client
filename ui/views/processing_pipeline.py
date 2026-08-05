@@ -12,8 +12,8 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
-from perception.video_processing import ProcessingJob, ProcessingJobState
-from ui.runtime import UnifiedRuntimeHost
+from ui.application.runtime_host import UnifiedRuntimeHost
+from ui.processing import ProcessingJob, ProcessingJobState
 
 
 class ProcessingPipelineView(QWidget):

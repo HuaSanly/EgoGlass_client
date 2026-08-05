@@ -5,11 +5,11 @@ from pathlib import Path
 
 import av
 
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     CaptureSessionReader,
 )
-from perception.video_processing import ExportSummary, ProcessingResultStore, export_annotated_clip
 from tests.test_sensor_preprocessing_pipeline import CLIP_ID, _recorded_session
+from ui.processing import ExportSummary, ProcessingResultStore, export_annotated_clip
 
 
 def test_export_summary_reports_the_full_output_path(tmp_path: Path) -> None:

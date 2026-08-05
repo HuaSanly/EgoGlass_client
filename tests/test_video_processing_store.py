@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from perception.video_processing import (
+from ui.processing import (
     ProcessingJobState,
     ProcessingJobStore,
     ProcessingPreset,

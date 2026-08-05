@@ -3,21 +3,21 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-import ingest_gateway.app as app_module
-from ingest_gateway.app import create_app
-from ingest_gateway.live_frames import LiveFrameBuffer
-from ingest_gateway.recording import (
+import ui.gateway.app as app_module
+from ui.gateway.app import create_app
+from ui.gateway.live_frames import LiveFrameBuffer
+from ui.gateway.recording import (
     RecordingClipNotFoundError,
     RecordingSessionNotFoundError,
 )
-from ingest_gateway.recording_models import (
+from ui.gateway.recording_models import (
     RecordingClip,
     RecordingLibrary,
     RecordingSession,
     RecordingState,
     RecordingStatus,
 )
-from ingest_gateway.webrtc_models import (
+from ui.gateway.webrtc_models import (
     ImuChannelState,
     ImuSensorStatus,
     ImuSensorType,
@@ -27,7 +27,7 @@ from ingest_gateway.webrtc_models import (
     StreamControlStatus,
     WebRtcOffer,
 )
-from ingest_gateway.webrtc_runtime import (
+from ui.gateway.webrtc_runtime import (
     StreamControlCommandError,
     StreamControlCommandTimeoutError,
     StreamControlUnavailableError,

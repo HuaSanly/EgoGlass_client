@@ -10,9 +10,9 @@ from PyQt6.QtWidgets import QApplication
 from pyqtgraph.opengl import GLViewWidget
 from qfluentwidgets import BodyLabel, IconInfoBadge
 
-from ingest_gateway.live_frames import LiveFrame, LiveFramePacer
 from ui.app import MainWindow
-from ui.state import RuntimeSnapshot
+from ui.application.runtime_state import RuntimeSnapshot
+from ui.gateway.live_frames import LiveFrame, LiveFramePacer
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas
@@ -20,7 +20,9 @@ from ui.widgets.video_canvas import VideoCanvas
 
 def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     repository = Path(__file__).parents[1]
-    runtime = (repository / "ui" / "runtime.py").read_text(encoding="utf-8")
+    runtime = (repository / "ui" / "application" / "runtime_host.py").read_text(
+        encoding="utf-8"
+    )
     video = (repository / "ui" / "widgets" / "video_canvas.py").read_text(
         encoding="utf-8"
     )
@@ -40,7 +42,7 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     assert "QImage.Format.Format_RGB888" in video
     assert "QPainter" in video
     assert "source.subscribe(buffered=False)" in (
-        repository / "src" / "ingest_gateway" / "adapters" / "aiortc_peer.py"
+        repository / "ui" / "gateway" / "adapters" / "aiortc_peer.py"
     ).read_text(encoding="utf-8")
     assert "jpeg" not in video.lower()
     assert "mjpg" not in video.lower()
@@ -59,7 +61,7 @@ def test_native_runtime_uses_direct_frames_and_one_process() -> None:
 
 def test_native_video_path_has_rgb_fanout_and_bounded_latest_overlay() -> None:
     repository = Path(__file__).parents[1]
-    live_frames = (repository / "src" / "ingest_gateway" / "live_frames.py").read_text(
+    live_frames = (repository / "ui" / "gateway" / "live_frames.py").read_text(
         encoding="utf-8"
     )
     video = (repository / "ui" / "widgets" / "video_canvas.py").read_text(
@@ -77,10 +79,10 @@ def test_native_video_path_has_rgb_fanout_and_bounded_latest_overlay() -> None:
     assert "maximum_queue_frames: int = 4" in live_frames
     assert "video_pts_ns" in live_frames
     assert "next_for_display" in (
-        repository / "ui" / "runtime.py"
+        repository / "ui" / "application" / "runtime_host.py"
     ).read_text(encoding="utf-8")
     assert "_forward_perception_results" in (
-        repository / "ui" / "runtime.py"
+        repository / "ui" / "application" / "runtime_host.py"
     ).read_text(encoding="utf-8")
     assert "take_latest_perception_result" in home
     assert "self._frame_timer.setInterval(16)" in home

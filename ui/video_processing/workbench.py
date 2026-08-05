@@ -27,7 +27,7 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from perception.video_processing import ProcessingRunInfo
+from ui.processing import ProcessingRunInfo
 from ui.replay.player import PlaybackClipSpan, ReplayPlayer, ReplaySnapshot, ReplayState
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas

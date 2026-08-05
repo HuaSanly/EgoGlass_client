@@ -1,6 +1,6 @@
 import json
 
-from ingest_gateway.discovery import ClientDiscoveryResponse, DiscoveryResponder
+from ui.gateway.discovery import ClientDiscoveryResponse, DiscoveryResponder
 
 
 def test_discovery_response_uses_runtime_secret_and_request_nonce() -> None:

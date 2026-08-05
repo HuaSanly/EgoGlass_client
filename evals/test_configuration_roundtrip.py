@@ -3,9 +3,9 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from perception.configuration import ConfigurationService
-from perception.spatial_perception.hand_tracking import HandTrackingConfig
-from perception.video_processing import DEFAULT_PRESETS
+from hand_tracking import HandTrackingConfig
+from ui.configuration import ConfigurationService
+from ui.processing import DEFAULT_PRESETS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

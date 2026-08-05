@@ -12,18 +12,7 @@ import pytest
 import yaml
 from av import VideoFrame
 
-from ingest_gateway.adapters.mp4_recorder import RecordedVideoFrame
-from ingest_gateway.capture_session import CaptureSessionDatabase
-from ingest_gateway.recording_models import (
-    CaptureSessionClip,
-    CaptureSessionLifecycle,
-    CaptureSessionManifest,
-    CaptureSessionTimeOrigin,
-    CaptureVideoProfile,
-)
-from ingest_gateway.webrtc_models import ImuSample
-from ingest_gateway.webrtc_models import ImuSensorType as GatewayImuSensorType
-from perception.sensor_preprocessing import (
+from sensor_preprocessing import (
     AlignmentStatus,
     CaptureSessionReader,
     ClockId,
@@ -43,6 +32,17 @@ from perception.sensor_preprocessing import (
     glasses_elapsed_source_instance_id,
     mp4_source_instance_id,
 )
+from ui.gateway.adapters.mp4_recorder import RecordedVideoFrame
+from ui.gateway.capture_session import CaptureSessionDatabase
+from ui.gateway.recording_models import (
+    CaptureSessionClip,
+    CaptureSessionLifecycle,
+    CaptureSessionManifest,
+    CaptureSessionTimeOrigin,
+    CaptureVideoProfile,
+)
+from ui.gateway.webrtc_models import ImuSample
+from ui.gateway.webrtc_models import ImuSensorType as GatewayImuSensorType
 
 SESSION_ID = "a" * 32
 CONNECTION_ID = "b" * 32

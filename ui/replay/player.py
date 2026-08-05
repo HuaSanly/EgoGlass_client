@@ -11,9 +11,9 @@ from pathlib import Path
 
 import av
 import numpy as np
-from numpy.typing import NDArray
 
-from perception.sensor_preprocessing import (
+from schemas.playback import PlaybackFrame
+from sensor_preprocessing import (
     AlignmentStatus,
     CaptureSessionReader,
     RawFrameRef,
@@ -32,24 +32,6 @@ class ReplayState(StrEnum):
     PLAYING = "playing"
     ENDED = "ended"
     ERROR = "error"
-
-
-@dataclass(frozen=True, slots=True)
-class PlaybackFrame:
-    session_id: str
-    clip_id: str
-    frame_index: int
-    pts_ns: int
-    session_time_ns: int
-    image_rgb: NDArray[np.uint8]
-
-    @property
-    def width(self) -> int:
-        return int(self.image_rgb.shape[1])
-
-    @property
-    def height(self) -> int:
-        return int(self.image_rgb.shape[0])
 
 
 @dataclass(frozen=True, slots=True)

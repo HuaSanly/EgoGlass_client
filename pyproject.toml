@@ -28,15 +28,20 @@ dependencies = [
 
 [project.scripts]
 egoglass-client = "ui.app:main"
-egoglass-ingest-gateway = "ingest_gateway.app:main"
+egoglass-ingest-gateway = "ui.gateway.app:main"
+egoglass-process-video = "process_video:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
   "ui",
-  "src/annotation",
-  "src/ingest_gateway",
-  "src/perception",
+  "src/schemas",
+  "src/sensor_preprocessing",
+  "src/hand_tracking",
+  "src/slam_vio",
 ]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/process_video.py" = "process_video.py"
 
 [tool.hatch.build]
 exclude = [

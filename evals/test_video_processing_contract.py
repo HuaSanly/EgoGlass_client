@@ -6,8 +6,9 @@ from pathlib import Path
 
 from av import VideoFrame
 
-from perception.runtime import HandTrackingRuntime, LiveHandTrackingFrame
-from perception.video_processing import (
+from hand_tracking.runtime import HandTrackingRuntime, LiveHandTrackingFrame
+from tests.test_video_processing_service import BlockingInspectRunner
+from ui.processing import (
     ProcessingJobState,
     ProcessingJobStore,
     ProcessingPreset,
@@ -15,7 +16,6 @@ from perception.video_processing import (
     VideoProcessingService,
     cleanup_legacy_hand_tracking,
 )
-from tests.test_video_processing_service import BlockingInspectRunner
 
 
 def test_case_vp_001_restart_never_silently_resumes_gpu_work(tmp_path: Path) -> None:

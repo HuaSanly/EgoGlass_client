@@ -13,7 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi import Path as ApiPath
 from fastapi.responses import FileResponse, StreamingResponse
 
-from perception.runtime import HandTrackingRuntime
+from hand_tracking.runtime import HandTrackingRuntime
 
 from .discovery import DISCOVERY_PORT, LanDiscoveryService
 from .imu_preview import ImuPreviewRuntime

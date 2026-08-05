@@ -8,9 +8,9 @@ from pathlib import Path
 import av
 from aiortc import MediaStreamError
 
-from ingest_gateway.adapters.webrtc import WebRtcVideoRecordingSource
-from ingest_gateway.recording import RecordingRuntime
-from ingest_gateway.recording_inspection import inspect_recording
+from ui.gateway.adapters.webrtc import WebRtcVideoRecordingSource
+from ui.gateway.recording import RecordingRuntime
+from ui.gateway.recording_inspection import inspect_recording
 
 SESSION_ID = "e" * 32
 
