@@ -28,6 +28,10 @@ def test_workspace_manifest_builds_every_client_package_once() -> None:
         "egoglass-client",
         "egoglass-ingest-gateway",
         "egoglass-process-video",
+        "egoglass-run-vio",
     }
     assert all("egoglass_" not in target for target in scripts.values())
-    assert force_include == {"src/process_video.py": "process_video.py"}
+    assert force_include == {
+        "src/process_video.py": "process_video.py",
+        "src/run_vio.py": "run_vio.py",
+    }

@@ -30,6 +30,7 @@ dependencies = [
 egoglass-client = "ui.app:main"
 egoglass-ingest-gateway = "ui.gateway.app:main"
 egoglass-process-video = "process_video:main"
+egoglass-run-vio = "run_vio:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
@@ -42,6 +43,7 @@ packages = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/process_video.py" = "process_video.py"
+"src/run_vio.py" = "run_vio.py"
 
 [tool.hatch.build]
 exclude = [

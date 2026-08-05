@@ -54,3 +54,9 @@ Each successful save increments a revision in
 that revision and the SHA256 of all six YAML files in its `run.json`. The queue
 also stores the validated sensor calibration and offline perception values captured at
 submission, so later edits cannot change an already queued task.
+
+`basalt-vio.yaml` controls the optional offline VIO adapter. It is separate from
+hand tracking and is not consumed by the Qt runtime yet. The adapter exports a
+prepared session to EuRoC, runs `basalt_vio`, and stores the parsed trajectory
+alongside the run. Keep `allow_unverified_calibration: false` for real work;
+the checked-in calibration profiles are integration samples only.
