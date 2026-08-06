@@ -43,6 +43,12 @@ if (-not (Test-Path -LiteralPath $workspacePython -PathType Leaf)) {
 
 Assert-TcpPortAvailable -Port $IngestPort
 Assert-UdpPortAvailable -Port $DiscoveryPort
+$workspaceRoot = Split-Path -Parent $repositoryRoot
+$basaltBuild = Join-Path $workspaceRoot '.tools\basalt-src\build\relwithdebinfo'
+if (Test-Path -LiteralPath (Join-Path $basaltBuild 'basalt_vio.exe') -PathType Leaf) {
+    $env:PATH = "$basaltBuild;$(Join-Path $basaltBuild 'vcpkg_installed\x64-windows\bin');$env:PATH"
+    Write-Host "Basalt VIO enabled from $basaltBuild"
+}
 $recordingsDirectory = Join-Path $repositoryRoot 'local-data\recordings'
 New-Item -ItemType Directory -Force -Path $recordingsDirectory | Out-Null
 

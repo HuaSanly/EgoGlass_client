@@ -37,9 +37,11 @@ from ui.gateway.recording_models import RecordingLibrary, RecordingState
 from ui.gateway.webrtc_models import StreamControlAction, StreamControlCommand
 from ui.gateway.webrtc_runtime import WebRtcSessionRuntime
 from ui.processing import (
+    OfflineVioService,
     ProcessingRunInfo,
     SessionProcessingRunner,
     VideoProcessingService,
+    VioRunInfo,
 )
 
 from .runtime_state import CommandResult, RuntimeSnapshot
@@ -112,6 +114,11 @@ class UnifiedRuntimeHost:
             ),
             on_gpu_job_changed=self._on_gpu_job_changed,
             configuration_provenance_provider=self._configuration_provenance,
+        )
+        self.vio_processing = OfflineVioService(
+            recordings_root,
+            config_directory=config_directory,
+            allow_unverified_calibration=True,
         )
         self._apply_video_processing_defaults(
             self.configuration_service.snapshot()
@@ -193,6 +200,7 @@ class UnifiedRuntimeHost:
         await self.imu_preview.close()
         await self.recording.close()
         await asyncio.to_thread(self.video_processing.close)
+        await asyncio.to_thread(self.vio_processing.close)
 
     def snapshot(self) -> RuntimeSnapshot:
         with self._snapshot_lock:
@@ -282,6 +290,22 @@ class UnifiedRuntimeHost:
                 clip_id,
             ),
         )
+
+    def request_vio(
+        self,
+        session_id: str,
+        *,
+        clip_id: str | None = None,
+    ) -> concurrent.futures.Future[VioRunInfo]:
+        """Start offline Basalt VIO without touching live inference."""
+
+        return self._track_command(
+            "run-vio",
+            asyncio.to_thread(self.vio_processing.run, session_id, clip_id=clip_id),
+        )
+
+    def vio_runs(self, session_id: str) -> concurrent.futures.Future[tuple[VioRunInfo, ...]]:
+        return self.submit(asyncio.to_thread(self.vio_processing.list_runs, session_id))
 
     def configuration_snapshot(self) -> ConfigSnapshot:
         return self.configuration_service.snapshot()

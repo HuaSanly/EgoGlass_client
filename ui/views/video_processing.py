@@ -9,7 +9,7 @@ from qfluentwidgets import InfoBar
 
 from ui.application.runtime_host import UnifiedRuntimeHost
 from ui.gateway.recording_models import RecordingLibrary, RecordingSession
-from ui.processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo
+from ui.processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo, VioRunInfo
 from ui.replay.player import PlaybackFrame, ReplayPlayer, ReplayState
 from ui.video_processing import ProcessingWorkbench, VideoHall, VideoThumbnailService
 
@@ -45,6 +45,12 @@ class VideoProcessingView(QWidget):
         ] = {}
         self._pending_run_refreshes: set[str] = set()
         self._runs: dict[str, tuple[ProcessingRunInfo, ...]] = {}
+        self._vio_runs: dict[str, tuple[VioRunInfo, ...]] = {}
+        self._vio_run_futures: dict[
+            str, concurrent.futures.Future[tuple[VioRunInfo, ...]]
+        ] = {}
+        self._pending_vio_refreshes: set[str] = set()
+        self._vio_command_futures: dict[str, concurrent.futures.Future[VioRunInfo]] = {}
         self._result_futures: dict[
             str,
             tuple[
@@ -81,6 +87,7 @@ class VideoProcessingView(QWidget):
         self.workbench.exportRequested.connect(self._export_current_result)
         self.workbench.resultSelectionChanged.connect(self._clear_result_queries)
         self.workbench.comparisonSelectionChanged.connect(self._clear_result_queries)
+        self.workbench.vioRequested.connect(self._run_vio)
 
         # Stable compatibility handles for render tests and canvas consumers.
         self.canvas = self.workbench.canvas
@@ -103,6 +110,9 @@ class VideoProcessingView(QWidget):
         self._last_frame_key = None
         self._last_replay_error = None
         self._result_futures.clear()
+        self._vio_run_futures.clear()
+        self._pending_vio_refreshes.clear()
+        self._vio_command_futures.clear()
         self.workbench.clear_media()
         self.stack.setCurrentWidget(self.hall)
 
@@ -120,6 +130,7 @@ class VideoProcessingView(QWidget):
             clip_id,
         )
         self.workbench.set_runs(self._runs.get(session_id, ()), clip_id)
+        self.workbench.set_vio_runs(self._vio_runs.get(session_id, ()))
         self.stack.setCurrentWidget(self.workbench)
         try:
             self.replay.open_session(self.runtime.session_directory(session_id), clip_id)
@@ -128,6 +139,7 @@ class VideoProcessingView(QWidget):
             self._show_error(str(error))
             return
         self._request_runs(session_id, force=True)
+        self._request_vio_runs(session_id, force=True)
         self._clear_result_queries()
 
     def hideEvent(self, event: QEvent) -> None:
@@ -160,6 +172,8 @@ class VideoProcessingView(QWidget):
                     _processing_states(processing.jobs, session),
                 )
         self._resolve_run_futures()
+        self._resolve_vio_futures()
+        self._resolve_vio_commands()
         self._resolve_thumbnails()
         if self.isVisible():
             self._drain_command_results()
@@ -201,6 +215,7 @@ class VideoProcessingView(QWidget):
                     session_path,
                 )
             self._request_runs(session.session_id)
+            self._request_vio_runs(session.session_id)
 
     def _request_runs(self, session_id: str, *, force: bool = False) -> None:
         if session_id in self._run_futures:
@@ -246,6 +261,51 @@ class VideoProcessingView(QWidget):
                 self._pending_run_refreshes.remove(session_id)
                 self._request_runs(session_id, force=True)
 
+    def _request_vio_runs(self, session_id: str, *, force: bool = False) -> None:
+        if session_id in self._vio_run_futures:
+            if force:
+                self._pending_vio_refreshes.add(session_id)
+            return
+        if not force and session_id in self._vio_runs:
+            return
+        request = getattr(self.runtime, "vio_runs", None)
+        if not callable(request):
+            return
+        future = request(session_id)
+        if isinstance(future, concurrent.futures.Future):
+            self._vio_run_futures[session_id] = future
+
+    def _resolve_vio_futures(self) -> None:
+        for session_id, future in tuple(self._vio_run_futures.items()):
+            if not future.done():
+                continue
+            del self._vio_run_futures[session_id]
+            try:
+                runs = future.result()
+            except Exception as error:
+                if self._selection is not None and self._selection.session_id == session_id:
+                    self._show_error(str(error))
+                continue
+            self._vio_runs[session_id] = runs
+            selection = self._selection
+            if (
+                selection is not None
+                and selection.session_id == session_id
+                and not self.showing_hall
+            ):
+                self.workbench.set_vio_runs(runs)
+            if session_id in self._pending_vio_refreshes:
+                self._pending_vio_refreshes.remove(session_id)
+                self._request_vio_runs(session_id, force=True)
+
+    def _resolve_vio_commands(self) -> None:
+        for session_id, future in tuple(self._vio_command_futures.items()):
+            if not future.done():
+                continue
+            del self._vio_command_futures[session_id]
+            self.workbench.vio_button.setEnabled(True)
+            self._request_vio_runs(session_id, force=True)
+
     def _resolve_thumbnails(self) -> None:
         for result in self.thumbnails.take_completed():
             self.hall.set_thumbnail(result.session_id, result.clip_id, result.image)
@@ -281,6 +341,10 @@ class VideoProcessingView(QWidget):
                 self.workbench.set_runs(self._runs.get(frame.session_id, ()), frame.clip_id)
             self.canvas.set_frame(frame)
             self.spatial_canvas.set_pose(snapshot.imu_pose)
+            selected_vio = self.workbench.selected_vio_run
+            self.workbench.set_vio_pose(
+                selected_vio.pose_at(frame.session_time_ns) if selected_vio is not None else None
+            )
             self._query_results(frame)
         self._resolve_result_queries(key)
 
@@ -349,6 +413,25 @@ class VideoProcessingView(QWidget):
             clip_id=selection.clip_id,
             preset_id=None,
         )
+
+    def _run_vio(self) -> None:
+        selection = self._selection
+        if selection is None:
+            self._show_error("当前没有可运行 SLAM/VIO 的视频片段")
+            return
+        if self._vio_command_futures:
+            return
+        request = getattr(self.runtime, "request_vio", None)
+        if not callable(request):
+            self._show_error("当前运行时未启用离线 SLAM/VIO")
+            return
+        future = request(
+            selection.session_id,
+            clip_id=None,
+        )
+        self._vio_command_futures[selection.session_id] = future
+        self.workbench.vio_button.setEnabled(False)
+        self.workbench.vio_detail.setText("SLAM/VIO：正在处理完整会话")
 
     def _export_current_result(self) -> None:
         selection = self._selection

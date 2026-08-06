@@ -44,3 +44,13 @@ def test_native_basalt_help_when_configured() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     assert "--dataset-path" in completed.stdout
+
+
+def test_vio_route_is_offline_workbench_only() -> None:
+    repository = Path(__file__).parents[1]
+    workbench_source = (repository / "ui" / "views" / "video_processing.py").read_text(
+        encoding="utf-8"
+    )
+    live_source = (repository / "ui" / "views" / "home.py").read_text(encoding="utf-8")
+    assert "request_vio" in workbench_source
+    assert "request_vio" not in live_source

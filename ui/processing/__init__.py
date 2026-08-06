@@ -14,6 +14,7 @@ from .models import (
 from .results import ProcessingResultStore
 from .runner import ProcessingCanceled, SessionProcessingRunner
 from .service import VideoProcessingService
+from .vio import OfflineVioService, VioRunInfo, VioRunState
 
 __all__ = [
     "DEFAULT_PRESETS",
@@ -31,6 +32,9 @@ __all__ = [
     "ProcessingServiceSnapshot",
     "SessionProcessingRunner",
     "VideoProcessingService",
+    "OfflineVioService",
+    "VioRunInfo",
+    "VioRunState",
     "cleanup_legacy_hand_tracking",
     "export_annotated_clip",
 ]

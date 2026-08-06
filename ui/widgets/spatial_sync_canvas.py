@@ -18,6 +18,8 @@ from pyqtgraph.opengl import (
 )
 from qfluentwidgets import CaptionLabel, FluentIcon, StrongBodyLabel, TransparentToolButton
 
+from schemas import VioPose, VioTrajectory
+
 HAND_CONNECTIONS = (
     (5, 6),
     (6, 7),
@@ -85,6 +87,8 @@ class SpatialSyncCanvasStatus:
     has_left_hand: bool
     has_right_hand: bool
     latest_frame_index: int | None
+    has_vio_pose: bool = False
+    trajectory_pose_count: int = 0
 
 
 class SpatialPoseSnapshot(Protocol):
@@ -142,6 +146,8 @@ class SpatialSyncCanvas(QWidget):
         )
 
         self._pose: SpatialPoseSnapshot | None = None
+        self._vio_pose: VioPose | None = None
+        self._vio_trajectory: VioTrajectory | None = None
         self._hands: tuple[_HandPose, ...] = ()
         self._latest_frame_index: int | None = None
 
@@ -210,6 +216,19 @@ class SpatialSyncCanvas(QWidget):
             pos=_EMPTY_POINTS,
             color=_CAMERA_LENS_COLOR,
             size=7,
+            pxMode=True,
+        )
+        self._vio_trajectory_item = GLLinePlotItem(
+            pos=_EMPTY_POINTS,
+            color=(0.30, 0.82, 0.96, 0.95),
+            width=3,
+            mode="line_strip",
+            antialias=True,
+        )
+        self._vio_pose_item = GLScatterPlotItem(
+            pos=_EMPTY_POINTS,
+            color=(0.30, 0.95, 0.96, 1.0),
+            size=9,
             pxMode=True,
         )
 
@@ -284,6 +303,8 @@ class SpatialSyncCanvas(QWidget):
             *self._axis_labels,
             self._camera_frustum_item,
             self._camera_origin_item,
+            self._vio_trajectory_item,
+            self._vio_pose_item,
             self._glasses_frame_item,
             self._glasses_lens_item,
             self._camera_body_item,
@@ -302,6 +323,20 @@ class SpatialSyncCanvas(QWidget):
         self._update_hand_items()
         self._update_state_label()
 
+    def set_vio_trajectory(
+        self,
+        trajectory: VioTrajectory | None,
+        pose: VioPose | None,
+    ) -> None:
+        """Display an offline VIO trajectory and the pose nearest playback time."""
+
+        self._vio_trajectory = trajectory
+        self._vio_pose = pose
+        self._update_reference_items()
+        self._update_hand_items()
+        self._update_trajectory_items()
+        self._update_state_label()
+
     def set_hand_result(self, result: dict[str, object] | None) -> None:
         self._hands = _hands_from_result(result)
         frame_index = result.get("frame_index") if isinstance(result, dict) else None
@@ -316,34 +351,57 @@ class SpatialSyncCanvas(QWidget):
             has_left_hand="left" in sides,
             has_right_hand="right" in sides,
             latest_frame_index=self._latest_frame_index,
+            has_vio_pose=self._vio_pose is not None,
+            trajectory_pose_count=(
+                len(self._vio_trajectory.poses) if self._vio_trajectory is not None else 0
+            ),
         )
 
     def _update_reference_items(self) -> None:
-        quaternion = _pose_quaternion(self._pose)
-        axis_points = _camera_points_to_scene(_camera_axis_points(), quaternion)
+        quaternion = _active_quaternion(self._pose, self._vio_pose)
+        translation = _active_translation(self._vio_pose)
+        axis_points = _camera_points_to_scene(_camera_axis_points(), quaternion, translation)
         self._axis_item.setData(pos=_line_segments(axis_points, ((0, 1), (0, 2), (0, 3))))
         for label, position in zip(self._axis_labels, axis_points[1:], strict=True):
             label.setData(pos=tuple(float(value) for value in position))
-        frustum = _camera_points_to_scene(_camera_frustum_points(), quaternion)
+        frustum = _camera_points_to_scene(_camera_frustum_points(), quaternion, translation)
         self._camera_frustum_item.setData(pos=_line_segments(frustum, _FRUSTUM_CONNECTIONS))
         self._camera_origin_item.setData(pos=axis_points[:1])
 
         self._glasses_frame_item.setMeshData(
-            vertexes=_camera_points_to_scene(self._frame_vertices, quaternion),
+            vertexes=_camera_points_to_scene(self._frame_vertices, quaternion, translation),
             faces=self._frame_faces,
         )
         self._glasses_lens_item.setMeshData(
-            vertexes=_camera_points_to_scene(self._lens_vertices, quaternion),
+            vertexes=_camera_points_to_scene(self._lens_vertices, quaternion, translation),
             faces=self._lens_faces,
         )
         self._camera_body_item.setMeshData(
-            vertexes=_camera_points_to_scene(self._camera_vertices, quaternion),
+            vertexes=_camera_points_to_scene(self._camera_vertices, quaternion, translation),
             faces=self._camera_faces,
         )
         camera_lens = _camera_points_to_scene(
-            np.asarray(((0.0, 0.0, 0.018),), dtype=np.float64), quaternion
+            np.asarray(((0.0, 0.0, 0.018),), dtype=np.float64), quaternion, translation
         )
         self._camera_lens_item.setData(pos=camera_lens)
+
+    def _update_trajectory_items(self) -> None:
+        if self._vio_trajectory is None or not self._vio_trajectory.poses:
+            self._vio_trajectory_item.setData(pos=_EMPTY_POINTS)
+            self._vio_pose_item.setData(pos=_EMPTY_POINTS)
+            return
+        points = _world_points_to_scene(
+            np.asarray([pose.position_m for pose in self._vio_trajectory.poses], dtype=np.float64)
+        )
+        self._vio_trajectory_item.setData(pos=points)
+        if self._vio_pose is None:
+            self._vio_pose_item.setData(pos=_EMPTY_POINTS)
+        else:
+            self._vio_pose_item.setData(
+                pos=_world_points_to_scene(
+                    np.asarray((self._vio_pose.position_m,), dtype=np.float64)
+                )
+            )
 
     def _update_hand_items(self) -> None:
         left = next((hand for hand in self._hands if hand.side == "left"), None)
@@ -362,7 +420,11 @@ class SpatialSyncCanvas(QWidget):
             points.setData(pos=_EMPTY_POINTS)
             return
         camera_points = np.asarray(hand.points, dtype=np.float64)
-        scene_points = _camera_points_to_scene(camera_points, _pose_quaternion(self._pose))
+        scene_points = _camera_points_to_scene(
+            camera_points,
+            _active_quaternion(self._pose, self._vio_pose),
+            _active_translation(self._vio_pose),
+        )
         lines.setData(pos=_line_segments(scene_points, HAND_CONNECTIONS))
         points.setData(pos=scene_points)
 
@@ -375,6 +437,8 @@ class SpatialSyncCanvas(QWidget):
             parts.append("左手")
         if status.has_right_hand:
             parts.append("右手")
+        if status.has_vio_pose:
+            parts.append("VIO")
         value = " | ".join(parts)
         if status.latest_frame_index is not None:
             value = f"{value} | F{status.latest_frame_index}"
@@ -431,6 +495,7 @@ def _camera_frustum_points() -> np.ndarray:
 def _camera_points_to_scene(
     points: np.ndarray,
     quaternion: tuple[float, float, float, float],
+    translation: np.ndarray | None = None,
 ) -> np.ndarray:
     """Map camera-frame meters into the OpenGL scene using the IMU rotation."""
 
@@ -438,7 +503,35 @@ def _camera_points_to_scene(
     if values.ndim != 2 or values.shape[1] != 3:
         raise ValueError("camera points must have shape (N, 3)")
     camera_to_scene_rotation = _CAMERA_TO_SCENE @ _quaternion_matrix(quaternion)
-    return (values @ camera_to_scene_rotation.T + _SCENE_ORIGIN).astype(np.float32)
+    offset = _SCENE_ORIGIN if translation is None else np.asarray(translation, dtype=np.float64)
+    return (values @ camera_to_scene_rotation.T + _SCENE_ORIGIN + offset).astype(np.float32)
+
+
+def _world_points_to_scene(points: np.ndarray) -> np.ndarray:
+    """Map Basalt world-frame meters to the OpenGL scene convention."""
+
+    values = np.asarray(points, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 3:
+        raise ValueError("world points must have shape (N, 3)")
+    return (values @ _CAMERA_TO_SCENE.T + _SCENE_ORIGIN).astype(np.float32)
+
+
+def _active_quaternion(
+    imu_pose: SpatialPoseSnapshot | None,
+    vio_pose: VioPose | None,
+) -> tuple[float, float, float, float]:
+    if vio_pose is not None:
+        values = tuple(float(value) for value in vio_pose.quaternion_wxyz)
+        norm = math.sqrt(sum(value * value for value in values))
+        if len(values) == 4 and math.isfinite(norm) and norm >= 1e-8:
+            return tuple(value / norm for value in values)
+    return _pose_quaternion(imu_pose)
+
+
+def _active_translation(vio_pose: VioPose | None) -> np.ndarray:
+    if vio_pose is None:
+        return np.zeros(3, dtype=np.float64)
+    return _CAMERA_TO_SCENE @ np.asarray(vio_pose.position_m, dtype=np.float64)
 
 
 def _glasses_frame_mesh() -> tuple[np.ndarray, np.ndarray]:

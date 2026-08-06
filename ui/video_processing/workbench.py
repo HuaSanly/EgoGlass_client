@@ -27,7 +27,8 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from ui.processing import ProcessingRunInfo
+from schemas import VioPose
+from ui.processing import ProcessingRunInfo, VioRunInfo
 from ui.replay.player import PlaybackClipSpan, ReplayPlayer, ReplaySnapshot, ReplayState
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas
@@ -99,6 +100,7 @@ class ProcessingWorkbench(QWidget):
     exportRequested = pyqtSignal()
     resultSelectionChanged = pyqtSignal()
     comparisonSelectionChanged = pyqtSignal()
+    vioRequested = pyqtSignal()
 
     RAW_RESULT = "__raw__"
     NO_COMPARISON = "__none__"
@@ -111,6 +113,7 @@ class ProcessingWorkbench(QWidget):
         self._session_id: str | None = None
         self._initial_clip_id: str | None = None
         self._runs: tuple[ProcessingRunInfo, ...] = ()
+        self._vio_runs: tuple[VioRunInfo, ...] = ()
         self._build_ui()
 
     @property
@@ -154,6 +157,11 @@ class ProcessingWorkbench(QWidget):
         self.process_button.setIcon(FluentIcon.PLAY)
         self.process_button.clicked.connect(self.processRequested)
         row.addWidget(self.process_button)
+        self.vio_button = PushButton("运行 SLAM/VIO", self)
+        self.vio_button.setIcon(FluentIcon.SYNC)
+        self.vio_button.setToolTip("对当前会话运行离线 Basalt VIO")
+        self.vio_button.clicked.connect(self.vioRequested)
+        row.addWidget(self.vio_button)
         row.addWidget(CaptionLabel("结果版本", self))
         self.result_combo = ComboBox(self)
         self.result_combo.setMinimumWidth(250)
@@ -282,6 +290,9 @@ class ProcessingWorkbench(QWidget):
         self.result_detail = CaptionLabel("当前显示原始视频", column)
         self.result_detail.setWordWrap(True)
         layout.addWidget(self.result_detail)
+        self.vio_detail = CaptionLabel("SLAM/VIO：未加载离线轨迹", column)
+        self.vio_detail.setWordWrap(True)
+        layout.addWidget(self.vio_detail)
         return column
 
     def set_context(
@@ -315,6 +326,37 @@ class ProcessingWorkbench(QWidget):
         self.export_button.setEnabled(self.primary_run_id is not None)
         self.resultSelectionChanged.emit()
 
+    @property
+    def selected_vio_run(self) -> VioRunInfo | None:
+        return next((run for run in self._vio_runs if run.is_viewable), None)
+
+    def set_vio_runs(self, runs: tuple[VioRunInfo, ...]) -> None:
+        self._vio_runs = tuple(
+            sorted(
+                (run for run in runs if run.is_viewable),
+                key=lambda run: run.completed_at_unix_ns or 0,
+                reverse=True,
+            )
+        )
+        selected = self.selected_vio_run
+        self.spatial_canvas.set_vio_trajectory(
+            selected.trajectory if selected is not None else None,
+            None,
+        )
+        if selected is None:
+            self.vio_detail.setText("SLAM/VIO：未加载离线轨迹")
+        else:
+            self.vio_detail.setText(
+                f"SLAM/VIO：{selected.run_id[-8:]}  ·  {selected.pose_count} 个位姿"
+            )
+
+    def set_vio_pose(self, pose: VioPose | None) -> None:
+        selected = self.selected_vio_run
+        self.spatial_canvas.set_vio_trajectory(
+            selected.trajectory if selected is not None else None,
+            pose,
+        )
+
     def set_replay(self, snapshot: ReplaySnapshot) -> None:
         self.play_button.setIcon(
             FluentIcon.PAUSE if snapshot.state is ReplayState.PLAYING else FluentIcon.PLAY
@@ -338,12 +380,15 @@ class ProcessingWorkbench(QWidget):
 
     def clear_media(self) -> None:
         self.canvas.clear()
+        self._vio_runs = ()
         self.spatial_canvas.set_pose(None)
+        self.spatial_canvas.set_vio_trajectory(None, None)
         self.spatial_canvas.set_hand_result(None)
         self.clip_timeline.set_clips(())
         self.result_combo.clear()
         self.comparison_combo.clear()
         self.result_detail.setText("当前显示原始视频")
+        self.vio_detail.setText("SLAM/VIO：未加载离线轨迹")
 
     def _primary_result_changed(self, _index: int) -> None:
         self._rebuild_comparison(emit=False)

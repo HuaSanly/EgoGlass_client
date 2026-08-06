@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from dataclasses import dataclass
 
 
@@ -38,3 +39,26 @@ class VioTrajectory:
             for previous, current in zip(self.poses, self.poses[1:], strict=False)
         ):
             raise ValueError("trajectory timestamps must strictly increase")
+
+    def pose_at(self, timestamp_ns: int, *, max_gap_ns: int | None = None) -> VioPose | None:
+        """Return the temporally nearest pose for one playback timestamp."""
+
+        if not self.poses:
+            return None
+        timestamps = [pose.timestamp_ns for pose in self.poses]
+        index = bisect_left(timestamps, timestamp_ns)
+        if index == 0:
+            candidate = self.poses[0]
+        elif index == len(self.poses):
+            candidate = self.poses[-1]
+        else:
+            before = self.poses[index - 1]
+            after = self.poses[index]
+            candidate = (
+                before
+                if timestamp_ns - before.timestamp_ns <= after.timestamp_ns - timestamp_ns
+                else after
+            )
+        if max_gap_ns is not None and abs(candidate.timestamp_ns - timestamp_ns) > max_gap_ns:
+            return None
+        return candidate

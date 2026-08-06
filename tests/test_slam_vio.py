@@ -210,3 +210,20 @@ def test_trajectory_parser_rejects_bad_rows(tmp_path: Path) -> None:
         pass
     else:
         raise AssertionError("malformed trajectory was accepted")
+
+
+def test_trajectory_pose_at_returns_nearest_timestamp(tmp_path: Path) -> None:
+    trajectory = parse_euroc_trajectory(
+        _write_trajectory_fixture(tmp_path / "trajectory.csv")
+    )
+    assert trajectory.pose_at(1_100).timestamp_ns == 1_000
+    assert trajectory.pose_at(1_700).timestamp_ns == 2_000
+    assert trajectory.pose_at(10_000, max_gap_ns=100) is None
+
+
+def _write_trajectory_fixture(path: Path) -> Path:
+    path.write_text(
+        "# header\n1000,0,0,0,1,0,0,0\n2000,1,0,0,1,0,0,0\n",
+        encoding="utf-8",
+    )
+    return path

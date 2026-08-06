@@ -77,3 +77,19 @@ The smoke run used session `224a88e7342e4702acea0c7d2a2cb6db` at 640x480 and
 produced 360 poses from 361 frames. The sample calibration is not measured, so
 that run required `--allow-unverified-calibration`; its trajectory is only an
 I/O integration check, not a calibrated motion result.
+
+## Native UI route
+
+The video-processing workbench now has a `运行 SLAM/VIO` action. It submits the
+same offline service used by the CLI, but stores the run under the selected
+session:
+
+```text
+<session>/derived/vio/basalt/<run-id>/
+```
+
+When the run completes, reopening the session workbench discovers the newest
+valid `trajectory.csv`. The spatial OpenGL view draws the complete trajectory
+and selects the pose nearest the shared playback `session_time_ns`, so video,
+hand results, and VIO remain on one timeline. The live collection view never
+starts this service and online inference is unchanged.
