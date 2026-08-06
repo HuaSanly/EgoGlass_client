@@ -438,7 +438,6 @@ class ProcessingWorkbench(QWidget):
         self.resultSelectionChanged.emit()
 
     def _rebuild_comparison(self, *, emit: bool = True) -> None:
-        previous = self.comparison_run_id
         primary = self.primary_run_id
         self.comparison_combo.blockSignals(True)
         self.comparison_combo.clear()
@@ -446,8 +445,9 @@ class ProcessingWorkbench(QWidget):
         for run in self._runs:
             if run.run_id != primary:
                 self.comparison_combo.addItem(_short_run_label(run), userData=run.run_id)
-        index = self.comparison_combo.findData(previous)
-        self.comparison_combo.setCurrentIndex(max(0, index))
+        # A/B is an explicit inspection mode. Do not carry a previous
+        # comparison into a newly loaded clip or refreshed result list.
+        self.comparison_combo.setCurrentIndex(0)
         self.comparison_combo.blockSignals(False)
         if emit:
             self.comparisonSelectionChanged.emit()

@@ -23,6 +23,7 @@ from ui.processing import (
 )
 from ui.replay.player import PlaybackClipSpan, PlaybackFrame, ReplaySnapshot, ReplayState
 from ui.video_processing.hall import VideoHall
+from ui.video_processing.workbench import ProcessingWorkbench
 from ui.views.video_processing import _processing_states, _Selection
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas
@@ -182,6 +183,39 @@ def test_result_switching_does_not_reopen_or_duplicate_video_decoder() -> None:
         assert view.findChildren(SpatialSyncCanvas) == [view.spatial_canvas]
     finally:
         window.close()
+
+
+def test_result_refresh_does_not_retain_an_old_ab_comparison_selection() -> None:
+    class ComboStub:
+        def __init__(self) -> None:
+            self.items: list[tuple[str, str]] = []
+            self.current_index = 1
+
+        def blockSignals(self, _blocked: bool) -> None:
+            pass
+
+        def clear(self) -> None:
+            self.items.clear()
+
+        def addItem(self, text: str, *, userData: str) -> None:
+            self.items.append((text, userData))
+
+        def setCurrentIndex(self, index: int) -> None:
+            self.current_index = index
+
+    combo = ComboStub()
+    workbench = SimpleNamespace(
+        primary_run_id="new",
+        comparison_combo=combo,
+        NO_COMPARISON=ProcessingWorkbench.NO_COMPARISON,
+        _runs=(_run("new", 3), _run("old", 2)),
+    )
+
+    ProcessingWorkbench._rebuild_comparison(workbench, emit=False)  # type: ignore[arg-type]
+
+    assert combo.current_index == 0
+    assert combo.items[0][1] == ProcessingWorkbench.NO_COMPARISON
+    assert combo.items[1][1] == "old"
 
 
 def test_slow_result_store_queries_do_not_create_a_per_frame_backlog() -> None:

@@ -470,6 +470,31 @@ def test_processing_video_and_space_views_consume_the_same_playback_frame(
         qt_application.processEvents()
 
 
+def test_workbench_result_refresh_starts_with_a_b_comparison_disabled(
+    qt_application: QApplication,
+) -> None:
+    runtime = RuntimeStub()
+    window = MainWindow(runtime)  # type: ignore[arg-type]
+    try:
+        workbench = window.processing_view.workbench
+        runs = (
+            _processing_run("run-primary"),
+            _processing_run("run-comparison"),
+        )
+        workbench.set_runs(runs, "clip")
+        assert workbench.comparison_run_id is None
+
+        workbench.comparison_combo.setCurrentIndex(1)
+        assert workbench.comparison_run_id == "run-comparison"
+
+        workbench.set_runs(runs, "clip")
+        assert workbench.comparison_run_id is None
+        assert workbench.comparison_combo.currentIndex() == 0
+    finally:
+        window.close()
+        qt_application.processEvents()
+
+
 def test_workbench_processes_current_clip_and_exports_selected_result() -> None:
     runtime = RuntimeStub()
     window = MainWindow(runtime)  # type: ignore[arg-type]
