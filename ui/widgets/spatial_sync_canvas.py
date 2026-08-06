@@ -78,6 +78,33 @@ _AXIS_COLORS = np.asarray(
 
 
 @dataclass(frozen=True, slots=True)
+class SpatialViewPreset:
+    center_xyz: tuple[float, float, float]
+    distance: float
+    elevation_degrees: float
+    azimuth_degrees: float
+    field_of_view_degrees: float
+
+
+_VIEW_PRESETS = {
+    SpatialReferenceFrame.WORLD: SpatialViewPreset(
+        center_xyz=(0.0, 0.30, -0.10),
+        distance=1.65,
+        elevation_degrees=12.0,
+        azimuth_degrees=-90.0,
+        field_of_view_degrees=43.0,
+    ),
+    SpatialReferenceFrame.CAMERA: SpatialViewPreset(
+        center_xyz=(0.0, 0.40, -0.10),
+        distance=1.10,
+        elevation_degrees=5.0,
+        azimuth_degrees=-90.0,
+        field_of_view_degrees=43.0,
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
 class SpatialSyncCanvasStatus:
     has_imu_pose: bool
     has_left_hand: bool
@@ -130,7 +157,6 @@ class SpatialSyncCanvas(QWidget):
         )
         self._reference_frame = SpatialReferenceFrame.CAMERA
         self._scene_state: SpatialSceneState | None = None
-        self._camera_center_initialized = False
         self._legacy_pose: SpatialPoseSnapshot | None = None
         self._legacy_hand_result: dict[str, object] | None = None
         self._legacy_vio_pose: VioPose | None = None
@@ -178,10 +204,7 @@ class SpatialSyncCanvas(QWidget):
         self.view.setObjectName("spatialSyncViewport")
         self.view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.view.setBackgroundColor("#050713")
-        self.view.opts["fov"] = 43
-        # The scene uses X-right, Y-forward and Z-up. Looking from -Y keeps
-        # the head axes upright on first paint and makes hand motion readable.
-        self.view.setCameraPosition(distance=1.65, elevation=12, azimuth=-90)
+        self._apply_view_preset(self._reference_frame)
         root.addWidget(self.view, 1)
 
         self._grid_item = GLLinePlotItem(
@@ -245,7 +268,7 @@ class SpatialSyncCanvas(QWidget):
 
         frame = SpatialReferenceFrame(reference_frame)
         self._reference_frame = frame
-        self._camera_center_initialized = False
+        self._apply_view_preset(frame)
         self.reference_selector.blockSignals(True)
         self.reference_selector.setCurrentItem(frame.value)
         self.reference_selector.blockSignals(False)
@@ -267,7 +290,6 @@ class SpatialSyncCanvas(QWidget):
             self._set_hand_items(state.left_hand_points_m, self._left_lines, self._left_points)
             self._set_hand_items(state.right_hand_points_m, self._right_lines, self._right_points)
             self._grid_item.setVisible(state.show_ground)
-            self._update_camera(state)
         self._update_state_label()
 
     # Compatibility adapters for callers that still provide individual streams.
@@ -385,39 +407,20 @@ class SpatialSyncCanvas(QWidget):
             parts.append(f"F{status.latest_frame_index}")
         self._state_label.setText(" | ".join(parts))
 
-    def _update_camera(self, state: SpatialSceneState) -> None:
-        points = [*state.left_hand_points_m, *state.right_hand_points_m]
-        if state.head_axes_m:
-            points.extend(state.head_axes_m)
-        if not points:
-            return
-        scene = _to_scene(np.asarray(points, dtype=np.float64))
-        center = np.mean(scene, axis=0)
-        extent = max(float(np.ptp(scene[:, axis])) for axis in range(3))
-        distance = min(3.0, max(0.75, extent * 3.2 + 0.55))
-        current = self.view.opts.get("center")
-        if not self._camera_center_initialized or current is None:
-            smoothed = center
-        else:
-            try:
-                current_values = np.asarray(
-                    (float(current.x()), float(current.y()), float(current.z())),
-                    dtype=np.float64,
-                )
-                smoothed = 0.85 * current_values + 0.15 * center
-            except AttributeError:
-                smoothed = center
-        self._camera_center_initialized = True
-        # GLViewWidget.viewMatrix() calls x()/y()/z() on the stored center.
-        # Keep the center as QVector3D instead of a tuple so every repaint can
-        # build a valid OpenGL model-view matrix.
+    def _apply_view_preset(self, reference_frame: SpatialReferenceFrame) -> None:
+        """Reset the observer camera only when the reference frame changes."""
+
+        preset = _VIEW_PRESETS[reference_frame]
+        self.view.opts["fov"] = preset.field_of_view_degrees
         self.view.setCameraPosition(
             pos=QVector3D(
-                float(smoothed[0]),
-                float(smoothed[1]),
-                float(smoothed[2]),
+                preset.center_xyz[0],
+                preset.center_xyz[1],
+                preset.center_xyz[2],
             ),
-            distance=distance,
+            distance=preset.distance,
+            elevation=preset.elevation_degrees,
+            azimuth=preset.azimuth_degrees,
         )
 
 

@@ -19,6 +19,20 @@ from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas
 
 
+def _spatial_view_parameters(
+    canvas: SpatialSyncCanvas,
+) -> tuple[tuple[float, float, float], float, float, float, float]:
+    parameters = canvas.view.cameraParams()
+    center = parameters["center"]
+    return (
+        tuple(round(float(value), 6) for value in (center.x(), center.y(), center.z())),
+        round(float(parameters["distance"]), 6),
+        round(float(parameters["elevation"]), 6),
+        round(float(parameters["azimuth"]), 6),
+        round(float(parameters["fov"]), 6),
+    )
+
+
 def test_native_runtime_uses_direct_frames_and_one_process() -> None:
     repository = Path(__file__).parents[1]
     runtime = (repository / "ui" / "application" / "runtime_host.py").read_text(
@@ -385,11 +399,12 @@ def test_pts_pacer_does_not_systematically_drop_batched_rtp_frames() -> None:
     assert status.starvations <= 1
 
 
-def test_spatial_camera_follow_produces_a_valid_opengl_center_and_matrix(
+def test_spatial_scene_changes_never_modify_the_observer_camera(
     qt_application: QApplication,
 ) -> None:
     canvas = SpatialSyncCanvas()
     canvas.resize(640, 480)
+    expected = _spatial_view_parameters(canvas)
     canvas.set_hand_result(
         {
             "frame_index": 1,
@@ -403,9 +418,23 @@ def test_spatial_camera_follow_produces_a_valid_opengl_center_and_matrix(
             ],
         }
     )
+    canvas.set_hand_result(
+        {
+            "frame_index": 2,
+            "hands": [
+                {
+                    "handedness": "right",
+                    "keypoints_3d_camera_m": [
+                        [20.0 + index, -10.0, 30.0] for index in range(21)
+                    ],
+                }
+            ],
+        }
+    )
     qt_application.processEvents()
 
     assert isinstance(canvas.view.opts["center"], QVector3D)
+    assert _spatial_view_parameters(canvas) == expected
     assert not canvas.view.viewMatrix().isIdentity()
     canvas.close()
 
@@ -414,7 +443,7 @@ def test_spatial_view_defaults_to_a_front_upright_camera_and_flat_ground_grid() 
     canvas = SpatialSyncCanvas()
     try:
         assert canvas.view.opts["azimuth"] == -90
-        assert canvas.view.opts["elevation"] == 12
+        assert canvas.view.opts["elevation"] == 5
         matrix = canvas.view.viewMatrix()
         origin = matrix.map(QVector3D(0.0, 0.0, 0.0))
         horizontal = matrix.map(QVector3D(1.0, 0.0, 0.0))
@@ -422,5 +451,40 @@ def test_spatial_view_defaults_to_a_front_upright_camera_and_flat_ground_grid() 
         assert abs(horizontal.y() - origin.y()) < 1e-6
         assert abs(vertical.x() - origin.x()) < 1e-6
         assert np.allclose(_floor_grid()[:, 2], -0.42)
+    finally:
+        canvas.close()
+
+
+def test_spatial_reference_switch_resets_each_fixed_view_preset() -> None:
+    canvas = SpatialSyncCanvas()
+    view = canvas.view
+    try:
+        canvas.view.setCameraPosition(
+            pos=QVector3D(3.0, 2.0, 1.0),
+            distance=2.5,
+            elevation=35.0,
+            azimuth=25.0,
+        )
+        canvas.view.opts["fov"] = 61.0
+
+        canvas.set_reference_frame("world")
+        assert canvas.view is view
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.3, -0.1),
+            1.65,
+            12.0,
+            -90.0,
+            43.0,
+        )
+
+        canvas.set_reference_frame("camera")
+        assert canvas.view is view
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.4, -0.1),
+            1.1,
+            5.0,
+            -90.0,
+            43.0,
+        )
     finally:
         canvas.close()

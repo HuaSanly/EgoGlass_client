@@ -38,6 +38,7 @@ from ui.replay.player import PlaybackFrame, ReplayState
 from ui.views.home import HomeView, _confidence_body
 from ui.views.video_processing import _processing_states, _result_counts, _Selection
 from ui.widgets.spatial_sync_canvas import (
+    SpatialReferenceFrame,
     SpatialSyncCanvas,
     _camera_points_to_scene,
     _floor_grid,
@@ -206,6 +207,20 @@ def _hand_result(
         "source_image_height_px": 480,
         "hands": hands,
     }
+
+
+def _spatial_view_parameters(
+    canvas: SpatialSyncCanvas,
+) -> tuple[tuple[float, float, float], float, float, float, float]:
+    parameters = canvas.view.cameraParams()
+    center = parameters["center"]
+    return (
+        tuple(round(float(value), 6) for value in (center.x(), center.y(), center.z())),
+        round(float(parameters["distance"]), 6),
+        round(float(parameters["elevation"]), 6),
+        round(float(parameters["azimuth"]), 6),
+        round(float(parameters["fov"]), 6),
+    )
 
 
 def _recording_library(
@@ -979,25 +994,101 @@ def test_spatial_sync_canvas_renders_imu_and_hand_pose(
     assert canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
 
 
-def test_spatial_sync_camera_tracking_keeps_qvector3d_center_and_matrix_valid(
+def test_spatial_sync_scene_updates_do_not_move_the_observer_camera(
     qt_application: QApplication,
 ) -> None:
     canvas = SpatialSyncCanvas()
     canvas.resize(640, 480)
+    expected = _spatial_view_parameters(canvas)
     canvas.set_hand_result(_hand_result())
+    far_result = _hand_result(frame_index=13)
+    hands = far_result["hands"]
+    assert isinstance(hands, list)
+    for hand in hands:
+        assert isinstance(hand, dict)
+        hand["keypoints_3d_camera_m"] = [
+            [8.0 + index, -5.0, 12.0] for index in range(21)
+        ]
+    canvas.set_hand_result(far_result)
     qt_application.processEvents()
 
     center = canvas.view.opts["center"]
     assert isinstance(center, QVector3D)
+    assert _spatial_view_parameters(canvas) == expected
     assert not canvas.view.viewMatrix().isIdentity()
     canvas.close()
+
+
+def test_spatial_sync_preserves_manual_view_until_reference_frame_switch() -> None:
+    canvas = SpatialSyncCanvas()
+    try:
+        canvas.view.opts["fov"] = 58.0
+        canvas.view.setCameraPosition(
+            pos=QVector3D(2.0, 3.0, 4.0),
+            distance=2.4,
+            elevation=31.0,
+            azimuth=-42.0,
+        )
+        manual = _spatial_view_parameters(canvas)
+
+        canvas.set_hand_result(_hand_result())
+
+        assert _spatial_view_parameters(canvas) == manual
+    finally:
+        canvas.close()
+
+
+def test_spatial_sync_reference_switch_restores_exact_mode_presets() -> None:
+    canvas = SpatialSyncCanvas()
+    view = canvas.view
+    try:
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.4, -0.1),
+            1.1,
+            5.0,
+            -90.0,
+            43.0,
+        )
+
+        canvas.set_reference_frame(SpatialReferenceFrame.WORLD)
+        assert canvas.view is view
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.3, -0.1),
+            1.65,
+            12.0,
+            -90.0,
+            43.0,
+        )
+
+        canvas.view.setCameraPosition(distance=2.8, elevation=40.0, azimuth=15.0)
+        canvas.view.opts["fov"] = 60.0
+        canvas.set_reference_frame(SpatialReferenceFrame.CAMERA)
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.4, -0.1),
+            1.1,
+            5.0,
+            -90.0,
+            43.0,
+        )
+
+        canvas.view.setCameraPosition(distance=3.0, elevation=-10.0, azimuth=80.0)
+        canvas.set_reference_frame(SpatialReferenceFrame.WORLD)
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.3, -0.1),
+            1.65,
+            12.0,
+            -90.0,
+            43.0,
+        )
+    finally:
+        canvas.close()
 
 
 def test_spatial_sync_starts_from_an_upright_front_view_with_horizontal_grid() -> None:
     canvas = SpatialSyncCanvas()
     try:
         assert canvas.view.opts["azimuth"] == -90
-        assert canvas.view.opts["elevation"] == 12
+        assert canvas.view.opts["elevation"] == 5
         matrix = canvas.view.viewMatrix()
         origin = matrix.map(QVector3D(0.0, 0.0, 0.0))
         horizontal = matrix.map(QVector3D(1.0, 0.0, 0.0))
