@@ -14,7 +14,7 @@ from qfluentwidgets import BodyLabel, IconInfoBadge
 from ui.app import MainWindow
 from ui.application.runtime_state import RuntimeSnapshot
 from ui.gateway.live_frames import LiveFrame, LiveFramePacer
-from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
+from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas, _floor_grid
 from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas
 
@@ -408,3 +408,19 @@ def test_spatial_camera_follow_produces_a_valid_opengl_center_and_matrix(
     assert isinstance(canvas.view.opts["center"], QVector3D)
     assert not canvas.view.viewMatrix().isIdentity()
     canvas.close()
+
+
+def test_spatial_view_defaults_to_a_front_upright_camera_and_flat_ground_grid() -> None:
+    canvas = SpatialSyncCanvas()
+    try:
+        assert canvas.view.opts["azimuth"] == -90
+        assert canvas.view.opts["elevation"] == 12
+        matrix = canvas.view.viewMatrix()
+        origin = matrix.map(QVector3D(0.0, 0.0, 0.0))
+        horizontal = matrix.map(QVector3D(1.0, 0.0, 0.0))
+        vertical = matrix.map(QVector3D(0.0, 0.0, 1.0))
+        assert abs(horizontal.y() - origin.y()) < 1e-6
+        assert abs(vertical.x() - origin.x()) < 1e-6
+        assert np.allclose(_floor_grid()[:, 2], -0.42)
+    finally:
+        canvas.close()

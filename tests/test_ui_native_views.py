@@ -40,6 +40,7 @@ from ui.views.video_processing import _processing_states, _result_counts, _Selec
 from ui.widgets.spatial_sync_canvas import (
     SpatialSyncCanvas,
     _camera_points_to_scene,
+    _floor_grid,
     _glasses_frame_mesh,
 )
 from ui.widgets.status_indicator import StatusIndicator
@@ -990,6 +991,27 @@ def test_spatial_sync_camera_tracking_keeps_qvector3d_center_and_matrix_valid(
     assert isinstance(center, QVector3D)
     assert not canvas.view.viewMatrix().isIdentity()
     canvas.close()
+
+
+def test_spatial_sync_starts_from_an_upright_front_view_with_horizontal_grid() -> None:
+    canvas = SpatialSyncCanvas()
+    try:
+        assert canvas.view.opts["azimuth"] == -90
+        assert canvas.view.opts["elevation"] == 12
+        matrix = canvas.view.viewMatrix()
+        origin = matrix.map(QVector3D(0.0, 0.0, 0.0))
+        horizontal = matrix.map(QVector3D(1.0, 0.0, 0.0))
+        vertical = matrix.map(QVector3D(0.0, 0.0, 1.0))
+        assert horizontal.x() - origin.x() > 0.99
+        assert abs(horizontal.y() - origin.y()) < 1e-6
+        assert abs(vertical.x() - origin.x()) < 1e-6
+        assert vertical.y() - origin.y() > 0.95
+        grid = _floor_grid()
+        assert np.allclose(grid[:, 2], -0.42)
+        assert np.ptp(grid[:, 0]) > 0
+        assert np.ptp(grid[:, 1]) > 0
+    finally:
+        canvas.close()
 
 
 def test_spatial_sync_canvas_uses_camera_frame_without_side_offsets() -> None:

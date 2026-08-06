@@ -130,6 +130,7 @@ class SpatialSyncCanvas(QWidget):
         )
         self._reference_frame = SpatialReferenceFrame.CAMERA
         self._scene_state: SpatialSceneState | None = None
+        self._camera_center_initialized = False
         self._legacy_pose: SpatialPoseSnapshot | None = None
         self._legacy_hand_result: dict[str, object] | None = None
         self._legacy_vio_pose: VioPose | None = None
@@ -178,7 +179,9 @@ class SpatialSyncCanvas(QWidget):
         self.view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.view.setBackgroundColor("#050713")
         self.view.opts["fov"] = 43
-        self.view.setCameraPosition(distance=1.65, elevation=20, azimuth=-48)
+        # The scene uses X-right, Y-forward and Z-up. Looking from -Y keeps
+        # the head axes upright on first paint and makes hand motion readable.
+        self.view.setCameraPosition(distance=1.65, elevation=12, azimuth=-90)
         root.addWidget(self.view, 1)
 
         self._grid_item = GLLinePlotItem(
@@ -242,6 +245,7 @@ class SpatialSyncCanvas(QWidget):
 
         frame = SpatialReferenceFrame(reference_frame)
         self._reference_frame = frame
+        self._camera_center_initialized = False
         self.reference_selector.blockSignals(True)
         self.reference_selector.setCurrentItem(frame.value)
         self.reference_selector.blockSignals(False)
@@ -392,7 +396,7 @@ class SpatialSyncCanvas(QWidget):
         extent = max(float(np.ptp(scene[:, axis])) for axis in range(3))
         distance = min(3.0, max(0.75, extent * 3.2 + 0.55))
         current = self.view.opts.get("center")
-        if current is None:
+        if not self._camera_center_initialized or current is None:
             smoothed = center
         else:
             try:
@@ -403,6 +407,7 @@ class SpatialSyncCanvas(QWidget):
                 smoothed = 0.85 * current_values + 0.15 * center
             except AttributeError:
                 smoothed = center
+        self._camera_center_initialized = True
         # GLViewWidget.viewMatrix() calls x()/y()/z() on the stored center.
         # Keep the center as QVector3D instead of a tuple so every repaint can
         # build a valid OpenGL model-view matrix.
@@ -417,12 +422,20 @@ class SpatialSyncCanvas(QWidget):
 
 
 def _floor_grid() -> np.ndarray:
+    """Return a horizontal scene-space grid below the head origin.
+
+    Hand points arrive in camera coordinates where Y points down and Z points
+    forward. ``_to_scene`` maps those axes to X-right, Y-forward, Z-up. The
+    grid is authored in the final scene coordinates so its Z value stays
+    constant and it cannot accidentally become a vertical wall.
+    """
+
     lines: list[tuple[float, float, float]] = []
     for x in np.linspace(-0.8, 0.8, 9):
         lines.extend(((float(x), -0.25, -0.42), (float(x), 1.25, -0.42)))
     for y in np.linspace(-0.25, 1.25, 9):
         lines.extend(((-0.8, float(y), -0.42), (0.8, float(y), -0.42)))
-    return _to_scene(np.asarray(lines, dtype=np.float64))
+    return np.asarray(lines, dtype=np.float32)
 
 
 def _to_scene(points: np.ndarray) -> np.ndarray:
