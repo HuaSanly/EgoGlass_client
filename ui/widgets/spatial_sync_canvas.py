@@ -7,7 +7,7 @@ from typing import Protocol
 
 import numpy as np
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QVector3D
 from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 from pyqtgraph.opengl import (
     GLLinePlotItem,
@@ -403,8 +403,15 @@ class SpatialSyncCanvas(QWidget):
                 smoothed = 0.85 * current_values + 0.15 * center
             except AttributeError:
                 smoothed = center
+        # GLViewWidget.viewMatrix() calls x()/y()/z() on the stored center.
+        # Keep the center as QVector3D instead of a tuple so every repaint can
+        # build a valid OpenGL model-view matrix.
         self.view.setCameraPosition(
-            pos=tuple(float(value) for value in smoothed),
+            pos=QVector3D(
+                float(smoothed[0]),
+                float(smoothed[1]),
+                float(smoothed[2]),
+            ),
             distance=distance,
         )
 

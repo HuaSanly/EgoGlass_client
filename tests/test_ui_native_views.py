@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PyQt6.QtGui import QVector3D
 from PyQt6.QtWidgets import QApplication, QWidget
 from pyqtgraph.opengl import GLViewWidget
 from qfluentwidgets import HeaderCardWidget, SimpleCardWidget, TitleLabel
@@ -975,6 +976,20 @@ def test_spatial_sync_canvas_renders_imu_and_hand_pose(
     assert status.has_right_hand
     assert status.latest_frame_index == 12
     assert canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
+
+
+def test_spatial_sync_camera_tracking_keeps_qvector3d_center_and_matrix_valid(
+    qt_application: QApplication,
+) -> None:
+    canvas = SpatialSyncCanvas()
+    canvas.resize(640, 480)
+    canvas.set_hand_result(_hand_result())
+    qt_application.processEvents()
+
+    center = canvas.view.opts["center"]
+    assert isinstance(center, QVector3D)
+    assert not canvas.view.viewMatrix().isIdentity()
+    canvas.close()
 
 
 def test_spatial_sync_canvas_uses_camera_frame_without_side_offsets() -> None:

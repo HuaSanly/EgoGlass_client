@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from PyQt6.QtCore import QPoint, QRect
+from PyQt6.QtGui import QVector3D
 from PyQt6.QtWidgets import QApplication
 from pyqtgraph.opengl import GLViewWidget
 from qfluentwidgets import BodyLabel, IconInfoBadge
@@ -382,3 +383,28 @@ def test_pts_pacer_does_not_systematically_drop_batched_rtp_frames() -> None:
     assert len(presented_indices) >= 178
     assert status.frames_dropped <= 2
     assert status.starvations <= 1
+
+
+def test_spatial_camera_follow_produces_a_valid_opengl_center_and_matrix(
+    qt_application: QApplication,
+) -> None:
+    canvas = SpatialSyncCanvas()
+    canvas.resize(640, 480)
+    canvas.set_hand_result(
+        {
+            "frame_index": 1,
+            "hands": [
+                {
+                    "handedness": "left",
+                    "keypoints_3d_camera_m": [
+                        [0.01 * index, 0.02, 0.4] for index in range(21)
+                    ],
+                }
+            ],
+        }
+    )
+    qt_application.processEvents()
+
+    assert isinstance(canvas.view.opts["center"], QVector3D)
+    assert not canvas.view.viewMatrix().isIdentity()
+    canvas.close()
