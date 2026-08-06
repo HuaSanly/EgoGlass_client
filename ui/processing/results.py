@@ -4,7 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
+_SUPPORTED_SCHEMA_VERSIONS = frozenset({"1", "2"})
 
 
 class ProcessingResultStore:
@@ -22,16 +23,33 @@ class ProcessingResultStore:
             self._initialize()
 
     def put(self, result: dict[str, object]) -> None:
+        """Store a finalized result; retained as the UI-compatible default API."""
+
+        self.put_final(result)
+
+    def put_raw(self, result: dict[str, object]) -> None:
+        """Persist an immutable per-frame inference result before sequence cleanup."""
+
+        self._put("raw_frame_results", result)
+
+    def put_final(self, result: dict[str, object]) -> None:
+        """Persist the finalized result used by replay, export, and inspection."""
+
+        self._put("frame_results", result)
+
+    def _put(self, table: str, result: dict[str, object]) -> None:
         if self.read_only:
             raise RuntimeError("result store is read-only")
+        if table not in {"raw_frame_results", "frame_results"}:
+            raise ValueError("unsupported processing result table")
         clip_id = _require_string(result, "sequence_id")
         frame_index = _require_integer(result, "frame_index")
         session_time_ns = _require_integer(result, "session_time_ns")
         payload = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         with self._connect() as connection:
             connection.execute(
-                """
-                INSERT INTO frame_results(clip_id, frame_index, session_time_ns, result_json)
+                f"""
+                INSERT INTO {table}(clip_id, frame_index, session_time_ns, result_json)
                 VALUES (?, ?, ?, ?)
                 """,
                 (clip_id, frame_index, session_time_ns, payload),
@@ -61,9 +79,42 @@ class ProcessingResultStore:
             return None
         return json.loads(row["result_json"])
 
-    def count(self) -> int:
+    def raw_result_for_frame(
+        self,
+        clip_id: str,
+        frame_index: int,
+        session_time_ns: int,
+    ) -> dict[str, object] | None:
+        """Return the exact inference result for v2 runs; v1 runs have no raw stream."""
+
+        if self.schema_version == "1":
+            return None
         with self._connect() as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM frame_results").fetchone()[0])
+            row = connection.execute(
+                """
+                SELECT result_json FROM raw_frame_results
+                WHERE clip_id = ? AND frame_index = ? AND session_time_ns = ?
+                """,
+                (clip_id, frame_index, session_time_ns),
+            ).fetchone()
+        return None if row is None else json.loads(row["result_json"])
+
+    def count(self, *, raw: bool = False) -> int:
+        if raw and self.schema_version == "1":
+            return 0
+        table = "raw_frame_results" if raw else "frame_results"
+        with self._connect() as connection:
+            return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+    @property
+    def schema_version(self) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("processing result schema metadata is missing")
+        return str(row["value"])
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -82,6 +133,15 @@ class ProcessingResultStore:
                 );
                 CREATE INDEX IF NOT EXISTS frame_results_time
                     ON frame_results(clip_id, session_time_ns);
+                CREATE TABLE IF NOT EXISTS raw_frame_results (
+                    clip_id TEXT NOT NULL,
+                    frame_index INTEGER NOT NULL CHECK(frame_index >= 0),
+                    session_time_ns INTEGER NOT NULL CHECK(session_time_ns >= 0),
+                    result_json TEXT NOT NULL,
+                    PRIMARY KEY(clip_id, frame_index, session_time_ns)
+                );
+                CREATE INDEX IF NOT EXISTS raw_frame_results_time
+                    ON raw_frame_results(clip_id, session_time_ns);
                 """
             )
             connection.execute(
@@ -94,7 +154,7 @@ class ProcessingResultStore:
             row = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'schema_version'"
             ).fetchone()
-        if row is None or row["value"] != _SCHEMA_VERSION:
+        if row is None or row["value"] not in _SUPPORTED_SCHEMA_VERSIONS:
             raise RuntimeError("unsupported processing result schema")
 
     def _connect(self) -> sqlite3.Connection:

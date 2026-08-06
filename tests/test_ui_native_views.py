@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QApplication, QWidget
 from pyqtgraph.opengl import GLViewWidget
 from qfluentwidgets import HeaderCardWidget, SimpleCardWidget, TitleLabel
 
+from schemas import VioPose, VioTrajectory
 from sensor_preprocessing import RecordedImuPose
 from ui.app import MainWindow
 from ui.application.runtime_state import RuntimeSnapshot
@@ -33,6 +34,8 @@ from ui.processing import (
     ProcessingRunInfo,
     ProcessingRunState,
     ProcessingServiceSnapshot,
+    VioRunInfo,
+    VioRunState,
 )
 from ui.replay.player import PlaybackFrame, ReplayState
 from ui.views.home import HomeView, _confidence_body
@@ -292,6 +295,7 @@ def _processing_run(
     *,
     clip_id: str | None = None,
     completed_at_unix_ns: int = 2_000_000_000,
+    vio_run_id: str | None = None,
 ) -> ProcessingRunInfo:
     return ProcessingRunInfo(
         run_id=run_id,
@@ -306,6 +310,7 @@ def _processing_run(
         completed_at_unix_ns=completed_at_unix_ns,
         results_path=Path("results.sqlite"),
         is_viewable=True,
+        vio_run_id=vio_run_id,
     )
 
 
@@ -430,6 +435,7 @@ def test_processing_video_and_space_views_consume_the_same_playback_frame(
         view._selection = _Selection("session", "connection")
         view.stack.setCurrentWidget(view.workbench)
         view.workbench.set_context("session", "同步测试", "connection")
+        view.spatial_canvas.set_reference_frame(SpatialReferenceFrame.CAMERA)
         view.workbench.set_runs(
             (
                 _processing_run("run-primary", completed_at_unix_ns=3_000_000_000),
@@ -579,6 +585,17 @@ def test_hall_processing_state_maps_the_latest_applicable_job() -> None:
 
     assert _processing_states((running,), session) == {clip_id: "处理中"}
 
+    partial = ProcessingJob(
+        "partial-job",
+        session.session_id,
+        clip_id,
+        ProcessingPreset(),
+        ProcessingJobState.PARTIAL,
+        3,
+        4,
+    )
+    assert _processing_states((partial,), session) == {clip_id: "部分完成"}
+
 
 def test_workbench_selects_latest_valid_result_and_filters_runs_by_clip() -> None:
     window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
@@ -604,6 +621,46 @@ def test_workbench_selects_latest_valid_result_and_filters_runs_by_clip() -> Non
         assert workbench.primary_run_id == "newer"
         workbench.result_combo.setCurrentIndex(0)
         assert workbench.primary_run_id is None
+    finally:
+        window.close()
+
+
+def test_workbench_uses_vio_run_bound_to_selected_processing_result() -> None:
+    window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
+    pose = VioPose(1, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0))
+    try:
+        workbench = window.processing_view.workbench
+        workbench.set_runs(
+            (_processing_run("processed", clip_id="clip", vio_run_id="bound"),),
+            "clip",
+        )
+        workbench.set_vio_runs(
+            (
+                VioRunInfo(
+                    "newest-unrelated",
+                    "session",
+                    "clip",
+                    VioRunState.COMPLETED,
+                    Path("newest"),
+                    2,
+                    3,
+                    VioTrajectory((pose,)),
+                ),
+                VioRunInfo(
+                    "bound",
+                    "session",
+                    "clip",
+                    VioRunState.COMPLETED,
+                    Path("bound"),
+                    1,
+                    2,
+                    VioTrajectory((pose,)),
+                ),
+            )
+        )
+
+        assert workbench.selected_vio_run is not None
+        assert workbench.selected_vio_run.run_id == "bound"
     finally:
         window.close()
 

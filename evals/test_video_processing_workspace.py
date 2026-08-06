@@ -24,7 +24,7 @@ from ui.processing import (
 from ui.replay.player import PlaybackClipSpan, PlaybackFrame, ReplaySnapshot, ReplayState
 from ui.video_processing.hall import VideoHall
 from ui.views.video_processing import _processing_states, _Selection
-from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
+from ui.widgets.spatial_sync_canvas import SpatialReferenceFrame, SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas
 
 
@@ -333,6 +333,7 @@ def test_processing_result_and_spatial_view_share_one_frame_identity(
         view = window.processing_view
         view._selection = _Selection("session", "clip")
         view.stack.setCurrentWidget(view.workbench)
+        view.spatial_canvas.set_reference_frame(SpatialReferenceFrame.CAMERA)
         view.workbench.set_runs((_run("run-a", 3), _run("run-b", 2)), "clip")
         view.replay._update(  # type: ignore[attr-defined]
             state=ReplayState.PAUSED,

@@ -53,6 +53,7 @@ def build_spatial_scene_state(
         (0.0, 0.0, 1.0, 0.0),
         (0.0, 0.0, 0.0, 1.0),
     ),
+    allow_imu_world_fallback: bool = True,
 ) -> SpatialSceneState:
     """Build one scene using a single frame's IMU, VIO and hand observations.
 
@@ -87,12 +88,26 @@ def build_spatial_scene_state(
     if vio_pose is not None and vio_first_pose is not None:
         display_imu = _relative_vio_transform(vio_first_pose, vio_pose)
         source = "Basalt VIO"
-    elif has_imu:
+    elif has_imu and allow_imu_world_fallback:
         display_imu = _orientation_transform(imu_pose.quaternion_wxyz)
         source = "IMU 朝向，无平移"
     else:
         display_imu = _IDENTITY_TRANSFORM.copy()
         source = "等待 IMU / VIO"
+
+    if not has_vio and not allow_imu_world_fallback:
+        return SpatialSceneState(
+            reference_frame,
+            (),
+            (),
+            (),
+            (),
+            "世界坐标不可用",
+            frame_index,
+            has_imu,
+            False,
+            False,
+        )
 
     transform_i_c = _matrix4(transform_camera_to_imu)
     transform_display_camera = display_imu @ transform_i_c

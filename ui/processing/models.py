@@ -11,6 +11,7 @@ class ProcessingJobState(StrEnum):
     RUNNING = "running"
     CANCELING = "canceling"
     COMPLETED = "completed"
+    PARTIAL = "partial"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
     CANCELED = "canceled"
@@ -19,6 +20,7 @@ class ProcessingJobState(StrEnum):
 class ProcessingRunState(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
+    PARTIAL = "partial"
     FAILED = "failed"
     CANCELED = "canceled"
 
@@ -33,6 +35,7 @@ ACTIVE_JOB_STATES = frozenset(
 TERMINAL_JOB_STATES = frozenset(
     {
         ProcessingJobState.COMPLETED,
+        ProcessingJobState.PARTIAL,
         ProcessingJobState.FAILED,
         ProcessingJobState.INTERRUPTED,
         ProcessingJobState.CANCELED,
@@ -103,6 +106,7 @@ class ProcessingRunSummary:
     detected_hand_count: int
     started_at_unix_ns: int
     completed_at_unix_ns: int
+    partial: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +124,7 @@ class ProcessingRunInfo:
     results_path: Path
     is_viewable: bool
     unavailable_reason: str | None = None
+    vio_run_id: str | None = None
 
     def covers_clip(self, clip_id: str) -> bool:
         return self.is_viewable and (self.clip_id is None or self.clip_id == clip_id)

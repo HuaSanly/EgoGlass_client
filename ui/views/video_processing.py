@@ -163,7 +163,7 @@ class VideoProcessingView(QWidget):
             affected = {
                 job.session_id
                 for job in processing.jobs
-                if job.run_id is not None or job.state.value in {"completed", "failed"}
+                if job.run_id is not None or job.state.value in {"completed", "partial", "failed"}
             }
             for session_id in affected:
                 if session_id in self._sessions:
@@ -464,6 +464,7 @@ def _processing_states(
         ProcessingJobState.RUNNING: "处理中",
         ProcessingJobState.CANCELING: "取消中",
         ProcessingJobState.COMPLETED: "完成",
+        ProcessingJobState.PARTIAL: "部分完成",
         ProcessingJobState.FAILED: "失败",
         ProcessingJobState.INTERRUPTED: "中断",
         ProcessingJobState.CANCELED: "已取消",

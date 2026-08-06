@@ -67,7 +67,7 @@ def test_case_vp_005_pipeline_preserves_frame_identity_through_result_index(
         for clip_id, frame_index, session_time_ns in identities
     ]
 
-    assert manifest["state"] == "completed"
+    assert manifest["state"] == "partial"
     assert manifest["configuration"] == {
         "revision": 9,
         "sha256_by_file": {"sensor-preprocessing.yaml": "feedface"},

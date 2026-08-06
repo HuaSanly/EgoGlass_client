@@ -82,6 +82,20 @@ def test_completed_run_wins_a_cancel_requested_after_its_last_frame(tmp_path) ->
     assert completed.progress_current == completed.progress_total == 2
 
 
+def test_partial_job_is_terminal_viewable_and_retryable(tmp_path) -> None:
+    store = ProcessingJobStore(tmp_path / "jobs.sqlite3")
+    job = store.enqueue("a" * 32, None, ProcessingPreset())
+    store.claim_next()
+    store.start_run(job.job_id, "run-partial", 2)
+
+    partial = store.partial(job.job_id, "VIO coverage 50%")
+    retried = store.retry(partial.job_id)
+
+    assert partial.state is ProcessingJobState.PARTIAL
+    assert partial.progress_current == partial.progress_total == 2
+    assert retried.retry_of_job_id == partial.job_id
+
+
 def test_queue_migrates_v1_timestamps_without_losing_history(tmp_path) -> None:
     path = tmp_path / "jobs.sqlite3"
     with sqlite3.connect(path) as connection:
@@ -142,3 +156,51 @@ def test_results_are_addressed_by_clip_frame_and_session_time(tmp_path) -> None:
     assert reader.result_for_frame("b" * 32, 7, 250) is None
     assert reader.result_for_frame("b" * 32, 7, 250, hold_previous_frames=1) == result
     assert reader.result_for_frame("b" * 32, 7, 199, hold_previous_frames=1) is None
+
+
+def test_v2_results_keep_raw_and_final_streams_separate(tmp_path) -> None:
+    path = tmp_path / "results.sqlite"
+    store = ProcessingResultStore(path)
+    raw = {
+        "session_id": "a" * 32,
+        "sequence_id": "b" * 32,
+        "frame_index": 0,
+        "session_time_ns": 100,
+        "hands": [{"temporal_source": "observed"}],
+    }
+    final = {
+        **raw,
+        "hands": [{"temporal_source": "interpolated"}],
+    }
+    store.put_raw(raw)
+    store.put_final(final)
+
+    reader = ProcessingResultStore(path, read_only=True)
+    assert reader.schema_version == "2"
+    assert reader.count(raw=True) == 1
+    assert reader.raw_result_for_frame("b" * 32, 0, 100) == raw
+    assert reader.result_for_frame("b" * 32, 0, 100) == final
+
+
+def test_v1_results_remain_readable_without_raw_table(tmp_path) -> None:
+    path = tmp_path / "v1.sqlite"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO metadata VALUES ('schema_version', '1');
+            CREATE TABLE frame_results (
+                clip_id TEXT NOT NULL,
+                frame_index INTEGER NOT NULL,
+                session_time_ns INTEGER NOT NULL,
+                result_json TEXT NOT NULL,
+                PRIMARY KEY(clip_id, frame_index, session_time_ns)
+            );
+            INSERT INTO frame_results VALUES ('clip', 0, 100, '{"hands": []}');
+            """
+        )
+
+    reader = ProcessingResultStore(path, read_only=True)
+    assert reader.schema_version == "1"
+    assert reader.raw_result_for_frame("clip", 0, 100) is None
+    assert reader.result_for_frame("clip", 0, 100) == {"hands": []}

@@ -8,7 +8,11 @@ from pathlib import Path
 
 from hand_tracking import (
     HandTrackingConfig,
+    HandTrackingResult,
     HumanEgoHandTrackingPipeline,
+    OfflineHandTemporalConfig,
+    OfflineHandTemporalProcessor,
+    TemporalProcessingStats,
     release_pipeline_resources,
 )
 from sensor_preprocessing import (
@@ -21,6 +25,7 @@ from sensor_preprocessing import (
 
 from .models import ProcessingJob, ProcessingRunSummary
 from .results import ProcessingResultStore
+from .vio import VioRunInfo
 
 
 class ProcessingCanceled(RuntimeError):
@@ -63,6 +68,8 @@ class SessionProcessingRunner:
         *,
         progress: Callable[[int, int], None],
         is_canceled: Callable[[], bool],
+        vio_run_info: VioRunInfo | None = None,
+        vio_error: str | None = None,
     ) -> ProcessingRunSummary:
         started_ns = time.time_ns()
         output_directory.mkdir(parents=True, exist_ok=False)
@@ -116,8 +123,22 @@ class SessionProcessingRunner:
 
         input_count = 0
         inferred_count = 0
+        raw_detected_count = 0
         detected_count = 0
-        tracker = self._tracker_for_worker(hand_config)
+        effective_hand_config = hand_config or HandTrackingConfig.load(
+            self.offline_hand_tracking_config_path
+        )
+        temporal_config = (
+            effective_hand_config.temporal_processing or OfflineHandTemporalConfig()
+        )
+        temporal_processor = OfflineHandTemporalProcessor(
+            temporal_config,
+            grasp_ratio_threshold=effective_hand_config.grasp_ratio_threshold,
+        )
+        tracker = self._tracker_for_worker(effective_hand_config)
+        raw_results_by_clip: dict[str, list[HandTrackingResult]] = {}
+        temporal_stats: list[TemporalProcessingStats] = []
+        partial = vio_error is not None or vio_run_info is None or not vio_run_info.is_viewable
         try:
             for bundle in preprocessing.iter_recorded_session(
                 session_path,
@@ -129,10 +150,28 @@ class SessionProcessingRunner:
                 input_count += 1
                 if bundle.frame_index % job.preset.inference_stride_frames == 0:
                     result = tracker.process_frame(bundle)
-                    result_store.put(result.to_json_dict())
+                    result_store.put_raw(result.to_json_dict())
+                    raw_results_by_clip.setdefault(result.sequence_id, []).append(result)
                     inferred_count += 1
-                    detected_count += len(result.hands)
+                    raw_detected_count += len(result.hands)
                 progress(input_count, total)
+            for clip_results in raw_results_by_clip.values():
+                if is_canceled():
+                    raise ProcessingCanceled("processing canceled")
+                output = temporal_processor.process_clip(
+                    clip_results,
+                    trajectory=vio_run_info.trajectory if vio_run_info is not None else None,
+                    transform_camera_to_imu=(
+                        vio_run_info.transform_camera_to_imu
+                        if vio_run_info is not None
+                        else None
+                    ),
+                )
+                partial = partial or output.partial_world_coverage
+                temporal_stats.append(output.stats)
+                for final_result in output.final_results:
+                    result_store.put_final(final_result.to_json_dict())
+                    detected_count += len(final_result.hands)
         except BaseException as error:
             state = "canceled" if isinstance(error, ProcessingCanceled) else "failed"
             self._write_log(run_log_path, f"run {state}: {error}")
@@ -146,20 +185,29 @@ class SessionProcessingRunner:
                 input_frame_count=input_count,
                 inferred_frame_count=inferred_count,
                 detected_hand_count=detected_count,
+                raw_detected_hand_count=raw_detected_count,
+                vio_run_id=vio_run_info.run_id if vio_run_info is not None else None,
+                vio_error=vio_error,
+                temporal_stats=_aggregate_temporal_stats(temporal_stats),
             )
             raise
 
         completed_ns = time.time_ns()
-        self._write_log(run_log_path, "run completed")
+        state = "partial" if partial else "completed"
+        self._write_log(run_log_path, f"run {state}")
         self._write_manifest(
             run_manifest_path,
             job,
-            state="completed",
+            state=state,
             started_at_unix_ns=started_ns,
             completed_at_unix_ns=completed_ns,
             input_frame_count=input_count,
             inferred_frame_count=inferred_count,
             detected_hand_count=detected_count,
+            raw_detected_hand_count=raw_detected_count,
+            vio_run_id=vio_run_info.run_id if vio_run_info is not None else None,
+            vio_error=vio_error,
+            temporal_stats=_aggregate_temporal_stats(temporal_stats),
         )
         return ProcessingRunSummary(
             run_id=output_directory.name,
@@ -171,6 +219,7 @@ class SessionProcessingRunner:
             detected_hand_count=detected_count,
             started_at_unix_ns=started_ns,
             completed_at_unix_ns=completed_ns,
+            partial=partial,
         )
 
     def _tracker_for_worker(
@@ -215,6 +264,10 @@ class SessionProcessingRunner:
         input_frame_count: int = 0,
         inferred_frame_count: int = 0,
         detected_hand_count: int = 0,
+        raw_detected_hand_count: int = 0,
+        vio_run_id: str | None = None,
+        vio_error: str | None = None,
+        temporal_stats: TemporalProcessingStats | None = None,
     ) -> None:
         payload = {
             "schema_version": "1.0",
@@ -239,6 +292,14 @@ class SessionProcessingRunner:
             "input_frame_count": input_frame_count,
             "inferred_frame_count": inferred_frame_count,
             "detected_hand_count": detected_hand_count,
+            "raw_detected_hand_count": raw_detected_hand_count,
+            "vio_run_id": vio_run_id,
+            "vio_error": vio_error,
+            "temporal_processing": (
+                _temporal_stats_payload(temporal_stats)
+                if temporal_stats is not None
+                else None
+            ),
             "error": error,
         }
         temporary = path.with_suffix(".json.tmp")
@@ -287,3 +348,60 @@ def _tupleize(value: object) -> object:
     if isinstance(value, list):
         return tuple(_tupleize(item) for item in value)
     return value
+
+
+def _aggregate_temporal_stats(
+    stats: list[TemporalProcessingStats],
+) -> TemporalProcessingStats:
+    fields = (
+        "raw_hand_frames",
+        "confidence_rejected",
+        "interpolated_frames",
+        "suppressed_frames",
+        "final_hand_frames",
+        "grasp_transitions_before",
+        "grasp_transitions_after",
+        "grasp_states_changed",
+        "vio_matched_frames",
+        "world_optimized_frames",
+        "temporal_processing_duration_ns",
+        "confidence_filter_duration_ns",
+        "interpolation_duration_ns",
+        "segment_suppression_duration_ns",
+        "grasp_smoothing_duration_ns",
+        "world_mapping_duration_ns",
+        "kinematic_optimization_duration_ns",
+    )
+    if not stats:
+        return TemporalProcessingStats(**dict.fromkeys(fields, 0))
+    return TemporalProcessingStats(
+        **{
+            field: sum(getattr(item, field) for item in stats)
+            for field in fields
+        }
+    )
+
+
+def _temporal_stats_payload(stats: TemporalProcessingStats) -> dict[str, object]:
+    return {
+        "raw_hand_frames": stats.raw_hand_frames,
+        "confidence_rejected": stats.confidence_rejected,
+        "interpolated_frames": stats.interpolated_frames,
+        "suppressed_frames": stats.suppressed_frames,
+        "final_hand_frames": stats.final_hand_frames,
+        "grasp_transitions_before": stats.grasp_transitions_before,
+        "grasp_transitions_after": stats.grasp_transitions_after,
+        "grasp_states_changed": stats.grasp_states_changed,
+        "vio_matched_frames": stats.vio_matched_frames,
+        "world_optimized_frames": stats.world_optimized_frames,
+        "vio_coverage_ratio": stats.vio_coverage_ratio,
+        "duration_ns": stats.temporal_processing_duration_ns,
+        "stage_durations_ns": {
+            "confidence_filter": stats.confidence_filter_duration_ns,
+            "interpolation": stats.interpolation_duration_ns,
+            "segment_suppression": stats.segment_suppression_duration_ns,
+            "grasp_smoothing": stats.grasp_smoothing_duration_ns,
+            "world_mapping": stats.world_mapping_duration_ns,
+            "kinematic_optimization": stats.kinematic_optimization_duration_ns,
+        },
+    }

@@ -251,8 +251,8 @@ class VideoProcessingService:
         clip_id: str,
     ) -> ExportSummary:
         manifest = self._read_run_manifest(session_id, run_id)
-        if manifest.get("state") != "completed":
-            raise ValueError("only completed processing runs can be exported")
+        if manifest.get("state") not in {"completed", "partial"}:
+            raise ValueError("only completed or partial processing runs can be exported")
         preset = manifest.get("preset")
         if not isinstance(preset, dict):
             raise ValueError("processing run has no valid preset")
@@ -306,27 +306,41 @@ class VideoProcessingService:
                     raise ProcessingCanceled() from None
                 raise
             try:
+                vio_run_info = None
+                vio_error = None
+                if self.offline_vio_runner is not None:
+                    if self._is_canceled(job.job_id):
+                        raise ProcessingCanceled("processing canceled")
+                    self.store.update_progress(
+                        job.job_id,
+                        0,
+                        total,
+                        "Running offline SLAM/VIO",
+                    )
+                    try:
+                        vio_run_info = self.offline_vio_runner(
+                            job.session_id,
+                            clip_id=job.clip_id,
+                        )
+                    except Exception as error:
+                        vio_error = str(error)
                 summary = self.runner.run(
                     job,
                     self._session_path(job.session_id),
                     output,
-                    progress=lambda current, count: self._progress(job.job_id, current, count),
+                    progress=lambda current, count: self._progress(
+                        job.job_id, current, count
+                    ),
                     is_canceled=lambda: self._is_canceled(job.job_id),
+                    vio_run_info=vio_run_info,
+                    vio_error=vio_error,
                 )
             finally:
                 release_gpu = getattr(self.runner, "release_gpu", None)
                 if callable(release_gpu):
                     release_gpu()
-            if self.offline_vio_runner is not None:
-                if self._is_canceled(job.job_id):
-                    raise ProcessingCanceled("processing canceled")
-                self.store.update_progress(
-                    job.job_id,
-                    summary.input_frame_count,
-                    summary.input_frame_count,
-                    "Running offline SLAM/VIO",
-                )
-                self.offline_vio_runner(job.session_id, clip_id=job.clip_id)
+            if vio_error is not None and not summary.partial:
+                self._mark_run_terminal(output, "partial", vio_error)
         except ProcessingCanceled as error:
             self._mark_run_terminal(output, "canceled", str(error) or "processing canceled")
             current = self.store.require(job.job_id)
@@ -343,7 +357,7 @@ class VideoProcessingService:
             elif current.state in {ProcessingJobState.PREPARING, ProcessingJobState.RUNNING}:
                 self.store.fail(job.job_id, str(error))
         else:
-            self._complete(job.job_id, summary)
+            self._complete(job.job_id, summary, vio_error=vio_error)
         finally:
             try:
                 if gpu_claim_started and self.on_gpu_job_changed is not None:
@@ -359,7 +373,17 @@ class VideoProcessingService:
         if current == total or current % 10 == 0:
             self._notify_changed()
 
-    def _complete(self, job_id: str, summary: ProcessingRunSummary) -> None:
+    def _complete(
+        self,
+        job_id: str,
+        summary: ProcessingRunSummary,
+        *,
+        vio_error: str | None = None,
+    ) -> None:
+        if summary.partial or vio_error is not None:
+            reason = vio_error or "部分手帧缺少 100 ms 内的 VIO 位姿"
+            self.store.partial(job_id, f"部分完成: {reason}")
+            return
         detail = f"处理完成 {summary.inferred_frame_count} 帧手部追踪"
         if self.offline_vio_runner is not None:
             detail += "与 SLAM/VIO"
@@ -449,7 +473,7 @@ def _processing_run_info(
     state = ProcessingRunState(_required_string(payload, "state"))
     results_path = run_directory / "results.sqlite"
     unavailable_reason: str | None = None
-    if state is not ProcessingRunState.COMPLETED:
+    if state not in {ProcessingRunState.COMPLETED, ProcessingRunState.PARTIAL}:
         error = payload.get("error")
         unavailable_reason = str(error) if error else f"运行状态为 {state.value}"
     else:
@@ -476,6 +500,9 @@ def _processing_run_info(
         results_path,
         unavailable_reason is None,
         unavailable_reason,
+        str(payload["vio_run_id"])
+        if isinstance(payload.get("vio_run_id"), str)
+        else None,
     )
 
 

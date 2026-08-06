@@ -79,6 +79,13 @@ conda run -n egoglass python src\process_video.py `
   --output local-data\headless-runs\<run-id>
 ```
 
+The command writes immutable per-frame inference to `raw_results.jsonl`, the
+temporalized camera/world result to `results.jsonl`, and provenance plus stage
+metrics to `run.json`. Basalt is attempted before hand processing. If VIO is
+unavailable or misses a final hand frame by more than 100 ms, the run is marked
+`partial`: camera-space results remain usable and no world coordinate is
+invented for the unmatched frame.
+
 Basalt VIO is an optional native dependency. After installing `basalt_vio`,
 run it against the same prepared capture session without starting Qt or the
 gateway:

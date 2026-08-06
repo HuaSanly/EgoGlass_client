@@ -66,3 +66,19 @@ def test_world_scene_falls_back_to_imu_orientation_without_translation() -> None
     assert state.head_pose_source == "IMU 朝向，无平移"
     assert state.has_imu_pose
     assert state.head_axes_m[0] == (0.0, 0.0, 0.0)
+
+
+def test_offline_world_scene_does_not_fabricate_pose_from_imu_or_identity() -> None:
+    state = build_spatial_scene_state(
+        SpatialReferenceFrame.WORLD,
+        hand_result=_hands(),
+        imu_pose=type(
+            "Pose", (), {"samples_received": 1, "quaternion_wxyz": (1.0, 0.0, 0.0, 0.0)}
+        )(),
+        allow_imu_world_fallback=False,
+    )
+
+    assert state.head_pose_source == "世界坐标不可用"
+    assert state.left_hand_points_m == ()
+    assert state.head_axes_m == ()
+    assert state.show_ground is False

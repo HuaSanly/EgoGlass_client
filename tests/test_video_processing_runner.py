@@ -4,7 +4,7 @@ import json
 from fractions import Fraction
 from pathlib import Path
 
-from hand_tracking import HandTrackingConfig
+from hand_tracking import HandTrackingConfig, HandTrackingResult, TemporalProcessingStats
 from sensor_preprocessing import (
     PreparedFrameBundle,
     SensorCalibration,
@@ -37,29 +37,27 @@ class _FakeTracker:
     def __init__(self) -> None:
         self.frames: list[tuple[str, int, int]] = []
 
-    def process_frame(self, bundle: PreparedFrameBundle) -> _FakeResult:
+    def process_frame(self, bundle: PreparedFrameBundle) -> HandTrackingResult:
         self.frames.append(
             (bundle.sequence_id, bundle.frame_index, bundle.session_time_ns)
         )
-        return _FakeResult(bundle)
-
-
-class _FakeResult:
-    def __init__(self, bundle: PreparedFrameBundle) -> None:
-        self.bundle = bundle
-        self.hands: tuple[object, ...] = ()
-
-    def to_json_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": "1.0",
-            "session_id": self.bundle.session_id,
-            "sequence_id": self.bundle.sequence_id,
-            "frame_index": self.bundle.frame_index,
-            "session_time_ns": self.bundle.session_time_ns,
-            "source_image_width_px": self.bundle.image_bgr.shape[1],
-            "source_image_height_px": self.bundle.image_bgr.shape[0],
-            "hands": [],
-        }
+        return HandTrackingResult(
+            schema_version="1.0",
+            session_id=bundle.session_id,
+            sequence_id=bundle.sequence_id,
+            frame_index=bundle.frame_index,
+            session_time_ns=bundle.session_time_ns,
+            timestamp_uncertainty_ns=bundle.timestamp_uncertainty_ns,
+            image_width_px=bundle.image_bgr.shape[1],
+            image_height_px=bundle.image_bgr.shape[0],
+            source_rotation_degrees=0,
+            detector_backend="fake",
+            requested_device="cpu",
+            execution_device="cpu",
+            hamer_loaded=False,
+            inference_duration_ns=0,
+            hands=(),
+        )
 
 
 def _add_strict_frame_evidence(
@@ -118,7 +116,7 @@ def _add_strict_frame_evidence(
     database.checkpoint_and_close()
 
 
-def test_session_runner_writes_complete_immutable_run_from_capture_evidence(
+def test_session_runner_writes_viewable_partial_run_without_vio(
     tmp_path: Path,
 ) -> None:
     session, timings = _recorded_session(tmp_path)
@@ -186,7 +184,7 @@ def test_session_runner_writes_complete_immutable_run_from_capture_evidence(
         (CLIP_ID, 1),
     ]
     assert tracker.frames[1][2] > tracker.frames[0][2]
-    assert manifest["state"] == "completed"
+    assert manifest["state"] == "partial"
     assert manifest["input_frame_count"] == 2
     assert manifest["configuration"] == {
         "revision": 4,
@@ -194,9 +192,68 @@ def test_session_runner_writes_complete_immutable_run_from_capture_evidence(
         "snapshot": json.loads(configuration_snapshot),
     }
     assert results.count() == 2
+    assert results.count(raw=True) == 2
     assert (output / "run.log").read_text(encoding="utf-8").endswith(
-        "run completed\n"
+        "run partial\n"
     )
 
     runner.release_gpu()
     assert runner._tracker is None
+
+
+def test_run_manifest_binds_exact_vio_and_records_temporal_stage_metrics(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "run-bound"
+    output.mkdir()
+    job = ProcessingJob(
+        job_id="job-bound",
+        session_id=SESSION_ID,
+        clip_id=CLIP_ID,
+        preset=ProcessingPreset(),
+        state=ProcessingJobState.RUNNING,
+        created_at_unix_ns=1,
+        updated_at_unix_ns=1,
+    )
+    stats = TemporalProcessingStats(
+        10,
+        1,
+        2,
+        1,
+        10,
+        4,
+        1,
+        3,
+        8,
+        7,
+        1234,
+        confidence_filter_duration_ns=11,
+        interpolation_duration_ns=12,
+        segment_suppression_duration_ns=13,
+        grasp_smoothing_duration_ns=14,
+        world_mapping_duration_ns=15,
+        kinematic_optimization_duration_ns=16,
+    )
+
+    SessionProcessingRunner._write_manifest(
+        output / "run.json",
+        job,
+        state="partial",
+        started_at_unix_ns=1,
+        completed_at_unix_ns=2,
+        vio_run_id="vio-bound",
+        temporal_stats=stats,
+    )
+
+    payload = json.loads((output / "run.json").read_text(encoding="utf-8"))
+    assert payload["vio_run_id"] == "vio-bound"
+    assert payload["temporal_processing"]["interpolated_frames"] == 2
+    assert payload["temporal_processing"]["vio_coverage_ratio"] == 0.8
+    assert payload["temporal_processing"]["stage_durations_ns"] == {
+        "confidence_filter": 11,
+        "grasp_smoothing": 14,
+        "interpolation": 12,
+        "kinematic_optimization": 16,
+        "segment_suppression": 13,
+        "world_mapping": 15,
+    }

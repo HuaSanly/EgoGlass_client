@@ -314,12 +314,18 @@ class ProcessingWorkbench(QWidget):
 
     @property
     def selected_vio_run(self) -> VioRunInfo | None:
-        clip_id = self._initial_clip_id
+        processing_run = next(
+            (run for run in self._runs if run.run_id == self.primary_run_id),
+            None,
+        )
+        linked_run_id = processing_run.vio_run_id if processing_run is not None else None
+        if linked_run_id is None:
+            return None
         return next(
             (
                 run
                 for run in self._vio_runs
-                if run.is_viewable and (clip_id is None or run.covers_clip(clip_id))
+                if run.is_viewable and run.run_id == linked_run_id
             ),
             None,
         )
@@ -372,6 +378,7 @@ class ProcessingWorkbench(QWidget):
                     (0.0, 0.0, 1.0, 0.0),
                     (0.0, 0.0, 0.0, 1.0),
                 ),
+                allow_imu_world_fallback=False,
             )
         )
 

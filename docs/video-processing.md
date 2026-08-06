@@ -11,12 +11,13 @@ states:
 
 ```text
 queued -> preparing -> running -> completed
+                    -> partial
                     -> canceling -> canceled
                     -> failed
 ```
 
-An active job found after a process restart becomes `interrupted`. Failed,
-interrupted, and canceled jobs are retried by creating a new job, so previous
+An active job found after a process restart becomes `interrupted`. Partial,
+failed, interrupted, and canceled jobs are retried by creating a new job, so previous
 history and partial run evidence are not overwritten. The queue records start,
 finish, progress, elapsed time, and failure detail. Offline work owns the GPU;
 the service waits for any in-flight online inference, releases its model memory,
@@ -38,7 +39,9 @@ The first preset pipeline is:
 capture validation
   -> recorded clock mapping
   -> sensor preprocessing
-  -> HumanEgo-compatible hand tracking
+  -> Basalt VIO attempt
+  -> per-frame HumanEgo-compatible hand tracking
+  -> temporal cleanup and world kinematic optimization
   -> frame-addressable result index
 ```
 
@@ -55,8 +58,19 @@ Each attempt writes an immutable directory:
 error, submitted configuration revision, and SHA256 of all six configuration
 files. The queue also stores the validated preprocessing, calibration, and hand
 tracking snapshot under `offline_hand_tracking` used at submission, so a queued job cannot silently consume
-later YAML edits. `results.sqlite` indexes JSON results by `clip_id + frame_index +
-session_time_ns`. `run.log` is flushed during lifecycle transitions.
+later YAML edits. Schema v2 stores raw inference in `raw_frame_results` and the
+final temporal result in `frame_results`, indexed by `clip_id + frame_index +
+session_time_ns`; v1 stores remain readable. `run.log` is flushed during lifecycle
+transitions.
+
+The manifest binds `vio_run_id` to the exact Basalt run used by temporal
+processing. A failed or incomplete VIO stage produces a viewable `partial` run:
+camera-space overlays remain available, while world view is explicitly
+unavailable for unmatched frames. Temporal metrics record confidence filtering,
+interpolation, segment suppression, both grasp-smoothing passes, world mapping,
+and kinematic optimization durations. Short internal VIO gaps may be filled only
+inside the smoothing calculation; unmatched frames never receive invented world
+coordinates.
 
 The original MP4, telemetry database, session manifest, and quality report are
 read-only inputs. Annotated video is generated only after an explicit Export

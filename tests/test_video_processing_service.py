@@ -14,6 +14,7 @@ from ui.processing import (
     ProcessingJobStore,
     ProcessingPreset,
     ProcessingResultStore,
+    ProcessingRunState,
     ProcessingRunSummary,
     VideoProcessingService,
 )
@@ -24,11 +25,23 @@ class FakeRunner:
         self.release = release
         self.started = threading.Event()
         self.release_gpu_calls = 0
+        self.vio_inputs: list[tuple[object | None, str | None]] = []
 
     def inspect(self, _session: Path, _clip_id: str | None) -> int:
         return 3
 
-    def run(self, job, _session, output, *, progress, is_canceled):
+    def run(
+        self,
+        job,
+        _session,
+        output,
+        *,
+        progress,
+        is_canceled,
+        vio_run_info=None,
+        vio_error=None,
+    ):
+        self.vio_inputs.append((vio_run_info, vio_error))
         output.mkdir(parents=True)
         self.started.set()
         for index in range(1, 4):
@@ -121,8 +134,11 @@ def test_service_runs_vio_as_part_of_the_same_processing_job(tmp_path: Path) -> 
     runner = FakeRunner()
     vio_calls: list[tuple[str, str | None]] = []
 
-    def run_vio(session: str, *, clip_id: str | None = None) -> None:
+    vio_run = object()
+
+    def run_vio(session: str, *, clip_id: str | None = None) -> object:
         vio_calls.append((session, clip_id))
+        return vio_run
 
     service = VideoProcessingService(
         tmp_path,
@@ -135,12 +151,13 @@ def test_service_runs_vio_as_part_of_the_same_processing_job(tmp_path: Path) -> 
         completed = _wait_for(service, ProcessingJobState.COMPLETED)
         assert completed.job_id == job.job_id
         assert vio_calls == [(session_id, "b" * 32)]
+        assert runner.vio_inputs == [(vio_run, None)]
         assert completed.detail == "处理完成 3 帧手部追踪与 SLAM/VIO"
     finally:
         service.close()
 
 
-def test_service_marks_the_combined_job_failed_when_vio_fails(tmp_path: Path) -> None:
+def test_service_keeps_viewable_partial_result_when_vio_fails(tmp_path: Path) -> None:
     session_id = "a" * 32
     (tmp_path / session_id).mkdir()
 
@@ -155,11 +172,14 @@ def test_service_marks_the_combined_job_failed_when_vio_fails(tmp_path: Path) ->
     service.start()
     try:
         service.enqueue(session_id, clip_id="b" * 32)
-        failed = _wait_for(service, ProcessingJobState.FAILED)
-        assert failed.detail == "VIO failed for " + "b" * 32
+        partial = _wait_for(service, ProcessingJobState.PARTIAL)
+        assert partial.detail == "部分完成: VIO failed for " + "b" * 32
         run = service.list_runs(session_id)[0]
-        assert not run.is_viewable
-        assert run.unavailable_reason == "VIO failed for " + "b" * 32
+        assert run.is_viewable
+        assert run.state is ProcessingRunState.PARTIAL
+        assert service.runner.vio_inputs == [
+            (None, "VIO failed for " + "b" * 32)
+        ]
     finally:
         service.close()
 

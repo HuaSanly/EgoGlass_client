@@ -143,6 +143,16 @@ class ProcessingJobStore:
             detail=detail,
         )
 
+    def partial(self, job_id: str, detail: str = "部分完成，世界坐标不完整") -> ProcessingJob:
+        job = self.require(job_id)
+        return self._transition(
+            job_id,
+            {ProcessingJobState.RUNNING, ProcessingJobState.CANCELING},
+            ProcessingJobState.PARTIAL,
+            progress_current=job.progress_total,
+            detail=detail,
+        )
+
     def fail(self, job_id: str, detail: str) -> ProcessingJob:
         return self._transition(
             job_id,
@@ -190,8 +200,9 @@ class ProcessingJobStore:
             ProcessingJobState.FAILED,
             ProcessingJobState.INTERRUPTED,
             ProcessingJobState.CANCELED,
+            ProcessingJobState.PARTIAL,
         }:
-            raise ValueError("only failed, interrupted, or canceled jobs can be retried")
+            raise ValueError("only partial, failed, interrupted, or canceled jobs can be retried")
         return self.enqueue(
             job.session_id,
             job.clip_id,

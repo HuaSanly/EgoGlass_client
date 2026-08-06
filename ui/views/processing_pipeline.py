@@ -153,6 +153,7 @@ class ProcessingPipelineView(QWidget):
                 ProcessingJobState.FAILED,
                 ProcessingJobState.INTERRUPTED,
                 ProcessingJobState.CANCELED,
+                ProcessingJobState.PARTIAL,
             }
         )
 
@@ -174,6 +175,7 @@ def _job_state_text(state: ProcessingJobState) -> str:
         ProcessingJobState.RUNNING: "处理中",
         ProcessingJobState.CANCELING: "取消中",
         ProcessingJobState.COMPLETED: "完成",
+        ProcessingJobState.PARTIAL: "部分完成",
         ProcessingJobState.FAILED: "失败",
         ProcessingJobState.INTERRUPTED: "中断",
         ProcessingJobState.CANCELED: "已取消",
