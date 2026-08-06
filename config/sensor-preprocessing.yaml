@@ -20,3 +20,14 @@ image:
 live:
   # Maximum future IMU samples retained between decoded video frames.
   max_pending_imu_samples: 2048
+
+imu_orientation:
+  # Fusion tuning only. Axis mapping, bias, scale and noise remain in calibration JSON.
+  madgwick_beta: 0.05
+  initial_static_samples: 20
+  static_gyro_threshold_rad_s: 0.05
+  gravity_magnitude_m_s2: 9.80665
+  gravity_tolerance_m_s2: 1.25
+  quaternion_smoothing_time_constant_s: 0.025
+  minimum_sample_interval_s: 0.0001
+  maximum_sample_interval_s: 0.2

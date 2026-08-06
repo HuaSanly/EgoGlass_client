@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PyQt6.QtGui import QVector3D
 from PyQt6.QtWidgets import QApplication, QWidget
 from pyqtgraph.opengl import GLViewWidget
 from qfluentwidgets import HeaderCardWidget, SimpleCardWidget, TitleLabel
@@ -37,8 +38,10 @@ from ui.replay.player import PlaybackFrame, ReplayState
 from ui.views.home import HomeView, _confidence_body
 from ui.views.video_processing import _processing_states, _result_counts, _Selection
 from ui.widgets.spatial_sync_canvas import (
+    SpatialReferenceFrame,
     SpatialSyncCanvas,
     _camera_points_to_scene,
+    _floor_grid,
     _glasses_frame_mesh,
 )
 from ui.widgets.status_indicator import StatusIndicator
@@ -204,6 +207,20 @@ def _hand_result(
         "source_image_height_px": 480,
         "hands": hands,
     }
+
+
+def _spatial_view_parameters(
+    canvas: SpatialSyncCanvas,
+) -> tuple[tuple[float, float, float], float, float, float, float]:
+    parameters = canvas.view.cameraParams()
+    center = parameters["center"]
+    return (
+        tuple(round(float(value), 6) for value in (center.x(), center.y(), center.z())),
+        round(float(parameters["distance"]), 6),
+        round(float(parameters["elevation"]), 6),
+        round(float(parameters["azimuth"]), 6),
+        round(float(parameters["fov"]), 6),
+    )
 
 
 def _recording_library(
@@ -416,11 +433,10 @@ def test_processing_video_and_space_views_consume_the_same_playback_frame(
         view.workbench.set_runs(
             (
                 _processing_run("run-primary", completed_at_unix_ns=3_000_000_000),
-                _processing_run("run-comparison"),
+                _processing_run("run-older"),
             ),
             "connection",
         )
-        view.workbench.comparison_combo.setCurrentIndex(1)
 
         def completed_result(*_values: object) -> Future[dict[str, object]]:
             future: Future[dict[str, object]] = Future()
@@ -445,7 +461,6 @@ def test_processing_video_and_space_views_consume_the_same_playback_frame(
         assert view.spatial_canvas.status().latest_frame_index == 12
         assert view.spatial_canvas.status().has_imu_pose
         assert view.spatial_canvas.status().has_left_hand
-        assert view.canvas._comparison_overlay is result
         assert view.findChildren(VideoCanvas) == [view.canvas]
         assert view.findChildren(SpatialSyncCanvas) == [view.spatial_canvas]
     finally:
@@ -565,7 +580,7 @@ def test_hall_processing_state_maps_the_latest_applicable_job() -> None:
     assert _processing_states((running,), session) == {clip_id: "处理中"}
 
 
-def test_workbench_selects_latest_valid_result_and_filters_ab_by_clip() -> None:
+def test_workbench_selects_latest_valid_result_and_filters_runs_by_clip() -> None:
     window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
     try:
         workbench = window.processing_view.workbench
@@ -587,8 +602,6 @@ def test_workbench_selects_latest_valid_result_and_filters_ab_by_clip() -> None:
 
         assert workbench.result_combo.count() == 3
         assert workbench.primary_run_id == "newer"
-        assert workbench.comparison_combo.findData("other-clip") == -1
-        assert workbench.comparison_combo.findData("older") >= 0
         workbench.result_combo.setCurrentIndex(0)
         assert workbench.primary_run_id is None
     finally:
@@ -747,6 +760,45 @@ def test_video_canvas_keeps_rgb_frame_alive_and_paints_it(
     assert canvas.status().latest_frame_index == 3
 
 
+def test_primary_hand_overlay_never_draws_a_center_divider(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas()
+    canvas.resize(960, 720)
+    canvas.set_frame(_frame(3))
+    assert canvas.set_overlay(_hand_result(frame_index=3))
+
+    image = canvas.grab().toImage()
+    qt_application.processEvents()
+    midpoint_x = canvas.width() // 2
+    center_pixels = [image.pixelColor(midpoint_x, y) for y in (60, 240, 360, 600)]
+
+    assert all(max(color.red(), color.green(), color.blue()) < 8 for color in center_pixels)
+    assert canvas.status().overlay_visible
+
+
+def test_video_workbench_has_no_ab_comparison_control_or_overlay_path() -> None:
+    repository = Path(__file__).parents[1]
+    sources = "\n".join(
+        (repository / path).read_text(encoding="utf-8")
+        for path in (
+            "ui/widgets/video_canvas.py",
+            "ui/video_processing/workbench.py",
+            "ui/views/video_processing.py",
+        )
+    )
+
+    for removed_symbol in (
+        "comparison_combo",
+        "comparison_run_id",
+        "comparisonSelectionChanged",
+        "set_comparison_overlay",
+        "_comparison_overlay",
+        'CaptionLabel("A/B"',
+    ):
+        assert removed_symbol not in sources
+
+
 def test_overlay_reuses_a_recent_same_stream_result_with_a_finite_age(
     qt_application: QApplication,
 ) -> None:
@@ -815,7 +867,7 @@ def test_overlay_waits_for_a_future_result_frame_and_clears_on_reconnect(
     qt_application.processEvents()
 
 
-def test_playback_seek_backwards_replaces_primary_and_comparison_overlays(
+def test_playback_seek_backwards_replaces_the_primary_overlay(
     qt_application: QApplication,
 ) -> None:
     canvas = VideoCanvas()
@@ -827,9 +879,6 @@ def test_playback_seek_backwards_replaces_primary_and_comparison_overlays(
     assert canvas.set_overlay(
         _hand_result(include_right=False, frame_index=20, sequence_id="clip")
     )
-    assert canvas.set_comparison_overlay(
-        _hand_result(include_right=True, frame_index=20, sequence_id="clip")
-    )
 
     canvas.set_frame(
         PlaybackFrame("session", "clip", 5, 5_000_000, 105_000_000, image)
@@ -838,9 +887,6 @@ def test_playback_seek_backwards_replaces_primary_and_comparison_overlays(
     assert canvas.status().latest_overlay_frame_index is None
     assert canvas.set_overlay(
         _hand_result(include_right=False, frame_index=5, sequence_id="clip")
-    )
-    assert canvas.set_comparison_overlay(
-        _hand_result(include_right=True, frame_index=5, sequence_id="clip")
     )
     assert canvas.status().latest_overlay_frame_index == 5
     assert canvas.status().overlay_visible
@@ -977,6 +1023,117 @@ def test_spatial_sync_canvas_renders_imu_and_hand_pose(
     assert canvas.findChild(GLViewWidget, "spatialSyncViewport") is not None
 
 
+def test_spatial_sync_scene_updates_do_not_move_the_observer_camera(
+    qt_application: QApplication,
+) -> None:
+    canvas = SpatialSyncCanvas()
+    canvas.resize(640, 480)
+    expected = _spatial_view_parameters(canvas)
+    canvas.set_hand_result(_hand_result())
+    far_result = _hand_result(frame_index=13)
+    hands = far_result["hands"]
+    assert isinstance(hands, list)
+    for hand in hands:
+        assert isinstance(hand, dict)
+        hand["keypoints_3d_camera_m"] = [
+            [8.0 + index, -5.0, 12.0] for index in range(21)
+        ]
+    canvas.set_hand_result(far_result)
+    qt_application.processEvents()
+
+    center = canvas.view.opts["center"]
+    assert isinstance(center, QVector3D)
+    assert _spatial_view_parameters(canvas) == expected
+    assert not canvas.view.viewMatrix().isIdentity()
+    canvas.close()
+
+
+def test_spatial_sync_preserves_manual_view_until_reference_frame_switch() -> None:
+    canvas = SpatialSyncCanvas()
+    try:
+        canvas.view.opts["fov"] = 58.0
+        canvas.view.setCameraPosition(
+            pos=QVector3D(2.0, 3.0, 4.0),
+            distance=2.4,
+            elevation=31.0,
+            azimuth=-42.0,
+        )
+        manual = _spatial_view_parameters(canvas)
+
+        canvas.set_hand_result(_hand_result())
+
+        assert _spatial_view_parameters(canvas) == manual
+    finally:
+        canvas.close()
+
+
+def test_spatial_sync_reference_switch_restores_exact_mode_presets() -> None:
+    canvas = SpatialSyncCanvas()
+    view = canvas.view
+    try:
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.4, -0.1),
+            1.1,
+            5.0,
+            -90.0,
+            43.0,
+        )
+
+        canvas.set_reference_frame(SpatialReferenceFrame.WORLD)
+        assert canvas.view is view
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.3, -0.1),
+            1.65,
+            12.0,
+            -90.0,
+            43.0,
+        )
+
+        canvas.view.setCameraPosition(distance=2.8, elevation=40.0, azimuth=15.0)
+        canvas.view.opts["fov"] = 60.0
+        canvas.set_reference_frame(SpatialReferenceFrame.CAMERA)
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.4, -0.1),
+            1.1,
+            5.0,
+            -90.0,
+            43.0,
+        )
+
+        canvas.view.setCameraPosition(distance=3.0, elevation=-10.0, azimuth=80.0)
+        canvas.set_reference_frame(SpatialReferenceFrame.WORLD)
+        assert _spatial_view_parameters(canvas) == (
+            (0.0, 0.3, -0.1),
+            1.65,
+            12.0,
+            -90.0,
+            43.0,
+        )
+    finally:
+        canvas.close()
+
+
+def test_spatial_sync_starts_from_an_upright_front_view_with_horizontal_grid() -> None:
+    canvas = SpatialSyncCanvas()
+    try:
+        assert canvas.view.opts["azimuth"] == -90
+        assert canvas.view.opts["elevation"] == 5
+        matrix = canvas.view.viewMatrix()
+        origin = matrix.map(QVector3D(0.0, 0.0, 0.0))
+        horizontal = matrix.map(QVector3D(1.0, 0.0, 0.0))
+        vertical = matrix.map(QVector3D(0.0, 0.0, 1.0))
+        assert horizontal.x() - origin.x() > 0.99
+        assert abs(horizontal.y() - origin.y()) < 1e-6
+        assert abs(vertical.x() - origin.x()) < 1e-6
+        assert vertical.y() - origin.y() > 0.95
+        grid = _floor_grid()
+        assert np.allclose(grid[:, 2], -0.42)
+        assert np.ptp(grid[:, 0]) > 0
+        assert np.ptp(grid[:, 1]) > 0
+    finally:
+        canvas.close()
+
+
 def test_spatial_sync_canvas_uses_camera_frame_without_side_offsets() -> None:
     camera_points = np.asarray(
         [
@@ -1015,13 +1172,13 @@ def test_spatial_sync_canvas_draws_both_hands_in_the_same_camera_reference() -> 
     assert canvas.status().has_right_hand
 
 
-def test_spatial_sync_canvas_uses_mesh_glasses_model() -> None:
+def test_spatial_sync_canvas_does_not_render_a_glasses_model() -> None:
     vertices, faces = _glasses_frame_mesh()
 
     assert vertices.shape[1] == 3
     assert faces.shape[1] == 3
-    assert len(vertices) > 300
-    assert len(faces) > 300
+    assert len(vertices) == 0
+    assert len(faces) == 0
 
 
 def test_spatial_sync_canvas_ignores_bad_hand_pose_data(

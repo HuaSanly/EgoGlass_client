@@ -175,13 +175,49 @@ def test_result_switching_does_not_reopen_or_duplicate_video_decoder() -> None:
         view.workbench.set_runs((_run("new", 3), _run("old", 2)), "clip")
         view.workbench.result_combo.setCurrentIndex(0)
         view.workbench.result_combo.setCurrentIndex(1)
-        view.workbench.comparison_combo.setCurrentIndex(1)
 
         assert calls == []
         assert view.findChildren(VideoCanvas) == [view.canvas]
         assert view.findChildren(SpatialSyncCanvas) == [view.spatial_canvas]
     finally:
         window.close()
+
+
+def test_primary_hand_overlay_does_not_add_a_center_divider(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas()
+    canvas.resize(960, 720)
+    image_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
+    image_rgb.setflags(write=False)
+    canvas.set_frame(
+        PlaybackFrame("session", "clip", 1, 1_000_000, 1_000_000, image_rgb)
+    )
+    assert canvas.set_overlay(
+        {
+            "session_id": "session",
+            "sequence_id": "clip",
+            "frame_index": 1,
+            "source_image_width_px": 640,
+            "source_image_height_px": 480,
+            "hands": [
+                {
+                    "handedness": "left",
+                    "source_bbox_xyxy_px": [50, 50, 150, 150],
+                }
+            ],
+        }
+    )
+
+    image = canvas.grab().toImage()
+    qt_application.processEvents()
+    midpoint_x = canvas.width() // 2
+
+    assert all(
+        max(color.red(), color.green(), color.blue()) < 8
+        for color in (image.pixelColor(midpoint_x, y) for y in (60, 240, 360, 600))
+    )
+    canvas.close()
 
 
 def test_slow_result_store_queries_do_not_create_a_per_frame_backlog() -> None:
@@ -251,7 +287,7 @@ def test_session_wide_pipeline_state_is_visible_on_every_clip_card() -> None:
     assert _processing_states((job,), session) == {"a": "等待", "b": "等待"}
 
 
-def test_processing_ab_layers_share_one_frame_identity_and_spatial_result(
+def test_processing_result_and_spatial_view_share_one_frame_identity(
     qt_application: QApplication,
 ) -> None:
     runtime = _runtime()
@@ -298,7 +334,6 @@ def test_processing_ab_layers_share_one_frame_identity_and_spatial_result(
         view._selection = _Selection("session", "clip")
         view.stack.setCurrentWidget(view.workbench)
         view.workbench.set_runs((_run("run-a", 3), _run("run-b", 2)), "clip")
-        view.workbench.comparison_combo.setCurrentIndex(1)
         view.replay._update(  # type: ignore[attr-defined]
             state=ReplayState.PAUSED,
             frame=frame,
@@ -311,7 +346,6 @@ def test_processing_ab_layers_share_one_frame_identity_and_spatial_result(
 
         expected_key = ("session", "clip", 42, 2_000_000_000)
         assert [tuple(call[index] for index in (0, 2, 3, 4)) for call in calls] == [
-            expected_key,
             expected_key,
         ]
         assert view.canvas.status().overlay_visible

@@ -133,19 +133,20 @@ array can be shared with live VIO, hand tracking, and visualization in memory.
 
 `config/sensor-preprocessing.yaml` selects the calibration file and contains
 the common runtime controls: media-hash verification, FFmpeg decode thread
-count, undistortion and remap modes, and the live pending-IMU limit. Relative
-calibration paths are resolved from the YAML directory. Unknown settings and
-wrong value types are rejected.
+count, undistortion and remap modes, the live pending-IMU limit, and shared
+orientation-fusion tuning. Relative calibration paths are resolved from the
+YAML directory. Unknown settings and wrong value types are rejected.
 
 `config/sensor-calibration-640x480-sample.json` is currently selected for the
 horizontal 4:3 Glass3 trial and assumes the decoded frame is already upright, so
 it applies zero image rotation. The previous
 `config/sensor-calibration.sample.json` retains the 1280x720 comparison profile.
 Both contain guessed intrinsics, zero distortion, an identity Camera-to-IMU
-transform, and unmeasured IMU noise. The pipeline uses whichever valid
-calibration JSON the YAML selects. Replace the selected sample values with
-parameters from a measured external calibration before collecting algorithm
-results.
+transform, identity raw-IMU axes, zero bias, unit accelerometer scale, and
+unmeasured IMU noise. These are explicitly unverified integration samples, not
+motion-direction acceptance data. The pipeline uses whichever valid calibration
+JSON the YAML selects. Replace the selected sample values with parameters from
+a measured external calibration before collecting algorithm results.
 
 ## Implemented boundary
 

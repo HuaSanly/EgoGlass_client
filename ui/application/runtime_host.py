@@ -18,7 +18,7 @@ from typing import Any
 import uvicorn
 
 from hand_tracking.runtime import HandTrackingRuntime, HandTrackingRuntimeConfig
-from sensor_preprocessing import SensorCalibration
+from sensor_preprocessing import SensorCalibration, SensorPreprocessingConfig
 from ui.configuration import (
     ConfigApplyResult,
     ConfigImpact,
@@ -37,9 +37,11 @@ from ui.gateway.recording_models import RecordingLibrary, RecordingState
 from ui.gateway.webrtc_models import StreamControlAction, StreamControlCommand
 from ui.gateway.webrtc_runtime import WebRtcSessionRuntime
 from ui.processing import (
+    OfflineVioService,
     ProcessingRunInfo,
     SessionProcessingRunner,
     VideoProcessingService,
+    VioRunInfo,
 )
 
 from .runtime_state import CommandResult, RuntimeSnapshot
@@ -81,27 +83,37 @@ class UnifiedRuntimeHost:
     ) -> None:
         self.config = config
         self.pairing_token = config.pairing_token or secrets.token_urlsafe(24)
+        recordings_root = config.recordings_root.expanduser().resolve()
+        self.configuration_service = configuration_service or ConfigurationService(
+            recordings_root=recordings_root,
+        )
+        config_directory = self.configuration_service.config_directory
+        sensor_config_path = config_directory / "sensor-preprocessing.yaml"
+        sensor_config = SensorPreprocessingConfig.load(sensor_config_path)
+        self.sensor_calibration = SensorCalibration.load(sensor_config.calibration_file)
+        self.imu_preview = ImuPreviewRuntime(
+            orientation_config=sensor_config.imu_orientation,
+            calibration=self.sensor_calibration,
+        )
         self.frame_buffer = LiveFrameBuffer()
-        self.imu_preview = ImuPreviewRuntime()
         self.webrtc = WebRtcSessionRuntime(
             self.pairing_token,
             display_frame_sink=self.frame_buffer,
             display_imu_sink=self.imu_preview,
         )
-        recordings_root = config.recordings_root.expanduser().resolve()
-        self.configuration_service = configuration_service or ConfigurationService(
-            recordings_root=recordings_root,
-        )
         self.recording = RecordingRuntime(
             recordings_root,
             lambda: self.webrtc.recording_source(),
         )
-        config_directory = self.configuration_service.config_directory
-        sensor_config_path = config_directory / "sensor-preprocessing.yaml"
         self.perception = HandTrackingRuntime(
             runtime_config_path=config_directory / "perception-runtime.yaml",
             sensor_config_path=sensor_config_path,
             hand_tracking_config_path=config_directory / "live-hand-tracking.yaml",
+        )
+        self.vio_processing = OfflineVioService(
+            recordings_root,
+            config_directory=config_directory,
+            allow_unverified_calibration=True,
         )
         self.video_processing = VideoProcessingService(
             recordings_root,
@@ -111,6 +123,7 @@ class UnifiedRuntimeHost:
                 / "offline-hand-tracking.yaml",
             ),
             on_gpu_job_changed=self._on_gpu_job_changed,
+            offline_vio_runner=self.vio_processing.run,
             configuration_provenance_provider=self._configuration_provenance,
         )
         self._apply_video_processing_defaults(
@@ -193,6 +206,7 @@ class UnifiedRuntimeHost:
         await self.imu_preview.close()
         await self.recording.close()
         await asyncio.to_thread(self.video_processing.close)
+        await asyncio.to_thread(self.vio_processing.close)
 
     def snapshot(self) -> RuntimeSnapshot:
         with self._snapshot_lock:
@@ -282,6 +296,9 @@ class UnifiedRuntimeHost:
                 clip_id,
             ),
         )
+
+    def vio_runs(self, session_id: str) -> concurrent.futures.Future[tuple[VioRunInfo, ...]]:
+        return self.submit(asyncio.to_thread(self.vio_processing.list_runs, session_id))
 
     def configuration_snapshot(self) -> ConfigSnapshot:
         return self.configuration_service.snapshot()

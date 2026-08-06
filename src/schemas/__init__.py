@@ -11,6 +11,7 @@ from .hand_tracking import (
 from .imu import ImuPacket, ImuSensor
 from .playback import PlaybackFrame
 from .processing import AlgorithmRunMetadata, ProcessingArtifactRef
+from .trajectory import VioPose, VioTrajectory
 
 __all__ = [
     "AlgorithmRunMetadata",
@@ -24,4 +25,6 @@ __all__ = [
     "PlaybackFrame",
     "ProcessingArtifactRef",
     "TrackedHand",
+    "VioPose",
+    "VioTrajectory",
 ]

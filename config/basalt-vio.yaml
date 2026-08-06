@@ -1,0 +1,15 @@
+# Offline Basalt VIO configuration. Basalt is an external native executable.
+schema_version: "1.0"
+executable: basalt_vio
+executable_args: []
+dataset_type: euroc
+show_gui: false
+use_imu: true
+use_double: false
+num_threads: 0
+max_frames: 0
+# Sample calibration profiles are rejected unless this is explicitly enabled.
+allow_unverified_calibration: false
+# Sensor preprocessing emits rectified frames by default.
+input_is_rectified: true
+config_path: basalt-euroc-config.json

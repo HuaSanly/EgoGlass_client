@@ -21,8 +21,10 @@ tracker inference, or offline GPU job. The runtime applies immediate changes and
 reports the remaining levels to the operator.
 
 `sensor-preprocessing.yaml` is the sensor-preprocessing runtime configuration.
-It selects the calibration JSON and controls the common recorded, image, and
-live-path settings. Relative file paths are resolved from the YAML directory.
+It selects the calibration JSON and controls the common recorded, image, live,
+and shared IMU-orientation settings. Relative file paths are resolved from the
+YAML directory. `imu_orientation` contains fusion tuning; measured axis maps,
+biases, scales, noise, and camera-to-IMU extrinsics stay in the calibration JSON.
 
 `sensor-calibration-640x480-sample.json` is the active horizontal 4:3 integration
 profile. `sensor-calibration.sample.json` retains the previous 1280x720 profile
@@ -54,3 +56,9 @@ Each successful save increments a revision in
 that revision and the SHA256 of all six YAML files in its `run.json`. The queue
 also stores the validated sensor calibration and offline perception values captured at
 submission, so later edits cannot change an already queued task.
+
+`basalt-vio.yaml` controls the optional offline VIO adapter. It is separate from
+hand tracking and is not consumed by the Qt runtime yet. The adapter exports a
+prepared session to EuRoC, runs `basalt_vio`, and stores the parsed trajectory
+alongside the run. Keep `allow_unverified_calibration: false` for real work;
+the checked-in calibration profiles are integration samples only.

@@ -27,7 +27,9 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from ui.processing import ProcessingRunInfo
+from schemas import VioPose
+from ui.presentation import SpatialReferenceFrame, build_spatial_scene_state
+from ui.processing import ProcessingRunInfo, VioRunInfo
 from ui.replay.player import PlaybackClipSpan, ReplayPlayer, ReplaySnapshot, ReplayState
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.video_canvas import VideoCanvas
@@ -98,10 +100,8 @@ class ProcessingWorkbench(QWidget):
     processRequested = pyqtSignal()
     exportRequested = pyqtSignal()
     resultSelectionChanged = pyqtSignal()
-    comparisonSelectionChanged = pyqtSignal()
 
     RAW_RESULT = "__raw__"
-    NO_COMPARISON = "__none__"
 
     def __init__(self, replay: ReplayPlayer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -111,17 +111,16 @@ class ProcessingWorkbench(QWidget):
         self._session_id: str | None = None
         self._initial_clip_id: str | None = None
         self._runs: tuple[ProcessingRunInfo, ...] = ()
+        self._vio_runs: tuple[VioRunInfo, ...] = ()
+        self._spatial_imu_pose = None
+        self._spatial_hand_result: dict[str, object] | None = None
+        self._spatial_vio_pose: VioPose | None = None
         self._build_ui()
 
     @property
     def primary_run_id(self) -> str | None:
         data = self.result_combo.currentData()
         return data if isinstance(data, str) and data != self.RAW_RESULT else None
-
-    @property
-    def comparison_run_id(self) -> str | None:
-        data = self.comparison_combo.currentData()
-        return data if isinstance(data, str) and data != self.NO_COMPARISON else None
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -152,6 +151,7 @@ class ProcessingWorkbench(QWidget):
         row.addStretch(1)
         self.process_button = PrimaryPushButton("处理当前视频", self)
         self.process_button.setIcon(FluentIcon.PLAY)
+        self.process_button.setToolTip("逐帧运行手部追踪，并在同一离线任务中运行 SLAM/VIO")
         self.process_button.clicked.connect(self.processRequested)
         row.addWidget(self.process_button)
         row.addWidget(CaptionLabel("结果版本", self))
@@ -216,15 +216,6 @@ class ProcessingWorkbench(QWidget):
         self.overlay_check.setChecked(True)
         self.overlay_check.toggled.connect(self.canvas_overlay_enabled)
         layout.addWidget(self.overlay_check)
-        row = QHBoxLayout()
-        row.addWidget(CaptionLabel("A/B", card))
-        self.comparison_combo = ComboBox(card)
-        self.comparison_combo.setMinimumWidth(174)
-        self.comparison_combo.currentIndexChanged.connect(
-            lambda _index: self.comparisonSelectionChanged.emit()
-        )
-        row.addWidget(self.comparison_combo, 1)
-        layout.addLayout(row)
         return card
 
     def _build_transport(self, parent: QWidget) -> SimpleCardWidget:
@@ -271,6 +262,10 @@ class ProcessingWorkbench(QWidget):
             QSizePolicy.Policy.Expanding,
         )
         self.spatial_canvas.reset_pose_button.setVisible(False)
+        self.spatial_canvas.set_reference_frame(SpatialReferenceFrame.WORLD)
+        self.spatial_canvas.reference_frame_changed.connect(
+            lambda _frame: self._refresh_spatial_scene()
+        )
         layout.addWidget(self.spatial_canvas, 1)
         self.slice_markers = _ReadonlySlicePanel(
             "切片标记",
@@ -282,6 +277,9 @@ class ProcessingWorkbench(QWidget):
         self.result_detail = CaptionLabel("当前显示原始视频", column)
         self.result_detail.setWordWrap(True)
         layout.addWidget(self.result_detail)
+        self.vio_detail = CaptionLabel("SLAM/VIO：未加载离线轨迹", column)
+        self.vio_detail.setWordWrap(True)
+        layout.addWidget(self.vio_detail)
         return column
 
     def set_context(
@@ -310,10 +308,77 @@ class ProcessingWorkbench(QWidget):
             self.result_combo.addItem(_run_label(run), userData=run.run_id)
         self.result_combo.setCurrentIndex(1 if self._runs else 0)
         self.result_combo.blockSignals(False)
-        self._rebuild_comparison(emit=False)
         self._update_result_detail()
         self.export_button.setEnabled(self.primary_run_id is not None)
         self.resultSelectionChanged.emit()
+
+    @property
+    def selected_vio_run(self) -> VioRunInfo | None:
+        clip_id = self._initial_clip_id
+        return next(
+            (
+                run
+                for run in self._vio_runs
+                if run.is_viewable and (clip_id is None or run.covers_clip(clip_id))
+            ),
+            None,
+        )
+
+    def set_vio_runs(self, runs: tuple[VioRunInfo, ...]) -> None:
+        self._vio_runs = tuple(
+            sorted(
+                (run for run in runs if run.is_viewable),
+                key=lambda run: run.completed_at_unix_ns or 0,
+                reverse=True,
+            )
+        )
+        selected = self.selected_vio_run
+        self._spatial_vio_pose = None
+        self._refresh_spatial_scene()
+        if selected is None:
+            self.vio_detail.setText("SLAM/VIO：未加载离线轨迹")
+        else:
+            self.vio_detail.setText(
+                f"SLAM/VIO：{selected.run_id[-8:]}  ·  {selected.pose_count} 个位姿"
+            )
+
+    def set_vio_pose(self, pose: VioPose | None) -> None:
+        self._spatial_vio_pose = pose
+        self._refresh_spatial_scene()
+
+    def set_imu_pose(self, pose: object | None) -> None:
+        self._spatial_imu_pose = pose
+        self._refresh_spatial_scene()
+
+    def set_hand_result(self, result: dict[str, object] | None) -> None:
+        self._spatial_hand_result = result
+        self._refresh_spatial_scene()
+
+    def _refresh_spatial_scene(self) -> None:
+        selected = self.selected_vio_run
+        transform = selected.transform_camera_to_imu if selected is not None else None
+        self.spatial_canvas.set_scene_state(
+            build_spatial_scene_state(
+                self.spatial_canvas.reference_frame,
+                hand_result=self._spatial_hand_result,
+                imu_pose=self._spatial_imu_pose,
+                vio_pose=self._spatial_vio_pose,
+                vio_first_pose=selected.first_pose if selected is not None else None,
+                transform_camera_to_imu=transform
+                if transform is not None
+                else (
+                    (1.0, 0.0, 0.0, 0.0),
+                    (0.0, 1.0, 0.0, 0.0),
+                    (0.0, 0.0, 1.0, 0.0),
+                    (0.0, 0.0, 0.0, 1.0),
+                ),
+            )
+        )
+
+    def set_vio_status(self, text: str) -> None:
+        """Update the read-only VIO stage status without changing the canvas."""
+
+        self.vio_detail.setText(text)
 
     def set_replay(self, snapshot: ReplaySnapshot) -> None:
         self.play_button.setIcon(
@@ -334,37 +399,23 @@ class ProcessingWorkbench(QWidget):
 
     def canvas_overlay_enabled(self, enabled: bool) -> None:
         self.canvas.set_primary_overlay_enabled(enabled)
-        self.canvas.set_comparison_overlay_enabled(enabled)
 
     def clear_media(self) -> None:
         self.canvas.clear()
-        self.spatial_canvas.set_pose(None)
-        self.spatial_canvas.set_hand_result(None)
+        self._vio_runs = ()
+        self._spatial_imu_pose = None
+        self._spatial_vio_pose = None
+        self._spatial_hand_result = None
+        self.spatial_canvas.set_scene_state(None)
         self.clip_timeline.set_clips(())
         self.result_combo.clear()
-        self.comparison_combo.clear()
         self.result_detail.setText("当前显示原始视频")
+        self.vio_detail.setText("SLAM/VIO：未加载离线轨迹")
 
     def _primary_result_changed(self, _index: int) -> None:
-        self._rebuild_comparison(emit=False)
         self._update_result_detail()
         self.export_button.setEnabled(self.primary_run_id is not None)
         self.resultSelectionChanged.emit()
-
-    def _rebuild_comparison(self, *, emit: bool = True) -> None:
-        previous = self.comparison_run_id
-        primary = self.primary_run_id
-        self.comparison_combo.blockSignals(True)
-        self.comparison_combo.clear()
-        self.comparison_combo.addItem("关闭对比", userData=self.NO_COMPARISON)
-        for run in self._runs:
-            if run.run_id != primary:
-                self.comparison_combo.addItem(_short_run_label(run), userData=run.run_id)
-        index = self.comparison_combo.findData(previous)
-        self.comparison_combo.setCurrentIndex(max(0, index))
-        self.comparison_combo.blockSignals(False)
-        if emit:
-            self.comparisonSelectionChanged.emit()
 
     def _update_result_detail(self) -> None:
         run_id = self.primary_run_id
@@ -407,10 +458,6 @@ class ProcessingWorkbench(QWidget):
 def _run_label(run: ProcessingRunInfo) -> str:
     scope = "会话" if run.clip_id is None else "片段"
     return f"{run.preset.display_name} · {scope} · {run.run_id[-8:]}"
-
-
-def _short_run_label(run: ProcessingRunInfo) -> str:
-    return f"{run.preset.display_name} · {run.run_id[-8:]}"
 
 
 def _clock(seconds: float) -> str:

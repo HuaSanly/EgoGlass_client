@@ -78,7 +78,7 @@ conda run -n egoglass python scripts\cleanup_legacy_hand_tracking.py --apply
 The first command is a dry run. The apply command fails if a target escapes the
 exact legacy path or if any raw-media hash changes.
 
-## Playback and comparison
+## Playback and results
 
 `ReplayPlayer` opens a complete session or one selected clip. It verifies each
 decoded frame against the recorded MP4 PTS index and publishes a typed
@@ -92,10 +92,9 @@ discarding the rest of the session timeline. `unload()` releases the active
 decoder and frame buffers when the operator returns to the video hall while
 keeping the replay worker available for the next selection.
 
-The UI queries one primary run and one optional comparison run for each frame.
-Both overlays and the OpenGL hand pose share one decoded RGB frame. Seeking and
-single-frame stepping therefore cannot advance video, IMU, and results
-independently.
+The UI queries the selected run once for each frame. The video overlay and the
+OpenGL hand pose share one decoded RGB frame. Seeking and single-frame stepping
+therefore cannot advance video, IMU, and results independently.
 
 Run discovery returns typed `ProcessingRunInfo` records. A completed manifest
 is viewable only when its `results.sqlite` exists and passes the result-store

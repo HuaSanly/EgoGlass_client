@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import queue
 import threading
 import time
@@ -9,13 +8,17 @@ from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
-from ahrs.common.orientation import acc2q
-from ahrs.filters import Madgwick
+
+from sensor_preprocessing import (
+    ImuOrientationConfig,
+    ImuOrientationFilter,
+    SensorCalibration,
+    quaternion_to_euler_degrees,
+)
 
 from .webrtc_models import ImuSample, ImuSensorType
 
 _RATE_WINDOW_NS = 2_000_000_000
-_INITIAL_ACCELEROMETER_SAMPLES = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,22 +47,27 @@ class _QueuedSample:
 class ImuPreviewRuntime:
     """Bounded Madgwick pose preview; VIO remains the authoritative future pose source."""
 
-    def __init__(self, *, queue_size: int = 512, beta: float = 0.05) -> None:
+    def __init__(
+        self,
+        *,
+        queue_size: int = 512,
+        beta: float | None = None,
+        orientation_config: ImuOrientationConfig | None = None,
+        calibration: SensorCalibration | None = None,
+    ) -> None:
         if queue_size < 1:
             raise ValueError("queue_size must be positive")
         self._queue: queue.Queue[_QueuedSample | None] = queue.Queue(maxsize=queue_size)
         self._lock = threading.Lock()
-        self._filter = Madgwick(frequency=100.0, beta=beta)
-        self._quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-        self._reference_quaternion: np.ndarray | None = None
-        self._orientation_initialized = False
+        config = orientation_config or ImuOrientationConfig()
+        if beta is not None:
+            config = config.model_copy(update={"madgwick_beta": beta})
+        self._orientation = ImuOrientationFilter(
+            config,
+            **_calibration_filter_kwargs(calibration),
+        )
         self._session_id: str | None = None
         self._accelerometer: tuple[float, float, float] | None = None
-        self._accelerometer_window: deque[np.ndarray] = deque(
-            maxlen=_INITIAL_ACCELEROMETER_SAMPLES
-        )
-        self._gyroscope: tuple[float, float, float] | None = None
-        self._last_gyro_timestamp_ns: int | None = None
         self._latest_received_at_ns: int | None = None
         self._samples_received = 0
         self._samples_processed = 0
@@ -93,14 +101,8 @@ class ImuPreviewRuntime:
         now_ns = time.perf_counter_ns()
         with self._lock:
             rate_hz = self._recent_gyroscope_rate_hz(now_ns)
-            quaternion = tuple(
-                float(value)
-                for value in _relative_quaternion(
-                    self._reference_quaternion,
-                    self._quaternion,
-                )
-            )
-            roll, pitch, yaw = _quaternion_to_euler_degrees(quaternion)
+            quaternion = self._orientation.relative_quaternion_wxyz
+            roll, pitch, yaw = quaternion_to_euler_degrees(quaternion)
             age_ms = None
             if self._latest_received_at_ns is not None:
                 age_ms = max(0.0, (now_ns - self._latest_received_at_ns) / 1_000_000)
@@ -110,8 +112,8 @@ class ImuPreviewRuntime:
                 roll_degrees=roll,
                 pitch_degrees=pitch,
                 yaw_degrees=yaw,
-                accelerometer_mps2=self._accelerometer,
-                gyroscope_radps=self._gyroscope,
+                accelerometer_mps2=self._orientation.accelerometer_mps2,
+                gyroscope_radps=self._orientation.gyroscope_radps,
                 samples_received=self._samples_received,
                 samples_processed=self._samples_processed,
                 queue_overflow_count=self._queue_overflow_count,
@@ -119,15 +121,63 @@ class ImuPreviewRuntime:
                 latest_sample_age_ms=round(age_ms, 3) if age_ms is not None else None,
             )
 
+    # These narrow aliases keep older diagnostics/tests able to inspect the
+    # runtime without maintaining a second fusion implementation.
+    @property
+    def _quaternion(self) -> np.ndarray:
+        return self._orientation._quaternion
+
+    @_quaternion.setter
+    def _quaternion(self, value: np.ndarray) -> None:
+        self._orientation._quaternion = np.asarray(value, dtype=np.float64)
+        self._orientation._smoothed_quaternion = self._orientation._quaternion.copy()
+
+    @property
+    def _orientation_initialized(self) -> bool:
+        return self._orientation.initialized
+
+    @_orientation_initialized.setter
+    def _orientation_initialized(self, value: bool) -> None:
+        self._orientation._initialized = bool(value)
+
+    @property
+    def _reference_quaternion(self) -> np.ndarray | None:
+        return self._orientation._reference_quaternion
+
+    @_reference_quaternion.setter
+    def _reference_quaternion(self, value: np.ndarray | None) -> None:
+        self._orientation._reference_quaternion = value
+
+    @property
+    def _last_gyro_timestamp_ns(self) -> int | None:
+        return self._orientation.last_gyro_timestamp_ns
+
+    @_last_gyro_timestamp_ns.setter
+    def _last_gyro_timestamp_ns(self, value: int | None) -> None:
+        self._orientation._last_gyro_timestamp_ns = value
+
+    @property
+    def _accelerometer(self) -> tuple[float, float, float] | None:
+        return self._orientation.accelerometer_mps2
+
+    @_accelerometer.setter
+    def _accelerometer(self, value: tuple[float, float, float] | None) -> None:
+        self._orientation._accelerometer = (
+            None if value is None else np.asarray(value, dtype=np.float64)
+        )
+
+    def _update_orientation(self, gyroscope: ImuSample) -> None:
+        self._orientation.process(
+            gyroscope.sensor_type,
+            gyroscope.values,
+            gyroscope.sensor_event_monotonic_ns,
+        )
+
     def reset_orientation(self) -> None:
         """Use the current fused pose as the preview's new relative origin."""
 
         with self._lock:
-            self._reference_quaternion = (
-                _normalized_quaternion(self._quaternion)
-                if self._orientation_initialized
-                else None
-            )
+            self._orientation.reset_reference()
 
     async def close(self) -> None:
         if self._closed:
@@ -156,29 +206,21 @@ class ImuPreviewRuntime:
                 if self._session_id != queued.session_id:
                     self._begin_session(queued.session_id)
                 self._latest_received_at_ns = queued.received_at_client_monotonic_ns
-                if sample.sensor_type is ImuSensorType.ACCELEROMETER:
-                    self._accelerometer = sample.values
-                    self._accelerometer_window.append(
-                        np.asarray(sample.values, dtype=np.float64)
-                    )
-                else:
-                    self._gyroscope = sample.values
+                if sample.sensor_type is ImuSensorType.GYROSCOPE:
                     self._record_gyroscope_timing(
                         sample.sensor_event_monotonic_ns,
                         queued.received_at_client_monotonic_ns,
                     )
-                    self._update_orientation(sample)
+                self._orientation.process(
+                    sample.sensor_type,
+                    sample.values,
+                    sample.sensor_event_monotonic_ns,
+                )
                 self._samples_processed += 1
 
     def _begin_session(self, session_id: str) -> None:
         self._session_id = session_id
-        self._quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-        self._reference_quaternion = None
-        self._orientation_initialized = False
-        self._accelerometer = None
-        self._accelerometer_window.clear()
-        self._gyroscope = None
-        self._last_gyro_timestamp_ns = None
+        self._orientation.reset()
         self._gyroscope_timing.clear()
 
     def _record_gyroscope_timing(
@@ -211,80 +253,32 @@ class ImuPreviewRuntime:
             return 0.0
         return (len(recent) - 1) * 1_000_000_000 / (recent[-1] - recent[0])
 
-    def _update_orientation(self, gyroscope: ImuSample) -> None:
-        current_ns = gyroscope.sensor_event_monotonic_ns
-        previous_ns = self._last_gyro_timestamp_ns
-        if previous_ns is not None and current_ns <= previous_ns:
-            return
-        self._last_gyro_timestamp_ns = current_ns
-        if self._accelerometer is None:
-            return
-        if previous_ns is None:
-            return
-        if not self._orientation_initialized:
-            if len(self._accelerometer_window) < _INITIAL_ACCELEROMETER_SAMPLES:
-                return
-            initial = acc2q(np.mean(tuple(self._accelerometer_window), axis=0))
-            if not np.isfinite(initial).all():
-                return
-            self._quaternion = _normalized_quaternion(initial)
-            self._reference_quaternion = self._quaternion.copy()
-            self._orientation_initialized = True
-            return
-        delta_seconds = (current_ns - previous_ns) / 1_000_000_000
-        if not 0.0001 <= delta_seconds <= 0.2:
-            return
-        updated = self._filter.updateIMU(
-            self._quaternion,
-            gyr=np.asarray(gyroscope.values, dtype=np.float64),
-            acc=np.asarray(self._accelerometer, dtype=np.float64),
-            dt=delta_seconds,
+    @classmethod
+    def from_sensor_config(
+        cls,
+        config_path: str,
+        *,
+        queue_size: int = 512,
+    ) -> ImuPreviewRuntime:
+        from sensor_preprocessing import SensorPreprocessingConfig
+
+        config = SensorPreprocessingConfig.load(config_path)
+        return cls(
+            queue_size=queue_size,
+            orientation_config=config.imu_orientation,
+            calibration=SensorCalibration.load(config.calibration_file),
         )
-        if updated is not None and np.isfinite(updated).all():
-            self._quaternion = _normalized_quaternion(updated)
 
 
-def _relative_quaternion(
-    reference: np.ndarray | None,
-    current: np.ndarray,
-) -> np.ndarray:
-    if reference is None:
-        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    reference_inverse = _normalized_quaternion(reference).copy()
-    reference_inverse[1:] *= -1.0
-    return _normalized_quaternion(
-        _quaternion_product(reference_inverse, _normalized_quaternion(current))
-    )
-
-
-def _normalized_quaternion(quaternion: np.ndarray) -> np.ndarray:
-    values = np.asarray(quaternion, dtype=np.float64)
-    norm = float(np.linalg.norm(values))
-    if not math.isfinite(norm) or norm <= 0.0:
-        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    return values / norm
-
-
-def _quaternion_product(left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    lw, lx, ly, lz = left
-    rw, rx, ry, rz = right
-    return np.array(
-        (
-            lw * rw - lx * rx - ly * ry - lz * rz,
-            lw * rx + lx * rw + ly * rz - lz * ry,
-            lw * ry - lx * rz + ly * rw + lz * rx,
-            lw * rz + lx * ry - ly * rx + lz * rw,
-        ),
-        dtype=np.float64,
-    )
-
-
-def _quaternion_to_euler_degrees(
-    quaternion: tuple[float, float, float, float],
-) -> tuple[float, float, float]:
-    w, x, y, z = quaternion
-    roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
-    pitch_term = max(-1.0, min(1.0, 2 * (w * y - z * x)))
-    pitch = math.asin(pitch_term)
-    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-    return tuple(math.degrees(value) for value in (roll, pitch, yaw))
+def _calibration_filter_kwargs(
+    calibration: SensorCalibration | None,
+) -> dict[str, object]:
+    if calibration is None:
+        return {}
+    imu = calibration.imu
+    return {
+        "raw_imu_to_body_axes": imu.raw_imu_to_body_axes,
+        "gyroscope_bias_rad_s": imu.gyroscope_bias_rad_s,
+        "accelerometer_bias_m_s2": imu.accelerometer_bias_m_s2,
+        "accelerometer_scale": imu.accelerometer_scale,
+    }

@@ -9,7 +9,7 @@ from qfluentwidgets import InfoBar
 
 from ui.application.runtime_host import UnifiedRuntimeHost
 from ui.gateway.recording_models import RecordingLibrary, RecordingSession
-from ui.processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo
+from ui.processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo, VioRunInfo
 from ui.replay.player import PlaybackFrame, ReplayPlayer, ReplayState
 from ui.video_processing import ProcessingWorkbench, VideoHall, VideoThumbnailService
 
@@ -31,7 +31,13 @@ class VideoProcessingView(QWidget):
         super().__init__(parent)
         self.setObjectName("videoProcessingView")
         self.runtime = runtime
-        self.replay = ReplayPlayer()
+        configuration_service = getattr(runtime, "configuration_service", None)
+        sensor_config_path = (
+            configuration_service.config_directory / "sensor-preprocessing.yaml"
+            if configuration_service is not None
+            else None
+        )
+        self.replay = ReplayPlayer(sensor_config_path)
         self.thumbnails = VideoThumbnailService(workers=2)
         self._selection: _Selection | None = None
         self._library: RecordingLibrary | None = None
@@ -45,6 +51,11 @@ class VideoProcessingView(QWidget):
         ] = {}
         self._pending_run_refreshes: set[str] = set()
         self._runs: dict[str, tuple[ProcessingRunInfo, ...]] = {}
+        self._vio_runs: dict[str, tuple[VioRunInfo, ...]] = {}
+        self._vio_run_futures: dict[
+            str, concurrent.futures.Future[tuple[VioRunInfo, ...]]
+        ] = {}
+        self._pending_vio_refreshes: set[str] = set()
         self._result_futures: dict[
             str,
             tuple[
@@ -80,7 +91,6 @@ class VideoProcessingView(QWidget):
         self.workbench.processRequested.connect(self._process_current_clip)
         self.workbench.exportRequested.connect(self._export_current_result)
         self.workbench.resultSelectionChanged.connect(self._clear_result_queries)
-        self.workbench.comparisonSelectionChanged.connect(self._clear_result_queries)
 
         # Stable compatibility handles for render tests and canvas consumers.
         self.canvas = self.workbench.canvas
@@ -103,6 +113,8 @@ class VideoProcessingView(QWidget):
         self._last_frame_key = None
         self._last_replay_error = None
         self._result_futures.clear()
+        self._vio_run_futures.clear()
+        self._pending_vio_refreshes.clear()
         self.workbench.clear_media()
         self.stack.setCurrentWidget(self.hall)
 
@@ -120,6 +132,7 @@ class VideoProcessingView(QWidget):
             clip_id,
         )
         self.workbench.set_runs(self._runs.get(session_id, ()), clip_id)
+        self.workbench.set_vio_runs(self._vio_runs.get(session_id, ()))
         self.stack.setCurrentWidget(self.workbench)
         try:
             self.replay.open_session(self.runtime.session_directory(session_id), clip_id)
@@ -128,6 +141,7 @@ class VideoProcessingView(QWidget):
             self._show_error(str(error))
             return
         self._request_runs(session_id, force=True)
+        self._request_vio_runs(session_id, force=True)
         self._clear_result_queries()
 
     def hideEvent(self, event: QEvent) -> None:
@@ -154,12 +168,33 @@ class VideoProcessingView(QWidget):
             for session_id in affected:
                 if session_id in self._sessions:
                     self._request_runs(session_id, force=True)
+                    self._request_vio_runs(session_id, force=True)
             for session_id, session in self._sessions.items():
                 self.hall.set_processing_states(
                     session_id,
                     _processing_states(processing.jobs, session),
                 )
+        if processing is not None and self._selection is not None:
+            active_job = next(
+                (
+                    job
+                    for job in processing.jobs
+                    if job.session_id == self._selection.session_id
+                    and (job.clip_id is None or job.clip_id == self._selection.clip_id)
+                    and job.state
+                    in {
+                        ProcessingJobState.QUEUED,
+                        ProcessingJobState.PREPARING,
+                        ProcessingJobState.RUNNING,
+                        ProcessingJobState.CANCELING,
+                    }
+                ),
+                None,
+            )
+            if active_job is not None:
+                self.workbench.set_vio_status("SLAM/VIO：随当前离线处理任务执行")
         self._resolve_run_futures()
+        self._resolve_vio_futures()
         self._resolve_thumbnails()
         if self.isVisible():
             self._drain_command_results()
@@ -201,6 +236,7 @@ class VideoProcessingView(QWidget):
                     session_path,
                 )
             self._request_runs(session.session_id)
+            self._request_vio_runs(session.session_id)
 
     def _request_runs(self, session_id: str, *, force: bool = False) -> None:
         if session_id in self._run_futures:
@@ -246,6 +282,43 @@ class VideoProcessingView(QWidget):
                 self._pending_run_refreshes.remove(session_id)
                 self._request_runs(session_id, force=True)
 
+    def _request_vio_runs(self, session_id: str, *, force: bool = False) -> None:
+        if session_id in self._vio_run_futures:
+            if force:
+                self._pending_vio_refreshes.add(session_id)
+            return
+        if not force and session_id in self._vio_runs:
+            return
+        request = getattr(self.runtime, "vio_runs", None)
+        if not callable(request):
+            return
+        future = request(session_id)
+        if isinstance(future, concurrent.futures.Future):
+            self._vio_run_futures[session_id] = future
+
+    def _resolve_vio_futures(self) -> None:
+        for session_id, future in tuple(self._vio_run_futures.items()):
+            if not future.done():
+                continue
+            del self._vio_run_futures[session_id]
+            try:
+                runs = future.result()
+            except Exception as error:
+                if self._selection is not None and self._selection.session_id == session_id:
+                    self._show_error(str(error))
+                continue
+            self._vio_runs[session_id] = runs
+            selection = self._selection
+            if (
+                selection is not None
+                and selection.session_id == session_id
+                and not self.showing_hall
+            ):
+                self.workbench.set_vio_runs(runs)
+            if session_id in self._pending_vio_refreshes:
+                self._pending_vio_refreshes.remove(session_id)
+                self._request_vio_runs(session_id, force=True)
+
     def _resolve_thumbnails(self) -> None:
         for result in self.thumbnails.take_completed():
             self.hall.set_thumbnail(result.session_id, result.clip_id, result.image)
@@ -280,31 +353,32 @@ class VideoProcessingView(QWidget):
                     )
                 self.workbench.set_runs(self._runs.get(frame.session_id, ()), frame.clip_id)
             self.canvas.set_frame(frame)
-            self.spatial_canvas.set_pose(snapshot.imu_pose)
+            self.workbench.set_imu_pose(snapshot.imu_pose)
+            selected_vio = self.workbench.selected_vio_run
+            self.workbench.set_vio_pose(
+                selected_vio.pose_at(frame.session_time_ns) if selected_vio is not None else None
+            )
             self._query_results(frame)
         self._resolve_result_queries(key)
 
     def _query_results(self, frame: PlaybackFrame) -> None:
-        for layer, run_id in (
-            ("primary", self.workbench.primary_run_id),
-            ("comparison", self.workbench.comparison_run_id),
-        ):
-            if run_id is None:
-                continue
-            existing = self._result_futures.get(layer)
-            if existing is not None and not existing[1].done():
-                continue
-            key = (frame.session_id, frame.clip_id, frame.frame_index, frame.session_time_ns)
-            self._result_futures[layer] = (
-                key,
-                self.runtime.processing_result(
-                    frame.session_id,
-                    run_id,
-                    frame.clip_id,
-                    frame.frame_index,
-                    frame.session_time_ns,
-                ),
-            )
+        run_id = self.workbench.primary_run_id
+        if run_id is None:
+            return
+        existing = self._result_futures.get("primary")
+        if existing is not None and not existing[1].done():
+            return
+        key = (frame.session_id, frame.clip_id, frame.frame_index, frame.session_time_ns)
+        self._result_futures["primary"] = (
+            key,
+            self.runtime.processing_result(
+                frame.session_id,
+                run_id,
+                frame.clip_id,
+                frame.frame_index,
+                frame.session_time_ns,
+            ),
+        )
 
     def _resolve_result_queries(self, frame_key: tuple[str, str, int, int]) -> None:
         refresh_current_frame = False
@@ -320,11 +394,8 @@ class VideoProcessingView(QWidget):
             if key != frame_key:
                 refresh_current_frame = True
                 continue
-            if layer == "primary":
-                self.canvas.set_overlay(result)
-                self.spatial_canvas.set_hand_result(result)
-            else:
-                self.canvas.set_comparison_overlay(result)
+            self.canvas.set_overlay(result)
+            self.workbench.set_hand_result(result)
         if refresh_current_frame:
             frame = self.replay.snapshot().frame
             if frame is not None:
@@ -333,8 +404,7 @@ class VideoProcessingView(QWidget):
     def _clear_result_queries(self) -> None:
         self._result_futures.clear()
         self.canvas.set_overlay(None)
-        self.canvas.set_comparison_overlay(None)
-        self.spatial_canvas.set_hand_result(None)
+        self.workbench.set_hand_result(None)
         frame = self.replay.snapshot().frame
         if frame is not None and not self.showing_hall:
             self._query_results(frame)

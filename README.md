@@ -11,7 +11,7 @@ src/
   schemas/                  # Public frame, IMU, playback, and result types
   sensor_preprocessing/     # Time mapping, calibration, and prepared inputs
   hand_tracking/            # Live and offline hand-tracking algorithms
-  slam_vio/                 # Reserved SLAM/VIO algorithm package
+  slam_vio/                 # Basalt-backed offline VIO adapter
   process_video.py          # Thin no-UI offline processing entry point
 ui/
   application/              # Runtime lifecycle and native client host
@@ -78,6 +78,22 @@ conda run -n egoglass python src\process_video.py `
   --session local-data\recordings\<session-id> `
   --output local-data\headless-runs\<run-id>
 ```
+
+Basalt VIO is an optional native dependency. After installing `basalt_vio`,
+run it against the same prepared capture session without starting Qt or the
+gateway:
+
+```powershell
+conda run -n egoglass python src\run_vio.py `
+  --session local-data\recordings\<session-id> `
+  --output local-data\vio-runs\<run-id>
+```
+
+The default `config/basalt-vio.yaml` rejects the repository's unverified sample
+calibration. Use `--allow-unverified-calibration` only for integration tests;
+real trajectory work requires a measured camera-IMU calibration. The runner
+exports an EuRoC `mav0/` dataset, `calibration.json`, Basalt logs, and parses
+`trajectory.csv` into typed poses.
 
 ## License
 
