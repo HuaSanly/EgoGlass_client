@@ -8,7 +8,7 @@ _SCHEMA_VERSION = "1"
 
 
 class ProcessingResultStore:
-    """Frame-addressable structured results for playback and A/B comparison."""
+    """Frame-addressable structured results for processed-video playback."""
 
     def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = Path(path).expanduser().resolve()

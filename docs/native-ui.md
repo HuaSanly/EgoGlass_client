@@ -61,10 +61,9 @@ cross-clip playback update both views together.
 
 The result selector lists Raw Video plus completed, schema-valid session and
 clip runs that cover the current clip. The newest valid result is selected by
-default. An optional A/B selector only lists another run covering that clip.
-Switching either selector changes structured-result queries without reopening
-the decoder. The canvas draws a split comparison over one RGB frame. Export is
-explicit and reports the output path in an `InfoBar`.
+default. Switching the selector changes the structured-result query without
+reopening the decoder. The selected result is drawn as one overlay over the
+RGB frame. Export is explicit and reports the output path in an `InfoBar`.
 
 The real session clip spans form a clickable timeline below the video. Slice
 candidate and marker regions are visibly read-only placeholders: they expose no

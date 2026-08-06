@@ -100,10 +100,8 @@ class ProcessingWorkbench(QWidget):
     processRequested = pyqtSignal()
     exportRequested = pyqtSignal()
     resultSelectionChanged = pyqtSignal()
-    comparisonSelectionChanged = pyqtSignal()
 
     RAW_RESULT = "__raw__"
-    NO_COMPARISON = "__none__"
 
     def __init__(self, replay: ReplayPlayer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -123,11 +121,6 @@ class ProcessingWorkbench(QWidget):
     def primary_run_id(self) -> str | None:
         data = self.result_combo.currentData()
         return data if isinstance(data, str) and data != self.RAW_RESULT else None
-
-    @property
-    def comparison_run_id(self) -> str | None:
-        data = self.comparison_combo.currentData()
-        return data if isinstance(data, str) and data != self.NO_COMPARISON else None
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -223,15 +216,6 @@ class ProcessingWorkbench(QWidget):
         self.overlay_check.setChecked(True)
         self.overlay_check.toggled.connect(self.canvas_overlay_enabled)
         layout.addWidget(self.overlay_check)
-        row = QHBoxLayout()
-        row.addWidget(CaptionLabel("A/B", card))
-        self.comparison_combo = ComboBox(card)
-        self.comparison_combo.setMinimumWidth(174)
-        self.comparison_combo.currentIndexChanged.connect(
-            lambda _index: self.comparisonSelectionChanged.emit()
-        )
-        row.addWidget(self.comparison_combo, 1)
-        layout.addLayout(row)
         return card
 
     def _build_transport(self, parent: QWidget) -> SimpleCardWidget:
@@ -324,7 +308,6 @@ class ProcessingWorkbench(QWidget):
             self.result_combo.addItem(_run_label(run), userData=run.run_id)
         self.result_combo.setCurrentIndex(1 if self._runs else 0)
         self.result_combo.blockSignals(False)
-        self._rebuild_comparison(emit=False)
         self._update_result_detail()
         self.export_button.setEnabled(self.primary_run_id is not None)
         self.resultSelectionChanged.emit()
@@ -416,7 +399,6 @@ class ProcessingWorkbench(QWidget):
 
     def canvas_overlay_enabled(self, enabled: bool) -> None:
         self.canvas.set_primary_overlay_enabled(enabled)
-        self.canvas.set_comparison_overlay_enabled(enabled)
 
     def clear_media(self) -> None:
         self.canvas.clear()
@@ -427,30 +409,13 @@ class ProcessingWorkbench(QWidget):
         self.spatial_canvas.set_scene_state(None)
         self.clip_timeline.set_clips(())
         self.result_combo.clear()
-        self.comparison_combo.clear()
         self.result_detail.setText("当前显示原始视频")
         self.vio_detail.setText("SLAM/VIO：未加载离线轨迹")
 
     def _primary_result_changed(self, _index: int) -> None:
-        self._rebuild_comparison(emit=False)
         self._update_result_detail()
         self.export_button.setEnabled(self.primary_run_id is not None)
         self.resultSelectionChanged.emit()
-
-    def _rebuild_comparison(self, *, emit: bool = True) -> None:
-        primary = self.primary_run_id
-        self.comparison_combo.blockSignals(True)
-        self.comparison_combo.clear()
-        self.comparison_combo.addItem("关闭对比", userData=self.NO_COMPARISON)
-        for run in self._runs:
-            if run.run_id != primary:
-                self.comparison_combo.addItem(_short_run_label(run), userData=run.run_id)
-        # A/B is an explicit inspection mode. Do not carry a previous
-        # comparison into a newly loaded clip or refreshed result list.
-        self.comparison_combo.setCurrentIndex(0)
-        self.comparison_combo.blockSignals(False)
-        if emit:
-            self.comparisonSelectionChanged.emit()
 
     def _update_result_detail(self) -> None:
         run_id = self.primary_run_id
@@ -493,10 +458,6 @@ class ProcessingWorkbench(QWidget):
 def _run_label(run: ProcessingRunInfo) -> str:
     scope = "会话" if run.clip_id is None else "片段"
     return f"{run.preset.display_name} · {scope} · {run.run_id[-8:]}"
-
-
-def _short_run_label(run: ProcessingRunInfo) -> str:
-    return f"{run.preset.display_name} · {run.run_id[-8:]}"
 
 
 def _clock(seconds: float) -> str:

@@ -91,7 +91,6 @@ class VideoProcessingView(QWidget):
         self.workbench.processRequested.connect(self._process_current_clip)
         self.workbench.exportRequested.connect(self._export_current_result)
         self.workbench.resultSelectionChanged.connect(self._clear_result_queries)
-        self.workbench.comparisonSelectionChanged.connect(self._clear_result_queries)
 
         # Stable compatibility handles for render tests and canvas consumers.
         self.canvas = self.workbench.canvas
@@ -363,26 +362,23 @@ class VideoProcessingView(QWidget):
         self._resolve_result_queries(key)
 
     def _query_results(self, frame: PlaybackFrame) -> None:
-        for layer, run_id in (
-            ("primary", self.workbench.primary_run_id),
-            ("comparison", self.workbench.comparison_run_id),
-        ):
-            if run_id is None:
-                continue
-            existing = self._result_futures.get(layer)
-            if existing is not None and not existing[1].done():
-                continue
-            key = (frame.session_id, frame.clip_id, frame.frame_index, frame.session_time_ns)
-            self._result_futures[layer] = (
-                key,
-                self.runtime.processing_result(
-                    frame.session_id,
-                    run_id,
-                    frame.clip_id,
-                    frame.frame_index,
-                    frame.session_time_ns,
-                ),
-            )
+        run_id = self.workbench.primary_run_id
+        if run_id is None:
+            return
+        existing = self._result_futures.get("primary")
+        if existing is not None and not existing[1].done():
+            return
+        key = (frame.session_id, frame.clip_id, frame.frame_index, frame.session_time_ns)
+        self._result_futures["primary"] = (
+            key,
+            self.runtime.processing_result(
+                frame.session_id,
+                run_id,
+                frame.clip_id,
+                frame.frame_index,
+                frame.session_time_ns,
+            ),
+        )
 
     def _resolve_result_queries(self, frame_key: tuple[str, str, int, int]) -> None:
         refresh_current_frame = False
@@ -398,11 +394,8 @@ class VideoProcessingView(QWidget):
             if key != frame_key:
                 refresh_current_frame = True
                 continue
-            if layer == "primary":
-                self.canvas.set_overlay(result)
-                self.workbench.set_hand_result(result)
-            else:
-                self.canvas.set_comparison_overlay(result)
+            self.canvas.set_overlay(result)
+            self.workbench.set_hand_result(result)
         if refresh_current_frame:
             frame = self.replay.snapshot().frame
             if frame is not None:
@@ -411,7 +404,6 @@ class VideoProcessingView(QWidget):
     def _clear_result_queries(self) -> None:
         self._result_futures.clear()
         self.canvas.set_overlay(None)
-        self.canvas.set_comparison_overlay(None)
         self.workbench.set_hand_result(None)
         frame = self.replay.snapshot().frame
         if frame is not None and not self.showing_hall:

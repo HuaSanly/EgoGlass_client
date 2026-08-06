@@ -433,11 +433,10 @@ def test_processing_video_and_space_views_consume_the_same_playback_frame(
         view.workbench.set_runs(
             (
                 _processing_run("run-primary", completed_at_unix_ns=3_000_000_000),
-                _processing_run("run-comparison"),
+                _processing_run("run-older"),
             ),
             "connection",
         )
-        view.workbench.comparison_combo.setCurrentIndex(1)
 
         def completed_result(*_values: object) -> Future[dict[str, object]]:
             future: Future[dict[str, object]] = Future()
@@ -462,34 +461,8 @@ def test_processing_video_and_space_views_consume_the_same_playback_frame(
         assert view.spatial_canvas.status().latest_frame_index == 12
         assert view.spatial_canvas.status().has_imu_pose
         assert view.spatial_canvas.status().has_left_hand
-        assert view.canvas._comparison_overlay is result
         assert view.findChildren(VideoCanvas) == [view.canvas]
         assert view.findChildren(SpatialSyncCanvas) == [view.spatial_canvas]
-    finally:
-        window.close()
-        qt_application.processEvents()
-
-
-def test_workbench_result_refresh_starts_with_a_b_comparison_disabled(
-    qt_application: QApplication,
-) -> None:
-    runtime = RuntimeStub()
-    window = MainWindow(runtime)  # type: ignore[arg-type]
-    try:
-        workbench = window.processing_view.workbench
-        runs = (
-            _processing_run("run-primary"),
-            _processing_run("run-comparison"),
-        )
-        workbench.set_runs(runs, "clip")
-        assert workbench.comparison_run_id is None
-
-        workbench.comparison_combo.setCurrentIndex(1)
-        assert workbench.comparison_run_id == "run-comparison"
-
-        workbench.set_runs(runs, "clip")
-        assert workbench.comparison_run_id is None
-        assert workbench.comparison_combo.currentIndex() == 0
     finally:
         window.close()
         qt_application.processEvents()
@@ -607,7 +580,7 @@ def test_hall_processing_state_maps_the_latest_applicable_job() -> None:
     assert _processing_states((running,), session) == {clip_id: "处理中"}
 
 
-def test_workbench_selects_latest_valid_result_and_filters_ab_by_clip() -> None:
+def test_workbench_selects_latest_valid_result_and_filters_runs_by_clip() -> None:
     window = MainWindow(RuntimeStub())  # type: ignore[arg-type]
     try:
         workbench = window.processing_view.workbench
@@ -629,8 +602,6 @@ def test_workbench_selects_latest_valid_result_and_filters_ab_by_clip() -> None:
 
         assert workbench.result_combo.count() == 3
         assert workbench.primary_run_id == "newer"
-        assert workbench.comparison_combo.findData("other-clip") == -1
-        assert workbench.comparison_combo.findData("older") >= 0
         workbench.result_combo.setCurrentIndex(0)
         assert workbench.primary_run_id is None
     finally:
@@ -789,6 +760,45 @@ def test_video_canvas_keeps_rgb_frame_alive_and_paints_it(
     assert canvas.status().latest_frame_index == 3
 
 
+def test_primary_hand_overlay_never_draws_a_center_divider(
+    qt_application: QApplication,
+) -> None:
+    canvas = VideoCanvas()
+    canvas.resize(960, 720)
+    canvas.set_frame(_frame(3))
+    assert canvas.set_overlay(_hand_result(frame_index=3))
+
+    image = canvas.grab().toImage()
+    qt_application.processEvents()
+    midpoint_x = canvas.width() // 2
+    center_pixels = [image.pixelColor(midpoint_x, y) for y in (60, 240, 360, 600)]
+
+    assert all(max(color.red(), color.green(), color.blue()) < 8 for color in center_pixels)
+    assert canvas.status().overlay_visible
+
+
+def test_video_workbench_has_no_ab_comparison_control_or_overlay_path() -> None:
+    repository = Path(__file__).parents[1]
+    sources = "\n".join(
+        (repository / path).read_text(encoding="utf-8")
+        for path in (
+            "ui/widgets/video_canvas.py",
+            "ui/video_processing/workbench.py",
+            "ui/views/video_processing.py",
+        )
+    )
+
+    for removed_symbol in (
+        "comparison_combo",
+        "comparison_run_id",
+        "comparisonSelectionChanged",
+        "set_comparison_overlay",
+        "_comparison_overlay",
+        'CaptionLabel("A/B"',
+    ):
+        assert removed_symbol not in sources
+
+
 def test_overlay_reuses_a_recent_same_stream_result_with_a_finite_age(
     qt_application: QApplication,
 ) -> None:
@@ -857,7 +867,7 @@ def test_overlay_waits_for_a_future_result_frame_and_clears_on_reconnect(
     qt_application.processEvents()
 
 
-def test_playback_seek_backwards_replaces_primary_and_comparison_overlays(
+def test_playback_seek_backwards_replaces_the_primary_overlay(
     qt_application: QApplication,
 ) -> None:
     canvas = VideoCanvas()
@@ -869,9 +879,6 @@ def test_playback_seek_backwards_replaces_primary_and_comparison_overlays(
     assert canvas.set_overlay(
         _hand_result(include_right=False, frame_index=20, sequence_id="clip")
     )
-    assert canvas.set_comparison_overlay(
-        _hand_result(include_right=True, frame_index=20, sequence_id="clip")
-    )
 
     canvas.set_frame(
         PlaybackFrame("session", "clip", 5, 5_000_000, 105_000_000, image)
@@ -880,9 +887,6 @@ def test_playback_seek_backwards_replaces_primary_and_comparison_overlays(
     assert canvas.status().latest_overlay_frame_index is None
     assert canvas.set_overlay(
         _hand_result(include_right=False, frame_index=5, sequence_id="clip")
-    )
-    assert canvas.set_comparison_overlay(
-        _hand_result(include_right=True, frame_index=5, sequence_id="clip")
     )
     assert canvas.status().latest_overlay_frame_index == 5
     assert canvas.status().overlay_visible
