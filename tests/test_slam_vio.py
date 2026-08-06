@@ -132,6 +132,7 @@ def test_basalt_calibration_uses_rectified_matrix_and_t_imu_cam() -> None:
     }
     assert payload["value0"]["T_imu_cam"][0]["px"] == 0.1
     assert payload["value0"]["T_imu_cam"][0]["qw"] == 1.0
+    assert payload["value0"]["vignette"] == []
 
 
 def test_imu_union_is_interpolated_without_extrapolation() -> None:
@@ -152,7 +153,7 @@ def test_euroc_export_writes_images_csv_and_manifest(tmp_path: Path) -> None:
     assert (dataset.root / "mav0/cam0/data/000000.png").is_file()
     assert (dataset.root / "calibration.json").is_file()
     with dataset.camera_data_csv.open(newline="", encoding="utf-8") as stream:
-        assert list(csv.reader(stream))[1] == ["1000", "data/000000.png"]
+        assert list(csv.reader(stream))[1] == ["1000", "000000.png"]
     manifest = json.loads((dataset.root / "export.json").read_text(encoding="utf-8"))
     assert manifest["interpolated_imu_count"] == 3
 

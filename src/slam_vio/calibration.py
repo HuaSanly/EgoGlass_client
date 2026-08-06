@@ -133,5 +133,8 @@ def calibration_to_basalt_json(
         "accel_bias_std": [float(noise.accelerometer_random_walk_m_s3_sqrt_hz)] * 3,
         "gyro_bias_std": [float(noise.gyroscope_random_walk_rad_s2_sqrt_hz)] * 3,
         "cam_time_offset_ns": 0,
+        # Basalt's cereal calibration schema always serializes one vignette
+        # spline per camera. An empty list explicitly means no vignette model.
+        "vignette": [],
     }
     return {"value0": values}

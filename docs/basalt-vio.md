@@ -54,3 +54,26 @@ queue is imported by this command.
 The checked-in `config/basalt-euroc-config.json` follows Basalt's official
 EuRoC offline defaults. `config/basalt-vio.yaml` controls the executable,
 thread count, GUI flag, precision, frame limit, and calibration policy.
+
+## Windows native build
+
+Basalt is kept outside this repository because it is a native third-party
+dependency. The tested Windows build uses Basalt commit `0f3b2b5` in
+`<workspace>/.tools/basalt-src`, Visual Studio 2022 x64 tools, and the bundled
+vcpkg tree. Build the `relwithdebinfo` preset with `basalt_vio` as the target,
+then add both the build directory and its vcpkg runtime directory to `PATH`:
+
+```powershell
+$basaltBuild = "F:\data\Project\EgoGlass\.tools\basalt-src\build\relwithdebinfo"
+$env:PATH = "$basaltBuild;$basaltBuild\vcpkg_installed\x64-windows\bin;$env:PATH"
+```
+
+The Basalt EuRoC reader in this Windows build accepts a monocular dataset when
+`mav0/cam1/data.csv` is absent. This is required for the current glasses
+capture, which has one camera. The exporter writes the standard EuRoC CSV form
+with bare image filenames; Basalt adds `cam0/data/` while reading them.
+
+The smoke run used session `224a88e7342e4702acea0c7d2a2cb6db` at 640x480 and
+produced 360 poses from 361 frames. The sample calibration is not measured, so
+that run required `--allow-unverified-calibration`; its trajectory is only an
+I/O integration check, not a calibrated motion result.

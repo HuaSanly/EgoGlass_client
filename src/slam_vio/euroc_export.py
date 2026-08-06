@@ -168,7 +168,10 @@ class BasaltEuRoCExporter:
                 if not encoded_ok:
                     raise BasaltExportError(f"failed to write image {image_path}")
                 image_path.write_bytes(encoded.tobytes())
-                writer.writerow([bundle.session_time_ns, f"data/{filename}"])
+                # EuRoC stores paths relative to cam0/data. Basalt's reader
+                # adds that directory itself, so the CSV must contain only
+                # the image filename.
+                writer.writerow([bundle.session_time_ns, filename])
 
         imu_rows, skipped = synchronize_imu_samples(frame_imu.values())
         with imu_csv.open("w", encoding="utf-8", newline="") as stream:
