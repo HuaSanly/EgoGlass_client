@@ -11,7 +11,7 @@ from .models import (
     BasaltRunResult,
     BasaltUnavailableError,
 )
-from .runner import BasaltVioRunner, parse_euroc_trajectory
+from .runner import BasaltVioRunner, parse_euroc_trajectory, resolve_basalt_executable
 
 __all__ = [
     "BasaltConfigError",
@@ -27,5 +27,6 @@ __all__ = [
     "calibration_is_verified",
     "calibration_to_basalt_json",
     "parse_euroc_trajectory",
+    "resolve_basalt_executable",
     "synchronize_imu_samples",
 ]

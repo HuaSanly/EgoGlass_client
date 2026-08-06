@@ -48,6 +48,12 @@ conda run -n egoglass python src\run_vio.py `
   --output local-data\vio-runs\<run-id>
 ```
 
+The Python adapter resolves the executable from an explicit configuration path,
+`EGOGLASS_BASALT_EXE`, the process `PATH`, or the workspace-local Windows build
+at `<workspace>/.tools/basalt-src/build/relwithdebinfo/basalt_vio.exe`. The local
+build and its vcpkg DLL directory are added to the child process environment, so
+the CLI does not need to be launched through `start-client.ps1`.
+
 The output contains the EuRoC dataset, generated calibration, `trajectory.csv`,
 `run.json`, and captured Basalt stdout/stderr. `trajectory.csv` is parsed into
 `schemas.VioTrajectory` and `schemas.VioPose` objects. No Qt, gateway, or task

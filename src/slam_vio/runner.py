@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import shutil
 import subprocess
 from collections.abc import Iterable
@@ -19,6 +20,59 @@ from .models import (
     BasaltRunResult,
     BasaltUnavailableError,
 )
+
+_DEFAULT_EXECUTABLE_NAMES = frozenset({"basalt_vio", "basalt_vio.exe"})
+
+
+def resolve_basalt_executable(
+    configured: str,
+    *,
+    workspace_root: Path | None = None,
+) -> Path | None:
+    """Resolve Basalt from an explicit path, environment, PATH, or local build."""
+
+    configured_path = Path(configured).expanduser()
+    if configured_path.is_file():
+        return configured_path.resolve()
+    discovered = shutil.which(configured)
+    if discovered is not None:
+        return Path(discovered).resolve()
+    if configured_path.name.lower() not in _DEFAULT_EXECUTABLE_NAMES:
+        return None
+
+    environment_path = os.environ.get("EGOGLASS_BASALT_EXE")
+    if environment_path:
+        candidate = Path(environment_path).expanduser()
+        if candidate.is_file():
+            return candidate.resolve()
+
+    root = workspace_root or Path(__file__).resolve().parents[3]
+    executable_name = "basalt_vio.exe" if os.name == "nt" else "basalt_vio"
+    candidate = (
+        root
+        / ".tools"
+        / "basalt-src"
+        / "build"
+        / "relwithdebinfo"
+        / executable_name
+    )
+    return candidate.resolve() if candidate.is_file() else None
+
+
+def _basalt_subprocess_environment(executable: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    if os.name != "nt":
+        return environment
+    build_directory = executable.parent
+    dependency_directory = build_directory / "vcpkg_installed" / "x64-windows" / "bin"
+    search_paths = [str(build_directory)]
+    if dependency_directory.is_dir():
+        search_paths.append(str(dependency_directory))
+    current_path = environment.get("PATH", "")
+    if current_path:
+        search_paths.append(current_path)
+    environment["PATH"] = os.pathsep.join(search_paths)
+    return environment
 
 
 def parse_euroc_trajectory(path: str | Path) -> VioTrajectory:
@@ -98,11 +152,11 @@ class BasaltVioRunner:
             calibration=calibration,
             input_is_rectified=self.config.input_is_rectified,
         )
-        executable = shutil.which(self.config.executable) or self.config.executable
-        if not Path(executable).exists() and shutil.which(executable) is None:
+        executable = resolve_basalt_executable(self.config.executable)
+        if executable is None:
             raise BasaltUnavailableError(f"Basalt executable not found: {self.config.executable}")
         command = [
-            executable,
+            str(executable),
             *self.config.executable_args,
             "--dataset-path",
             str(dataset.root),
@@ -139,6 +193,7 @@ class BasaltVioRunner:
                 capture_output=True,
                 text=True,
                 check=False,
+                env=_basalt_subprocess_environment(executable),
             )
         except OSError as exc:
             raise BasaltUnavailableError(

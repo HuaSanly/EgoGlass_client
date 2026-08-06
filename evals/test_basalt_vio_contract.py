@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import ast
-import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from slam_vio import resolve_basalt_executable
 
 
 def test_basalt_cli_is_ui_independent() -> None:
@@ -33,11 +33,11 @@ def test_basalt_config_defaults_to_quality_safe_flags() -> None:
 def test_native_basalt_help_when_configured() -> None:
     """Smoke-check the optional native executable without requiring it in CI."""
 
-    executable = os.environ.get("EGOGLASS_BASALT_EXE") or shutil.which("basalt_vio")
-    if not executable:
+    executable = resolve_basalt_executable("basalt_vio")
+    if executable is None:
         pytest.skip("Basalt native executable is not configured")
     completed = subprocess.run(
-        [executable, "--help"],
+        [str(executable), "--help"],
         capture_output=True,
         text=True,
         check=False,

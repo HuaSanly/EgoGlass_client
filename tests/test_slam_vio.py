@@ -23,6 +23,7 @@ from slam_vio import (
     BasaltVioRunner,
     calibration_to_basalt_json,
     parse_euroc_trajectory,
+    resolve_basalt_executable,
     synchronize_imu_samples,
 )
 
@@ -185,6 +186,28 @@ Path('trajectory.csv').write_text(
     assert result.command[0] == sys.executable
     assert result.dataset.root.is_dir()
     assert (tmp_path / "run" / "run.log").is_file()
+
+
+def test_resolver_finds_workspace_local_basalt_without_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    executable = (
+        tmp_path
+        / ".tools"
+        / "basalt-src"
+        / "build"
+        / "relwithdebinfo"
+        / ("basalt_vio.exe" if sys.platform == "win32" else "basalt_vio")
+    )
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"test executable")
+    monkeypatch.delenv("EGOGLASS_BASALT_EXE", raising=False)
+    monkeypatch.setattr("slam_vio.runner.shutil.which", lambda _value: None)
+
+    resolved = resolve_basalt_executable("basalt_vio", workspace_root=tmp_path)
+
+    assert resolved == executable.resolve()
 
 
 def test_runner_rejects_sample_calibration(tmp_path: Path) -> None:
