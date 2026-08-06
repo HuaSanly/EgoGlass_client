@@ -46,11 +46,20 @@ def test_native_basalt_help_when_configured() -> None:
     assert "--dataset-path" in completed.stdout
 
 
-def test_vio_route_is_offline_workbench_only() -> None:
+def test_vio_runs_inside_the_offline_processing_job() -> None:
     repository = Path(__file__).parents[1]
-    workbench_source = (repository / "ui" / "views" / "video_processing.py").read_text(
+    view_source = (repository / "ui" / "views" / "video_processing.py").read_text(
+        encoding="utf-8"
+    )
+    workbench_source = (repository / "ui" / "video_processing" / "workbench.py").read_text(
+        encoding="utf-8"
+    )
+    service_source = (repository / "ui" / "processing" / "service.py").read_text(
         encoding="utf-8"
     )
     live_source = (repository / "ui" / "views" / "home.py").read_text(encoding="utf-8")
-    assert "request_vio" in workbench_source
+    assert "处理当前视频" in workbench_source
+    assert "vioRequested" not in workbench_source
+    assert "offline_vio_runner" in service_source
+    assert "request_vio(" not in view_source
     assert "request_vio" not in live_source

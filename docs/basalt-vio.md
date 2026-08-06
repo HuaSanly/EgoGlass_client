@@ -80,16 +80,20 @@ I/O integration check, not a calibrated motion result.
 
 ## Native UI route
 
-The video-processing workbench now has a `运行 SLAM/VIO` action. It submits the
-same offline service used by the CLI, but stores the run under the selected
-session:
+The video-processing workbench has one `处理当前视频` action. That persistent
+offline job runs hand tracking first and then Basalt VIO for the same selected
+clip. There is no separate UI VIO task or live VIO route. The VIO stage starts
+after the hand-tracking model is released, and the processing job is marked
+complete only after both stages finish.
+
+The VIO stage stores its run under the selected session:
 
 ```text
 <session>/derived/vio/basalt/<run-id>/
 ```
 
-When the run completes, reopening the session workbench discovers the newest
-valid `trajectory.csv`. The spatial OpenGL view draws the complete trajectory
-and selects the pose nearest the shared playback `session_time_ns`, so video,
-hand results, and VIO remain on one timeline. The live collection view never
-starts this service and online inference is unchanged.
+When the processing job completes, reopening the session workbench discovers the
+newest valid `trajectory.csv`. The spatial OpenGL view draws the complete
+trajectory and selects the pose nearest the shared playback `session_time_ns`,
+so video, hand results, and VIO remain on one timeline. The live collection view
+never starts this service and online inference is unchanged.

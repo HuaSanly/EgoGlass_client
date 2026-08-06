@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -32,6 +33,7 @@ class VideoProcessingService:
         *,
         runner: SessionProcessingRunner | None = None,
         on_gpu_job_changed: Callable[[bool], None] | None = None,
+        offline_vio_runner: Callable[..., object] | None = None,
         configuration_provenance_provider: (
             Callable[[], tuple[int, Mapping[str, str], str]] | None
         ) = None,
@@ -43,6 +45,7 @@ class VideoProcessingService:
         )
         self.runner = runner or SessionProcessingRunner()
         self.on_gpu_job_changed = on_gpu_job_changed
+        self.offline_vio_runner = offline_vio_runner
         self.configuration_provenance_provider = configuration_provenance_provider
         self._condition = threading.Condition()
         self._stop_requested = False
@@ -314,12 +317,27 @@ class VideoProcessingService:
                 release_gpu = getattr(self.runner, "release_gpu", None)
                 if callable(release_gpu):
                     release_gpu()
-        except ProcessingCanceled:
+            if self.offline_vio_runner is not None:
+                if self._is_canceled(job.job_id):
+                    raise ProcessingCanceled("processing canceled")
+                self.store.update_progress(
+                    job.job_id,
+                    summary.input_frame_count,
+                    summary.input_frame_count,
+                    "Running offline SLAM/VIO",
+                )
+                self.offline_vio_runner(job.session_id, clip_id=job.clip_id)
+        except ProcessingCanceled as error:
+            self._mark_run_terminal(output, "canceled", str(error) or "processing canceled")
             current = self.store.require(job.job_id)
             if current.state is ProcessingJobState.CANCELING:
                 self.store.mark_canceled(job.job_id)
         except Exception as error:
             current = self.store.require(job.job_id)
+            terminal_state = (
+                "canceled" if current.state is ProcessingJobState.CANCELING else "failed"
+            )
+            self._mark_run_terminal(output, terminal_state, str(error))
             if current.state is ProcessingJobState.CANCELING:
                 self.store.mark_canceled(job.job_id)
             elif current.state in {ProcessingJobState.PREPARING, ProcessingJobState.RUNNING}:
@@ -342,15 +360,41 @@ class VideoProcessingService:
             self._notify_changed()
 
     def _complete(self, job_id: str, summary: ProcessingRunSummary) -> None:
+        detail = f"处理完成 {summary.inferred_frame_count} 帧手部追踪"
+        if self.offline_vio_runner is not None:
+            detail += "与 SLAM/VIO"
         self.store.complete(
             job_id,
-            f"完成 {summary.inferred_frame_count} 次推理，检测 {summary.detected_hand_count} 只手",
+            detail,
         )
 
     def _is_canceled(self, job_id: str) -> bool:
         with self._condition:
             stopping = self._stop_requested
         return stopping or self.store.require(job_id).state is ProcessingJobState.CANCELING
+
+    @staticmethod
+    def _mark_run_terminal(output: Path, state: str, error: str) -> None:
+        """Keep the persisted run in sync when a later pipeline stage fails."""
+
+        manifest = output / "run.json"
+        if not manifest.is_file():
+            return
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
+            payload["state"] = state
+            payload["completed_at_unix_ns"] = time.time_ns()
+            payload["error"] = error
+            temporary = manifest.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, manifest)
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
+            return
 
     def _notify_changed(self) -> None:
         with self._condition:

@@ -48,6 +48,11 @@ class VioRunInfo:
             return None
         return self.trajectory.pose_at(session_time_ns)
 
+    def covers_clip(self, clip_id: str) -> bool:
+        """Return whether this run contains the selected clip."""
+
+        return self.clip_id is None or self.clip_id == clip_id
+
 
 class OfflineVioService:
     """Run Basalt from the UI without joining the live inference path."""

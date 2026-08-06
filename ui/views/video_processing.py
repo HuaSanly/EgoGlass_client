@@ -50,7 +50,6 @@ class VideoProcessingView(QWidget):
             str, concurrent.futures.Future[tuple[VioRunInfo, ...]]
         ] = {}
         self._pending_vio_refreshes: set[str] = set()
-        self._vio_command_futures: dict[str, concurrent.futures.Future[VioRunInfo]] = {}
         self._result_futures: dict[
             str,
             tuple[
@@ -87,7 +86,6 @@ class VideoProcessingView(QWidget):
         self.workbench.exportRequested.connect(self._export_current_result)
         self.workbench.resultSelectionChanged.connect(self._clear_result_queries)
         self.workbench.comparisonSelectionChanged.connect(self._clear_result_queries)
-        self.workbench.vioRequested.connect(self._run_vio)
 
         # Stable compatibility handles for render tests and canvas consumers.
         self.canvas = self.workbench.canvas
@@ -112,7 +110,6 @@ class VideoProcessingView(QWidget):
         self._result_futures.clear()
         self._vio_run_futures.clear()
         self._pending_vio_refreshes.clear()
-        self._vio_command_futures.clear()
         self.workbench.clear_media()
         self.stack.setCurrentWidget(self.hall)
 
@@ -166,14 +163,33 @@ class VideoProcessingView(QWidget):
             for session_id in affected:
                 if session_id in self._sessions:
                     self._request_runs(session_id, force=True)
+                    self._request_vio_runs(session_id, force=True)
             for session_id, session in self._sessions.items():
                 self.hall.set_processing_states(
                     session_id,
                     _processing_states(processing.jobs, session),
                 )
+        if processing is not None and self._selection is not None:
+            active_job = next(
+                (
+                    job
+                    for job in processing.jobs
+                    if job.session_id == self._selection.session_id
+                    and (job.clip_id is None or job.clip_id == self._selection.clip_id)
+                    and job.state
+                    in {
+                        ProcessingJobState.QUEUED,
+                        ProcessingJobState.PREPARING,
+                        ProcessingJobState.RUNNING,
+                        ProcessingJobState.CANCELING,
+                    }
+                ),
+                None,
+            )
+            if active_job is not None:
+                self.workbench.set_vio_status("SLAM/VIO：随当前离线处理任务执行")
         self._resolve_run_futures()
         self._resolve_vio_futures()
-        self._resolve_vio_commands()
         self._resolve_thumbnails()
         if self.isVisible():
             self._drain_command_results()
@@ -298,14 +314,6 @@ class VideoProcessingView(QWidget):
                 self._pending_vio_refreshes.remove(session_id)
                 self._request_vio_runs(session_id, force=True)
 
-    def _resolve_vio_commands(self) -> None:
-        for session_id, future in tuple(self._vio_command_futures.items()):
-            if not future.done():
-                continue
-            del self._vio_command_futures[session_id]
-            self.workbench.vio_button.setEnabled(True)
-            self._request_vio_runs(session_id, force=True)
-
     def _resolve_thumbnails(self) -> None:
         for result in self.thumbnails.take_completed():
             self.hall.set_thumbnail(result.session_id, result.clip_id, result.image)
@@ -413,25 +421,6 @@ class VideoProcessingView(QWidget):
             clip_id=selection.clip_id,
             preset_id=None,
         )
-
-    def _run_vio(self) -> None:
-        selection = self._selection
-        if selection is None:
-            self._show_error("当前没有可运行 SLAM/VIO 的视频片段")
-            return
-        if self._vio_command_futures:
-            return
-        request = getattr(self.runtime, "request_vio", None)
-        if not callable(request):
-            self._show_error("当前运行时未启用离线 SLAM/VIO")
-            return
-        future = request(
-            selection.session_id,
-            clip_id=None,
-        )
-        self._vio_command_futures[selection.session_id] = future
-        self.workbench.vio_button.setEnabled(False)
-        self.workbench.vio_detail.setText("SLAM/VIO：正在处理完整会话")
 
     def _export_current_result(self) -> None:
         selection = self._selection

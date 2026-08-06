@@ -105,6 +105,11 @@ class UnifiedRuntimeHost:
             sensor_config_path=sensor_config_path,
             hand_tracking_config_path=config_directory / "live-hand-tracking.yaml",
         )
+        self.vio_processing = OfflineVioService(
+            recordings_root,
+            config_directory=config_directory,
+            allow_unverified_calibration=True,
+        )
         self.video_processing = VideoProcessingService(
             recordings_root,
             runner=SessionProcessingRunner(
@@ -113,12 +118,8 @@ class UnifiedRuntimeHost:
                 / "offline-hand-tracking.yaml",
             ),
             on_gpu_job_changed=self._on_gpu_job_changed,
+            offline_vio_runner=self.vio_processing.run,
             configuration_provenance_provider=self._configuration_provenance,
-        )
-        self.vio_processing = OfflineVioService(
-            recordings_root,
-            config_directory=config_directory,
-            allow_unverified_calibration=True,
         )
         self._apply_video_processing_defaults(
             self.configuration_service.snapshot()
@@ -289,19 +290,6 @@ class UnifiedRuntimeHost:
                 run_id,
                 clip_id,
             ),
-        )
-
-    def request_vio(
-        self,
-        session_id: str,
-        *,
-        clip_id: str | None = None,
-    ) -> concurrent.futures.Future[VioRunInfo]:
-        """Start offline Basalt VIO without touching live inference."""
-
-        return self._track_command(
-            "run-vio",
-            asyncio.to_thread(self.vio_processing.run, session_id, clip_id=clip_id),
         )
 
     def vio_runs(self, session_id: str) -> concurrent.futures.Future[tuple[VioRunInfo, ...]]:

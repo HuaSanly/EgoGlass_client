@@ -17,10 +17,12 @@ restart and require an explicit retry. A retry creates a new job so previous
 attempts and run artifacts remain inspectable.
 
 The first pipeline reuses the sensor preprocessing and HumanEgo-compatible hand
-tracking modules. Offline work owns the GPU while it runs; live video preview
-and recording remain active. The runtime drains in-flight live inference and
-releases that model before the offline runner starts, then releases the offline
-model before live inference may resume.
+tracking modules, then runs the offline Basalt VIO stage for the same selected
+clip. Offline work owns the GPU while it runs; live video preview and recording
+remain active. The runtime drains in-flight live inference and releases that
+model before the offline runner starts, then releases the offline hand-tracking
+model before Basalt starts. The processing job is complete only after both
+stages finish.
 
 Results are indexed by `clip_id`, `frame_index`, and `session_time_ns`.
 Playback reads the original MP4 and applies these structured results at display

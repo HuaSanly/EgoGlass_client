@@ -115,6 +115,55 @@ def test_service_runs_one_persistent_job_and_keeps_run_history(tmp_path: Path) -
         service.close()
 
 
+def test_service_runs_vio_as_part_of_the_same_processing_job(tmp_path: Path) -> None:
+    session_id = "a" * 32
+    (tmp_path / session_id).mkdir()
+    runner = FakeRunner()
+    vio_calls: list[tuple[str, str | None]] = []
+
+    def run_vio(session: str, *, clip_id: str | None = None) -> None:
+        vio_calls.append((session, clip_id))
+
+    service = VideoProcessingService(
+        tmp_path,
+        runner=runner,  # type: ignore[arg-type]
+        offline_vio_runner=run_vio,
+    )
+    service.start()
+    try:
+        job = service.enqueue(session_id, clip_id="b" * 32)
+        completed = _wait_for(service, ProcessingJobState.COMPLETED)
+        assert completed.job_id == job.job_id
+        assert vio_calls == [(session_id, "b" * 32)]
+        assert completed.detail == "处理完成 3 帧手部追踪与 SLAM/VIO"
+    finally:
+        service.close()
+
+
+def test_service_marks_the_combined_job_failed_when_vio_fails(tmp_path: Path) -> None:
+    session_id = "a" * 32
+    (tmp_path / session_id).mkdir()
+
+    def run_vio(_session: str, *, clip_id: str | None = None) -> None:
+        raise RuntimeError(f"VIO failed for {clip_id}")
+
+    service = VideoProcessingService(
+        tmp_path,
+        runner=FakeRunner(),  # type: ignore[arg-type]
+        offline_vio_runner=run_vio,
+    )
+    service.start()
+    try:
+        service.enqueue(session_id, clip_id="b" * 32)
+        failed = _wait_for(service, ProcessingJobState.FAILED)
+        assert failed.detail == "VIO failed for " + "b" * 32
+        run = service.list_runs(session_id)[0]
+        assert not run.is_viewable
+        assert run.unavailable_reason == "VIO failed for " + "b" * 32
+    finally:
+        service.close()
+
+
 def test_service_cancels_active_job_without_deleting_its_run(tmp_path: Path) -> None:
     session = tmp_path / ("a" * 32)
     session.mkdir()

@@ -100,7 +100,6 @@ class ProcessingWorkbench(QWidget):
     exportRequested = pyqtSignal()
     resultSelectionChanged = pyqtSignal()
     comparisonSelectionChanged = pyqtSignal()
-    vioRequested = pyqtSignal()
 
     RAW_RESULT = "__raw__"
     NO_COMPARISON = "__none__"
@@ -155,13 +154,9 @@ class ProcessingWorkbench(QWidget):
         row.addStretch(1)
         self.process_button = PrimaryPushButton("处理当前视频", self)
         self.process_button.setIcon(FluentIcon.PLAY)
+        self.process_button.setToolTip("逐帧运行手部追踪，并在同一离线任务中运行 SLAM/VIO")
         self.process_button.clicked.connect(self.processRequested)
         row.addWidget(self.process_button)
-        self.vio_button = PushButton("运行 SLAM/VIO", self)
-        self.vio_button.setIcon(FluentIcon.SYNC)
-        self.vio_button.setToolTip("对当前会话运行离线 Basalt VIO")
-        self.vio_button.clicked.connect(self.vioRequested)
-        row.addWidget(self.vio_button)
         row.addWidget(CaptionLabel("结果版本", self))
         self.result_combo = ComboBox(self)
         self.result_combo.setMinimumWidth(250)
@@ -328,7 +323,15 @@ class ProcessingWorkbench(QWidget):
 
     @property
     def selected_vio_run(self) -> VioRunInfo | None:
-        return next((run for run in self._vio_runs if run.is_viewable), None)
+        clip_id = self._initial_clip_id
+        return next(
+            (
+                run
+                for run in self._vio_runs
+                if run.is_viewable and (clip_id is None or run.covers_clip(clip_id))
+            ),
+            None,
+        )
 
     def set_vio_runs(self, runs: tuple[VioRunInfo, ...]) -> None:
         self._vio_runs = tuple(
@@ -356,6 +359,11 @@ class ProcessingWorkbench(QWidget):
             selected.trajectory if selected is not None else None,
             pose,
         )
+
+    def set_vio_status(self, text: str) -> None:
+        """Update the read-only VIO stage status without changing the canvas."""
+
+        self.vio_detail.setText(text)
 
     def set_replay(self, snapshot: ReplaySnapshot) -> None:
         self.play_button.setIcon(
