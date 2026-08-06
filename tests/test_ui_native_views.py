@@ -1015,13 +1015,13 @@ def test_spatial_sync_canvas_draws_both_hands_in_the_same_camera_reference() -> 
     assert canvas.status().has_right_hand
 
 
-def test_spatial_sync_canvas_uses_mesh_glasses_model() -> None:
+def test_spatial_sync_canvas_does_not_render_a_glasses_model() -> None:
     vertices, faces = _glasses_frame_mesh()
 
     assert vertices.shape[1] == 3
     assert faces.shape[1] == 3
-    assert len(vertices) > 300
-    assert len(faces) > 300
+    assert len(vertices) == 0
+    assert len(faces) == 0
 
 
 def test_spatial_sync_canvas_ignores_bad_hand_pose_data(

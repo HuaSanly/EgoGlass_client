@@ -19,6 +19,8 @@ from sensor_preprocessing import (
     RawFrameRef,
     RecordedImuPose,
     RecordedImuPoseTimeline,
+    SensorCalibration,
+    SensorPreprocessingConfig,
     build_recorded_imu_pose_timeline,
     derive_recorded_clock_mapping,
     frame_presentation_observation,
@@ -198,7 +200,12 @@ class _SessionDecoder:
 class ReplayPlayer:
     """Decode a capture session on its PTS-derived session timeline."""
 
-    def __init__(self) -> None:
+    def __init__(self, sensor_config_path: str | Path | None = None) -> None:
+        self._sensor_config_path = (
+            Path(sensor_config_path).expanduser().resolve()
+            if sensor_config_path is not None
+            else None
+        )
         self._commands: queue.Queue[_Command] = queue.Queue()
         self._lock = threading.Lock()
         self._snapshot = ReplaySnapshot()
@@ -335,7 +342,11 @@ class ReplayPlayer:
                         initial_clip_id is not None and not isinstance(initial_clip_id, str)
                     ):
                         raise TypeError("invalid session-open command")
-                    index = _index_capture_session(path, None)
+                    index = (
+                        _index_capture_session(path, None)
+                        if self._sensor_config_path is None
+                        else _index_capture_session(path, None, self._sensor_config_path)
+                    )
                 decoder = _SessionDecoder(index)
                 self._update(
                     state=ReplayState.PAUSED,
@@ -442,7 +453,11 @@ def _clip_spans(index: _SessionIndex) -> tuple[PlaybackClipSpan, ...]:
     )
 
 
-def _index_capture_session(session_path: Path, clip_id: str | None) -> _SessionIndex:
+def _index_capture_session(
+    session_path: Path,
+    clip_id: str | None,
+    sensor_config_path: Path | None = None,
+) -> _SessionIndex:
     reader = CaptureSessionReader.open(session_path, verify_media_hashes=False)
     all_frames = tuple(
         frame
@@ -496,10 +511,24 @@ def _index_capture_session(session_path: Path, clip_id: str | None) -> _SessionI
     clips.sort(key=lambda item: item.frames[0].session_time_ns)
     first_ns = clips[0].frames[0].session_time_ns
     last_ns = clips[-1].frames[-1].session_time_ns
+    orientation_kwargs: dict[str, object] = {}
+    orientation_config = None
+    if sensor_config_path is not None and sensor_config_path.is_file():
+        config = SensorPreprocessingConfig.load(sensor_config_path)
+        calibration = SensorCalibration.load(config.calibration_file)
+        orientation_config = config.imu_orientation
+        orientation_kwargs = {
+            "raw_imu_to_body_axes": calibration.imu.raw_imu_to_body_axes,
+            "gyroscope_bias_rad_s": calibration.imu.gyroscope_bias_rad_s,
+            "accelerometer_bias_m_s2": calibration.imu.accelerometer_bias_m_s2,
+            "accelerometer_scale": calibration.imu.accelerometer_scale,
+        }
     imu_timeline = build_recorded_imu_pose_timeline(
         reader.session.session_id,
         imu_samples,
         mapper,
+        orientation_config=orientation_config,
+        **orientation_kwargs,
     )
     return _SessionIndex(
         reader.session.session_id,

@@ -18,7 +18,7 @@ from typing import Any
 import uvicorn
 
 from hand_tracking.runtime import HandTrackingRuntime, HandTrackingRuntimeConfig
-from sensor_preprocessing import SensorCalibration
+from sensor_preprocessing import SensorCalibration, SensorPreprocessingConfig
 from ui.configuration import (
     ConfigApplyResult,
     ConfigImpact,
@@ -83,23 +83,28 @@ class UnifiedRuntimeHost:
     ) -> None:
         self.config = config
         self.pairing_token = config.pairing_token or secrets.token_urlsafe(24)
+        recordings_root = config.recordings_root.expanduser().resolve()
+        self.configuration_service = configuration_service or ConfigurationService(
+            recordings_root=recordings_root,
+        )
+        config_directory = self.configuration_service.config_directory
+        sensor_config_path = config_directory / "sensor-preprocessing.yaml"
+        sensor_config = SensorPreprocessingConfig.load(sensor_config_path)
+        self.sensor_calibration = SensorCalibration.load(sensor_config.calibration_file)
+        self.imu_preview = ImuPreviewRuntime(
+            orientation_config=sensor_config.imu_orientation,
+            calibration=self.sensor_calibration,
+        )
         self.frame_buffer = LiveFrameBuffer()
-        self.imu_preview = ImuPreviewRuntime()
         self.webrtc = WebRtcSessionRuntime(
             self.pairing_token,
             display_frame_sink=self.frame_buffer,
             display_imu_sink=self.imu_preview,
         )
-        recordings_root = config.recordings_root.expanduser().resolve()
-        self.configuration_service = configuration_service or ConfigurationService(
-            recordings_root=recordings_root,
-        )
         self.recording = RecordingRuntime(
             recordings_root,
             lambda: self.webrtc.recording_source(),
         )
-        config_directory = self.configuration_service.config_directory
-        sensor_config_path = config_directory / "sensor-preprocessing.yaml"
         self.perception = HandTrackingRuntime(
             runtime_config_path=config_directory / "perception-runtime.yaml",
             sensor_config_path=sensor_config_path,

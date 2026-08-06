@@ -109,7 +109,8 @@ def calibration_to_basalt_json(
             },
         }
 
-    transform = np.asarray(calibration.transform_camera_to_imu, dtype=np.float64)
+    # Prepared IMU rows are already mapped into calibrated body axes.
+    transform = np.asarray(calibration.transform_camera_to_body, dtype=np.float64)
     qx, qy, qz, qw = _rotation_to_quaternion(transform[:3, :3])
     transform_payload = {
         "px": float(transform[0, 3]),

@@ -84,10 +84,12 @@ and future-job defaults. Restart-bound gateway values remain visibly pending.
 Device capture resolution and bitrate are read-only because the glasses own
 those settings.
 
-`SpatialSyncCanvas` uses pyqtgraph's `GLViewWidget` and PyOpenGL. It renders the
-glasses mesh, camera origin, camera XYZ axes, frustum, recorded IMU orientation,
-and both hands in rectified camera coordinates. It is a visualization of the
-camera frame, not a VIO world pose.
+`SpatialSyncCanvas` uses pyqtgraph's `GLViewWidget` and PyOpenGL. It renders a
+head coordinate frame and both hands, with a Fluent camera/world selector. The
+camera view shows only hands and camera XYZ axes. The world view uses the first
+Basalt pose as the display origin, applies the frozen camera-to-IMU extrinsic,
+and falls back to relative IMU orientation without translation when VIO is not
+available. No glasses mesh, frustum, or trajectory is drawn.
 
 ## Live capture
 

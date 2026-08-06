@@ -27,6 +27,7 @@ from ui.application.runtime_host import UnifiedRuntimeHost
 from ui.application.runtime_state import RuntimeSnapshot
 from ui.gateway.recording_models import RecordingState
 from ui.gateway.webrtc_models import StreamControlAction, StreamControlState
+from ui.presentation import SpatialReferenceFrame, build_spatial_scene_state
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
 from ui.widgets.status_indicator import StatusIndicator
 from ui.widgets.video_canvas import VideoCanvas
@@ -43,6 +44,8 @@ class HomeView(QWidget):
         self._closed = False
         self._live_session_id: str | None = None
         self._last_snapshot_revision = -1
+        self._spatial_pose = None
+        self._spatial_hand_result: dict[str, object] | None = None
 
         self._build()
         self._frame_timer = QTimer(self)
@@ -203,6 +206,10 @@ class HomeView(QWidget):
         layout.setSpacing(12)
 
         self.spatial_canvas = SpatialSyncCanvas(panel)
+        self.spatial_canvas.set_reference_frame(SpatialReferenceFrame.CAMERA)
+        self.spatial_canvas.reference_frame_changed.connect(
+            lambda _frame: self._refresh_spatial_scene()
+        )
         self.spatial_canvas.reset_pose_requested.connect(self.runtime.request_imu_pose_reset)
         layout.addWidget(self.spatial_canvas)
 
@@ -369,7 +376,8 @@ class HomeView(QWidget):
         self.perception_detail.setText(detail)
         latest = perception.get("latest_result")
         if not isinstance(latest, dict):
-            self.spatial_canvas.set_hand_result(None)
+            self._spatial_hand_result = None
+            self._refresh_spatial_scene()
             self.left_pose_badge.setText("--")
             self.left_pose_badge.setLevel(InfoLevel.INFOAMTION)
             self.right_pose_badge.setText("--")
@@ -377,7 +385,8 @@ class HomeView(QWidget):
             self.left_confidence.setText(_confidence_body(None))
             self.right_confidence.setText(_confidence_body(None))
             return
-        self.spatial_canvas.set_hand_result(latest)
+        self._spatial_hand_result = latest
+        self._refresh_spatial_scene()
         hands = latest.get("hands")
         left = _hand_for_side(hands, "left")
         right = _hand_for_side(hands, "right")
@@ -424,7 +433,8 @@ class HomeView(QWidget):
 
     def _update_imu(self, snapshot: RuntimeSnapshot) -> None:
         pose = snapshot.imu_pose
-        self.spatial_canvas.set_pose(pose)
+        self._spatial_pose = pose
+        self._refresh_spatial_scene()
         if pose is None or pose.samples_received == 0:
             self.imu_detail.setText("等待 IMU")
             self.imu_sync_badge.setText("--")
@@ -438,6 +448,27 @@ class HomeView(QWidget):
             f"{pose.recent_rate_hz:.1f} Hz · "
             f"R {pose.roll_degrees:.1f}° · P {pose.pitch_degrees:.1f}° · "
             f"Y {pose.yaw_degrees:.1f}°"
+        )
+
+    def _refresh_spatial_scene(self) -> None:
+        calibration = getattr(self.runtime, "sensor_calibration", None)
+        transform = (
+            calibration.transform_camera_to_body
+            if calibration is not None
+            else (
+                (1.0, 0.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0, 0.0),
+                (0.0, 0.0, 1.0, 0.0),
+                (0.0, 0.0, 0.0, 1.0),
+            )
+        )
+        self.spatial_canvas.set_scene_state(
+            build_spatial_scene_state(
+                self.spatial_canvas.reference_frame,
+                hand_result=self._spatial_hand_result,
+                imu_pose=self._spatial_pose,
+                transform_camera_to_imu=transform,
+            )
         )
 
     def _toggle_stream(self) -> None:

@@ -108,6 +108,7 @@ def run_session(
         "dataset_path": str(result.dataset.root),
         "command": list(result.command),
         "calibration_profile_id": preprocessing.calibration.calibration_profile_id,
+        "transform_camera_to_imu": preprocessing.calibration.transform_camera_to_body,
         "sensor_config_path": str(Path(sensor_config_path).resolve()),
         "sensor_config_sha256": _sha256(Path(sensor_config_path).resolve()),
         "basalt_config_path": str(Path(basalt_config_path).resolve()),

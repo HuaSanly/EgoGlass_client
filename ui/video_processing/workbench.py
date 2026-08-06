@@ -28,6 +28,7 @@ from qfluentwidgets import (
 )
 
 from schemas import VioPose
+from ui.presentation import SpatialReferenceFrame, build_spatial_scene_state
 from ui.processing import ProcessingRunInfo, VioRunInfo
 from ui.replay.player import PlaybackClipSpan, ReplayPlayer, ReplaySnapshot, ReplayState
 from ui.widgets.spatial_sync_canvas import SpatialSyncCanvas
@@ -113,6 +114,9 @@ class ProcessingWorkbench(QWidget):
         self._initial_clip_id: str | None = None
         self._runs: tuple[ProcessingRunInfo, ...] = ()
         self._vio_runs: tuple[VioRunInfo, ...] = ()
+        self._spatial_imu_pose = None
+        self._spatial_hand_result: dict[str, object] | None = None
+        self._spatial_vio_pose: VioPose | None = None
         self._build_ui()
 
     @property
@@ -274,6 +278,10 @@ class ProcessingWorkbench(QWidget):
             QSizePolicy.Policy.Expanding,
         )
         self.spatial_canvas.reset_pose_button.setVisible(False)
+        self.spatial_canvas.set_reference_frame(SpatialReferenceFrame.WORLD)
+        self.spatial_canvas.reference_frame_changed.connect(
+            lambda _frame: self._refresh_spatial_scene()
+        )
         layout.addWidget(self.spatial_canvas, 1)
         self.slice_markers = _ReadonlySlicePanel(
             "切片标记",
@@ -342,10 +350,8 @@ class ProcessingWorkbench(QWidget):
             )
         )
         selected = self.selected_vio_run
-        self.spatial_canvas.set_vio_trajectory(
-            selected.trajectory if selected is not None else None,
-            None,
-        )
+        self._spatial_vio_pose = None
+        self._refresh_spatial_scene()
         if selected is None:
             self.vio_detail.setText("SLAM/VIO：未加载离线轨迹")
         else:
@@ -354,10 +360,36 @@ class ProcessingWorkbench(QWidget):
             )
 
     def set_vio_pose(self, pose: VioPose | None) -> None:
+        self._spatial_vio_pose = pose
+        self._refresh_spatial_scene()
+
+    def set_imu_pose(self, pose: object | None) -> None:
+        self._spatial_imu_pose = pose
+        self._refresh_spatial_scene()
+
+    def set_hand_result(self, result: dict[str, object] | None) -> None:
+        self._spatial_hand_result = result
+        self._refresh_spatial_scene()
+
+    def _refresh_spatial_scene(self) -> None:
         selected = self.selected_vio_run
-        self.spatial_canvas.set_vio_trajectory(
-            selected.trajectory if selected is not None else None,
-            pose,
+        transform = selected.transform_camera_to_imu if selected is not None else None
+        self.spatial_canvas.set_scene_state(
+            build_spatial_scene_state(
+                self.spatial_canvas.reference_frame,
+                hand_result=self._spatial_hand_result,
+                imu_pose=self._spatial_imu_pose,
+                vio_pose=self._spatial_vio_pose,
+                vio_first_pose=selected.first_pose if selected is not None else None,
+                transform_camera_to_imu=transform
+                if transform is not None
+                else (
+                    (1.0, 0.0, 0.0, 0.0),
+                    (0.0, 1.0, 0.0, 0.0),
+                    (0.0, 0.0, 1.0, 0.0),
+                    (0.0, 0.0, 0.0, 1.0),
+                ),
+            )
         )
 
     def set_vio_status(self, text: str) -> None:
@@ -389,9 +421,10 @@ class ProcessingWorkbench(QWidget):
     def clear_media(self) -> None:
         self.canvas.clear()
         self._vio_runs = ()
-        self.spatial_canvas.set_pose(None)
-        self.spatial_canvas.set_vio_trajectory(None, None)
-        self.spatial_canvas.set_hand_result(None)
+        self._spatial_imu_pose = None
+        self._spatial_vio_pose = None
+        self._spatial_hand_result = None
+        self.spatial_canvas.set_scene_state(None)
         self.clip_timeline.set_clips(())
         self.result_combo.clear()
         self.comparison_combo.clear()

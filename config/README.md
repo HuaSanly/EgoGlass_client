@@ -21,8 +21,10 @@ tracker inference, or offline GPU job. The runtime applies immediate changes and
 reports the remaining levels to the operator.
 
 `sensor-preprocessing.yaml` is the sensor-preprocessing runtime configuration.
-It selects the calibration JSON and controls the common recorded, image, and
-live-path settings. Relative file paths are resolved from the YAML directory.
+It selects the calibration JSON and controls the common recorded, image, live,
+and shared IMU-orientation settings. Relative file paths are resolved from the
+YAML directory. `imu_orientation` contains fusion tuning; measured axis maps,
+biases, scales, noise, and camera-to-IMU extrinsics stay in the calibration JSON.
 
 `sensor-calibration-640x480-sample.json` is the active horizontal 4:3 integration
 profile. `sensor-calibration.sample.json` retains the previous 1280x720 profile

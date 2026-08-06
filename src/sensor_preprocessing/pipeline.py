@@ -27,6 +27,7 @@ from .clock_mapping import (
     frame_presentation_observation,
     imu_sensor_event_observation,
 )
+from .imu_orientation import ImuOrientationConfig
 from .models import (
     AlignmentStatus,
     ImuSensorType,
@@ -94,6 +95,32 @@ class ImuCalibration(BaseModel):
     accelerometer_random_walk_m_s3_sqrt_hz: float = Field(gt=0)
     gyroscope_noise_density_rad_s_sqrt_hz: float = Field(gt=0)
     gyroscope_random_walk_rad_s2_sqrt_hz: float = Field(gt=0)
+    raw_imu_to_body_axes: _Matrix3 = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+    gyroscope_bias_rad_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    accelerometer_bias_m_s2: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    accelerometer_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+
+    @model_validator(mode="after")
+    def validate_calibration_vectors(self) -> ImuCalibration:
+        axes = np.asarray(self.raw_imu_to_body_axes, dtype=np.float64)
+        vectors = (
+            np.asarray(self.gyroscope_bias_rad_s, dtype=np.float64),
+            np.asarray(self.accelerometer_bias_m_s2, dtype=np.float64),
+            np.asarray(self.accelerometer_scale, dtype=np.float64),
+        )
+        if not np.isfinite(axes).all() or not all(np.isfinite(value).all() for value in vectors):
+            raise ValueError("IMU calibration values must be finite")
+        if not np.allclose(axes.T @ axes, np.eye(3), atol=1e-6):
+            raise ValueError("raw IMU axis mapping must be orthonormal")
+        if not np.isclose(np.linalg.det(axes), 1.0, atol=1e-6):
+            raise ValueError("raw IMU axis mapping determinant must be +1")
+        if np.any(vectors[2] <= 0.0):
+            raise ValueError("accelerometer scale values must be positive")
+        return self
 
 
 class SensorCalibration(BaseModel):
@@ -170,6 +197,34 @@ class SensorCalibration(BaseModel):
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         return f"sensor-calibration-v1-{digest}"
 
+    @property
+    def transform_camera_to_body(self) -> _Matrix4:
+        """Return camera-to-body extrinsics after applying the raw IMU axis map."""
+
+        axis = np.eye(4, dtype=np.float64)
+        axis[:3, :3] = np.asarray(self.imu.raw_imu_to_body_axes, dtype=np.float64)
+        transform = axis @ np.asarray(self.transform_camera_to_imu, dtype=np.float64)
+        return tuple(tuple(float(value) for value in row) for row in transform)
+
+    def calibrate_imu_values(
+        self,
+        sensor_type: ImuSensorType,
+        values: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        """Map raw IMU values into the calibrated body frame."""
+
+        raw = np.asarray(values, dtype=np.float64)
+        if sensor_type is ImuSensorType.GYROSCOPE:
+            corrected = raw - np.asarray(self.imu.gyroscope_bias_rad_s, dtype=np.float64)
+        elif sensor_type is ImuSensorType.ACCELEROMETER:
+            corrected = (
+                raw - np.asarray(self.imu.accelerometer_bias_m_s2, dtype=np.float64)
+            ) * np.asarray(self.imu.accelerometer_scale, dtype=np.float64)
+        else:
+            corrected = raw
+        mapped = np.asarray(self.imu.raw_imu_to_body_axes, dtype=np.float64) @ corrected
+        return tuple(float(value) for value in mapped)
+
     @classmethod
     def load(cls, path: str | Path) -> SensorCalibration:
         """读取并严格验证标定 JSON；文件被选中后直接按其中参数运行。"""
@@ -222,6 +277,7 @@ class SensorPreprocessingConfig(BaseModel):
     )
     image: ImagePreprocessingConfig = Field(default_factory=ImagePreprocessingConfig)
     live: LivePreprocessingConfig = Field(default_factory=LivePreprocessingConfig)
+    imu_orientation: ImuOrientationConfig = Field(default_factory=ImuOrientationConfig)
 
     @classmethod
     def load(cls, path: str | Path) -> SensorPreprocessingConfig:
@@ -378,6 +434,7 @@ class SensorPreprocessingPipeline:
         recorded_config: RecordedPreprocessingConfig | None = None,
         image_config: ImagePreprocessingConfig | None = None,
         live_config: LivePreprocessingConfig | None = None,
+        orientation_config: ImuOrientationConfig | None = None,
     ) -> None:
         if not isinstance(calibration, SensorCalibration):
             raise TypeError("calibration must be a SensorCalibration")
@@ -395,11 +452,16 @@ class SensorPreprocessingPipeline:
             live_config, LivePreprocessingConfig
         ):
             raise TypeError("live_config must be a LivePreprocessingConfig")
+        if orientation_config is not None and not isinstance(
+            orientation_config, ImuOrientationConfig
+        ):
+            raise TypeError("orientation_config must be an ImuOrientationConfig")
         self.calibration = calibration
         self.clock_mapper = clock_mapper
         self.recorded_config = recorded_config or RecordedPreprocessingConfig()
         self.image_config = image_config or ImagePreprocessingConfig()
         self.live_config = live_config or LivePreprocessingConfig()
+        self.orientation_config = orientation_config or ImuOrientationConfig()
         self._map_x: NDArray[np.float32] | None = None
         self._map_y: NDArray[np.float32] | None = None
         self._initialize_rectification_maps()
@@ -430,6 +492,7 @@ class SensorPreprocessingPipeline:
             recorded_config=config.recorded,
             image_config=config.image,
             live_config=config.live,
+            orientation_config=config.imu_orientation,
         )
 
     def iter_recorded_session(
@@ -708,8 +771,8 @@ class SensorPreprocessingPipeline:
             estimate,
         )
 
-    @staticmethod
     def _prepared_imu(
+        self,
         sample_id: int,
         sequence_number: int,
         sensor_type: ImuSensorType,
@@ -721,6 +784,7 @@ class SensorPreprocessingPipeline:
         assert estimate.session_time_ns is not None
         assert estimate.uncertainty_ns is not None
         assert estimate.clock_mapping_id is not None
+        calibrated_values = self.calibration.calibrate_imu_values(sensor_type, values)
         return PreparedImuSample(
             sample_id=sample_id,
             sequence_number=sequence_number,
@@ -729,7 +793,7 @@ class SensorPreprocessingPipeline:
             timestamp_status=estimate.status,
             clock_mapping_id=estimate.clock_mapping_id,
             sensor_type=sensor_type,
-            values=values,
+            values=calibrated_values,
             unit=unit,
             accuracy=accuracy,
         )

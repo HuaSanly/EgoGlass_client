@@ -15,6 +15,11 @@ from .clock_mapping import (
     rokid_sdk_source_instance_id,
     rtp_match_error_to_uncertainty_ns,
 )
+from .imu_orientation import (
+    ImuOrientationConfig,
+    ImuOrientationFilter,
+    quaternion_to_euler_degrees,
+)
 from .imu_pose import (
     RecordedImuPose,
     RecordedImuPoseTimeline,
@@ -68,6 +73,8 @@ __all__ = [
     "ClockId",
     "ClockMappingSegment",
     "ImuSensorType",
+    "ImuOrientationConfig",
+    "ImuOrientationFilter",
     "ImuCalibration",
     "ImagePreprocessingConfig",
     "LiveFrameInput",
@@ -98,6 +105,7 @@ __all__ = [
     "client_perf_source_instance_id",
     "derive_recorded_clock_mapping",
     "build_recorded_imu_pose_timeline",
+    "quaternion_to_euler_degrees",
     "frame_callback_observation",
     "frame_presentation_observation",
     "frame_sdk_observation",

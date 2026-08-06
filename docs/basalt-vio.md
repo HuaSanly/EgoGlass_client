@@ -27,9 +27,11 @@ boundary timestamps are recorded in `export.json`.
 
 Basalt receives a generated `calibration.json` in its cereal format. The
 EgoGlass `transform_camera_to_imu` matrix is passed as Basalt's `T_imu_cam`,
-which maps a point from camera coordinates to IMU coordinates. Prepared frames
-are rectified by default, so the calibration uses a pinhole model and the
-rectified camera matrix to avoid applying distortion twice.
+which maps a point from camera coordinates to IMU coordinates. When a non-unit
+`raw_imu_to_body_axes` calibration is supplied, prepared IMU rows and the
+exported extrinsic use the corresponding camera-to-body transform. Prepared
+frames are rectified by default, so the calibration uses a pinhole model and
+the rectified camera matrix to avoid applying distortion twice.
 
 The repository sample calibration is deliberately unmeasured. The runner
 refuses it unless `allow_unverified_calibration` is enabled in the Basalt YAML

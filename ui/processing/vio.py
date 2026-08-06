@@ -33,6 +33,17 @@ class VioRunInfo:
     started_at_unix_ns: int
     completed_at_unix_ns: int | None
     trajectory: VioTrajectory | None
+    transform_camera_to_imu: tuple[
+        tuple[float, float, float, float],
+        tuple[float, float, float, float],
+        tuple[float, float, float, float],
+        tuple[float, float, float, float],
+    ] = (
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    )
     error: str | None = None
 
     @property
@@ -46,7 +57,11 @@ class VioRunInfo:
     def pose_at(self, session_time_ns: int) -> VioPose | None:
         if self.trajectory is None:
             return None
-        return self.trajectory.pose_at(session_time_ns)
+        return self.trajectory.pose_at(session_time_ns, max_gap_ns=100_000_000)
+
+    @property
+    def first_pose(self) -> VioPose | None:
+        return self.trajectory.poses[0] if self.trajectory and self.trajectory.poses else None
 
     def covers_clip(self, clip_id: str) -> bool:
         """Return whether this run contains the selected clip."""
@@ -153,6 +168,7 @@ class OfflineVioService:
         trajectory: VioTrajectory | None = None
         if state is VioRunState.COMPLETED:
             trajectory = parse_euroc_trajectory(directory / "trajectory.csv")
+        transform = _transform_from_payload(payload, directory)
         return VioRunInfo(
             run_id,
             session_id,
@@ -162,6 +178,7 @@ class OfflineVioService:
             started,
             completed,
             trajectory,
+            transform,
             str(error) if error else None,
         )
 
@@ -211,3 +228,67 @@ def _required_integer(payload: dict[str, object], key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"VIO manifest field {key!r} must be an integer")
     return value
+
+
+def _transform_from_payload(
+    payload: dict[str, object],
+    directory: Path,
+) -> tuple[tuple[float, float, float, float], ...]:
+    value = payload.get("transform_camera_to_imu")
+    if isinstance(value, list) and len(value) == 4:
+        try:
+            matrix = tuple(tuple(float(item) for item in row) for row in value)
+            if all(len(row) == 4 for row in matrix):
+                return matrix
+        except (TypeError, ValueError):
+            pass
+    # Older runs keep the frozen transform inside the exported Basalt dataset.
+    calibration_path = directory / "dataset" / "calibration.json"
+    try:
+        data = json.loads(calibration_path.read_text(encoding="utf-8"))
+        transform = data["value0"]["T_imu_cam"][0]
+        return _matrix_from_basalt_transform(transform)
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return (
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0, 1.0),
+        )
+
+
+def _matrix_from_basalt_transform(value: object) -> tuple[tuple[float, float, float, float], ...]:
+    if not isinstance(value, dict):
+        raise ValueError("invalid Basalt transform")
+    qw = float(value["qw"])
+    qx = float(value["qx"])
+    qy = float(value["qy"])
+    qz = float(value["qz"])
+    norm = (qw * qw + qx * qx + qy * qy + qz * qz) ** 0.5
+    if norm <= 1e-9:
+        raise ValueError("invalid Basalt quaternion")
+    qw, qx, qy, qz = (v / norm for v in (qw, qx, qy, qz))
+    px = float(value["px"])
+    py = float(value["py"])
+    pz = float(value["pz"])
+    return (
+        (
+            1 - 2 * (qy * qy + qz * qz),
+            2 * (qx * qy - qz * qw),
+            2 * (qx * qz + qy * qw),
+            px,
+        ),
+        (
+            2 * (qx * qy + qz * qw),
+            1 - 2 * (qx * qx + qz * qz),
+            2 * (qy * qz - qx * qw),
+            py,
+        ),
+        (
+            2 * (qx * qz - qy * qw),
+            2 * (qy * qz + qx * qw),
+            1 - 2 * (qx * qx + qy * qy),
+            pz,
+        ),
+        (0.0, 0.0, 0.0, 1.0),
+    )

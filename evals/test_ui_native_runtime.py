@@ -146,10 +146,13 @@ def test_spatial_sync_is_a_flat_opengl_sidebar_surface() -> None:
     assert "QLabel" not in indicator_source
     assert "scroll.viewport().setStyleSheet(\"background: transparent;\")" in source
     assert "GLViewWidget" in spatial_source
-    assert "GLMeshItem" in spatial_source
+    assert "GLMeshItem" not in spatial_source
     assert "_camera_points_to_scene" in spatial_source
     assert "_hand_to_scene" not in spatial_source
-    assert "keypoints_3d_camera_m" in spatial_source
+    presentation_source = (
+        repository / "ui" / "presentation" / "spatial_scene.py"
+    ).read_text(encoding="utf-8")
+    assert "keypoints_3d_camera_m" in presentation_source
     assert "imuPoseResetButton" in spatial_source
     assert "QColor(\"#f8fafc\")" in spatial_source
     assert "rgba(255, 255, 255, 0.14)" in spatial_source

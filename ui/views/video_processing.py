@@ -31,7 +31,13 @@ class VideoProcessingView(QWidget):
         super().__init__(parent)
         self.setObjectName("videoProcessingView")
         self.runtime = runtime
-        self.replay = ReplayPlayer()
+        configuration_service = getattr(runtime, "configuration_service", None)
+        sensor_config_path = (
+            configuration_service.config_directory / "sensor-preprocessing.yaml"
+            if configuration_service is not None
+            else None
+        )
+        self.replay = ReplayPlayer(sensor_config_path)
         self.thumbnails = VideoThumbnailService(workers=2)
         self._selection: _Selection | None = None
         self._library: RecordingLibrary | None = None
@@ -348,7 +354,7 @@ class VideoProcessingView(QWidget):
                     )
                 self.workbench.set_runs(self._runs.get(frame.session_id, ()), frame.clip_id)
             self.canvas.set_frame(frame)
-            self.spatial_canvas.set_pose(snapshot.imu_pose)
+            self.workbench.set_imu_pose(snapshot.imu_pose)
             selected_vio = self.workbench.selected_vio_run
             self.workbench.set_vio_pose(
                 selected_vio.pose_at(frame.session_time_ns) if selected_vio is not None else None
@@ -394,7 +400,7 @@ class VideoProcessingView(QWidget):
                 continue
             if layer == "primary":
                 self.canvas.set_overlay(result)
-                self.spatial_canvas.set_hand_result(result)
+                self.workbench.set_hand_result(result)
             else:
                 self.canvas.set_comparison_overlay(result)
         if refresh_current_frame:
@@ -406,7 +412,7 @@ class VideoProcessingView(QWidget):
         self._result_futures.clear()
         self.canvas.set_overlay(None)
         self.canvas.set_comparison_overlay(None)
-        self.spatial_canvas.set_hand_result(None)
+        self.workbench.set_hand_result(None)
         frame = self.replay.snapshot().frame
         if frame is not None and not self.showing_hall:
             self._query_results(frame)
