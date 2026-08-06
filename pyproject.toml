@@ -23,6 +23,7 @@ dependencies = [
   "PyQt6-Fluent-Widgets==1.11.2",
   "pydantic>=2.10,<3",
   "pyyaml>=6,<7",
+  "scipy>=1.14,<2",
   "uvicorn[standard]>=0.34,<1",
 ]
 

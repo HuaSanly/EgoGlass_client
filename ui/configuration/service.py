@@ -125,6 +125,20 @@ _OFFLINE_HAND_DEFAULTS: dict[str, object] = {
     "fallback_detector": "none",
     "allow_mediapipe_reconstruction_fallback": False,
     "vitpose_variant": "h",
+    "temporal_processing": {
+        "enabled": True,
+        "confidence_threshold": 0.3,
+        "interpolation_max_gap_frames": 20,
+        "minimum_segment_frames": 10,
+        "grasp_smoothing_window_frames": 5,
+        "grasp_flicker_max_frames": 5,
+        "sg_window_frames": 21,
+        "sg_polyorder": 2,
+        "orientation_ema_alpha": 0.15,
+        "minimum_smoothing_frames": 6,
+        "smoothing_fill_max_gap_frames": 10,
+        "maximum_vio_pose_gap_ms": 100,
+    },
 }
 _OFFLINE_HAND_INVARIANTS: dict[str, object] = {
     "device": "cuda",

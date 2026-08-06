@@ -21,10 +21,10 @@ The output is `HandTrackingResult` contract version `1.0`. Each hand contains:
 - the actual reconstruction backend, so MediaPipe fallback cannot be mistaken
   for HaMeR.
 
-No world coordinates are emitted. HumanEgo's `c2w` transform and world-space
-temporal optimizer require a same-time VIO pose. They will be connected only
-after VIO provides a real `T_camera_world`; the implementation never substitutes
-an identity transform.
+Per-frame inference emits camera coordinates. Offline finalization adds world
+coordinates only when the bound Basalt trajectory has a pose within 100 ms. It
+applies `T_w_i @ T_i_c @ p_camera`; it never substitutes an identity transform
+or IMU-only translation.
 
 ## Native Windows Environment
 
@@ -64,9 +64,10 @@ HaMeR. CUDA uses FP16 autocast only in the live profile; offline processing
 stays in full precision. All detector
 crops from one frame are collated into one HaMeR batch and one model forward.
 Each result reports preparation, detector, reconstruction, and postprocessing
-durations, reconstruction batch size, and whether AMP was active. This version
-does not interpolate missing detections, suppress short segments, or smooth
-results across frames.
+durations, reconstruction batch size, and whether AMP was active. The offline-only
+temporal processor filters low-confidence observations, fills bounded gaps,
+suppresses short segments, smooths grasp state twice, and applies Savitzky-Golay
+position plus EMA orientation optimization. Live scheduling remains unchanged.
 
 For HaMeR results with model-estimated depth, `final_confidence` is detector
 confidence multiplied by `reconstruction_quality`. The reconstruction quality
@@ -87,9 +88,9 @@ encode a separate live preview image.
 
 Offline hand tracking runs through `VideoProcessingService`. Each immutable run
 writes `run.json`, `results.sqlite`, and `run.log` under
-`<session>/derived/video-processing/<run-id>/`. Presets select inference stride;
-intermediate frames may hold the most recent same-clip result only within that
-explicit stride. The UI dynamically overlays structured results on original
+`<session>/derived/video-processing/<run-id>/`. New jobs infer every frame.
+Schema-v2 `results.sqlite` keeps raw inference in `raw_frame_results` and final
+results in `frame_results`. The UI dynamically overlays final results on original
 media. It encodes an annotated H.264 MP4 only after an explicit export.
 
 Before inference, the service derives one strict video/IMU session timeline

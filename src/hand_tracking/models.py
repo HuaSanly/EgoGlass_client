@@ -88,6 +88,40 @@ class MetricDepthStatus(StrEnum):
     PHYSICAL_SIZE_ESTIMATED = "physical_size_estimated"
 
 
+class TemporalSource(StrEnum):
+    """Whether a finalized hand came from inference or temporal interpolation."""
+
+    OBSERVED = "observed"
+    INTERPOLATED = "interpolated"
+
+
+class OfflineHandTemporalConfig(BaseModel):
+    """HumanEgo-derived sequence cleanup used only by offline processing."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    enabled: bool = True
+    confidence_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    interpolation_max_gap_frames: int = Field(default=20, ge=0, le=300)
+    minimum_segment_frames: int = Field(default=10, ge=1, le=3000)
+    grasp_smoothing_window_frames: int = Field(default=5, ge=1, le=301)
+    grasp_flicker_max_frames: int = Field(default=5, ge=0, le=300)
+    sg_window_frames: int = Field(default=21, ge=5, le=1001)
+    sg_polyorder: int = Field(default=2, ge=1, le=10)
+    orientation_ema_alpha: float = Field(default=0.15, gt=0.0, le=1.0)
+    minimum_smoothing_frames: int = Field(default=6, ge=2, le=3000)
+    smoothing_fill_max_gap_frames: int = Field(default=10, ge=0, le=300)
+    maximum_vio_pose_gap_ms: int = Field(default=100, ge=1, le=10_000)
+
+    @model_validator(mode="after")
+    def validate_filter_shape(self) -> OfflineHandTemporalConfig:
+        if self.sg_window_frames % 2 == 0:
+            raise ValueError("sg_window_frames must be odd")
+        if self.sg_polyorder >= self.sg_window_frames:
+            raise ValueError("sg_polyorder must be smaller than sg_window_frames")
+        return self
+
+
 class ModelSourceConfig(BaseModel):
     """Pinned upstream revisions used by the HumanEgo reproduction."""
 
@@ -127,6 +161,7 @@ class HandTrackingConfig(BaseModel):
     minimum_depth_m: float = Field(default=0.05, gt=0.0)
     maximum_depth_m: float = Field(default=3.0, gt=0.0)
     grasp_ratio_threshold: float = Field(default=1.0, gt=0.0)
+    temporal_processing: OfflineHandTemporalConfig | None = None
     sources: ModelSourceConfig = Field(default_factory=ModelSourceConfig)
 
     @model_validator(mode="after")
@@ -216,6 +251,93 @@ class HandReconstruction:
 
 
 @dataclass(frozen=True, slots=True)
+class HandTemporalMetadata:
+    """Per-hand provenance added by the offline temporal processor."""
+
+    source: TemporalSource
+    interpolation_source_frames: tuple[int, int] | None = None
+    vio_pose_timestamp_ns: int | None = None
+    vio_time_difference_ns: int | None = None
+    world_kinematics_available: bool = False
+    kinematics_optimized: bool = False
+
+    def __post_init__(self) -> None:
+        if self.source is TemporalSource.INTERPOLATED:
+            if self.interpolation_source_frames is None:
+                raise ValueError("interpolated hands require source frame indices")
+            start, end = self.interpolation_source_frames
+            if start < 0 or end <= start:
+                raise ValueError("interpolation source frames are invalid")
+        elif self.interpolation_source_frames is not None:
+            raise ValueError("observed hands cannot have interpolation source frames")
+        timing = (self.vio_pose_timestamp_ns, self.vio_time_difference_ns)
+        if self.world_kinematics_available and any(value is None for value in timing):
+            raise ValueError("world kinematics require VIO timing provenance")
+        if not self.world_kinematics_available and any(value is not None for value in timing):
+            raise ValueError("unavailable world kinematics cannot contain VIO timing")
+        if any(value is not None and value < 0 for value in timing):
+            raise ValueError("VIO timing values must be non-negative")
+        if self.kinematics_optimized and not self.world_kinematics_available:
+            raise ValueError("optimized kinematics require world kinematics")
+
+
+@dataclass(frozen=True, slots=True)
+class HandKinematics:
+    """HumanEgo-style raw and optimized world-space hand kinematics."""
+
+    keypoints_3d_world_m: FloatArray
+    wrist_pose_raw_world: FloatArray
+    wrist_pose_optimized_world: FloatArray
+    midpoint_pose_raw_world: FloatArray
+    midpoint_pose_optimized_world: FloatArray
+    thumb_tip_raw_world_m: FloatArray
+    thumb_tip_optimized_world_m: FloatArray
+    index_tip_raw_world_m: FloatArray
+    index_tip_optimized_world_m: FloatArray
+    thumb_base_raw_world_m: FloatArray
+    thumb_base_optimized_world_m: FloatArray
+    index_base_raw_world_m: FloatArray
+    index_base_optimized_world_m: FloatArray
+    wrist_linear_velocity_raw_m_s: FloatArray
+    wrist_linear_velocity_optimized_m_s: FloatArray
+    wrist_angular_velocity_raw_rad_s: FloatArray
+    wrist_angular_velocity_optimized_rad_s: FloatArray
+    midpoint_linear_velocity_raw_m_s: FloatArray
+    midpoint_linear_velocity_optimized_m_s: FloatArray
+    midpoint_angular_velocity_raw_rad_s: FloatArray
+    midpoint_angular_velocity_optimized_rad_s: FloatArray
+
+    def __post_init__(self) -> None:
+        _validate_array(self.keypoints_3d_world_m, (21, 3), "world hand keypoints")
+        for name in (
+            "wrist_pose_raw_world",
+            "wrist_pose_optimized_world",
+            "midpoint_pose_raw_world",
+            "midpoint_pose_optimized_world",
+        ):
+            _validate_array(getattr(self, name), (4, 4), name)
+        for name in (
+            "thumb_tip_raw_world_m",
+            "thumb_tip_optimized_world_m",
+            "index_tip_raw_world_m",
+            "index_tip_optimized_world_m",
+            "thumb_base_raw_world_m",
+            "thumb_base_optimized_world_m",
+            "index_base_raw_world_m",
+            "index_base_optimized_world_m",
+            "wrist_linear_velocity_raw_m_s",
+            "wrist_linear_velocity_optimized_m_s",
+            "wrist_angular_velocity_raw_rad_s",
+            "wrist_angular_velocity_optimized_rad_s",
+            "midpoint_linear_velocity_raw_m_s",
+            "midpoint_linear_velocity_optimized_m_s",
+            "midpoint_angular_velocity_raw_rad_s",
+            "midpoint_angular_velocity_optimized_rad_s",
+        ):
+            _validate_array(getattr(self, name), (3,), name)
+
+
+@dataclass(frozen=True, slots=True)
 class TrackedHand:
     """One hand in HumanEgo's Aria-compatible 21-joint order."""
 
@@ -234,6 +356,8 @@ class TrackedHand:
     joint_angles_degrees: Mapping[str, float]
     grasp_ratio: float
     is_grasping: bool
+    temporal: HandTemporalMetadata | None = None
+    kinematics: HandKinematics | None = None
 
     def __post_init__(self) -> None:
         _validate_array(self.keypoints_2d_px, (21, 2), "tracked 2D keypoints")
@@ -254,6 +378,10 @@ class TrackedHand:
             raise ValueError("grasp ratio must be finite and non-negative")
         if not all(np.isfinite(value) for value in self.joint_angles_degrees.values()):
             raise ValueError("joint angles must be finite")
+        if self.kinematics is not None and (
+            self.temporal is None or not self.temporal.world_kinematics_available
+        ):
+            raise ValueError("kinematics require matching temporal provenance")
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +468,8 @@ class HandTrackingResult:
                     "joint_angles_degrees": dict(hand.joint_angles_degrees),
                     "grasp_ratio": hand.grasp_ratio,
                     "is_grasping": hand.is_grasping,
+                    "temporal": _temporal_json(hand.temporal),
+                    "kinematics": _kinematics_json(hand.kinematics),
                 }
             )
         return {
@@ -449,6 +579,65 @@ def rotated_image_bbox_to_source(
             source_height_px - y1,
         )
     return source_width_px - y2, x1, source_width_px - y1, x2
+
+
+def _temporal_json(metadata: HandTemporalMetadata | None) -> dict[str, object] | None:
+    """Serialize offline provenance without exposing NumPy implementation details."""
+
+    if metadata is None:
+        return None
+    return {
+        "temporal_source": metadata.source.value,
+        "interpolation_source_frames": (
+            list(metadata.interpolation_source_frames)
+            if metadata.interpolation_source_frames is not None
+            else None
+        ),
+        "vio_pose_timestamp_ns": metadata.vio_pose_timestamp_ns,
+        "vio_time_difference_ns": metadata.vio_time_difference_ns,
+        "world_kinematics_available": metadata.world_kinematics_available,
+        "kinematics_optimized": metadata.kinematics_optimized,
+    }
+
+
+def _kinematics_json(kinematics: HandKinematics | None) -> dict[str, object] | None:
+    """Serialize all raw and optimized world-space values for offline replay."""
+
+    if kinematics is None:
+        return None
+    return {
+        "keypoints_3d_world_m": kinematics.keypoints_3d_world_m.tolist(),
+        "wrist_pose_raw_world": kinematics.wrist_pose_raw_world.tolist(),
+        "wrist_pose_optimized_world": kinematics.wrist_pose_optimized_world.tolist(),
+        "midpoint_pose_raw_world": kinematics.midpoint_pose_raw_world.tolist(),
+        "midpoint_pose_optimized_world": kinematics.midpoint_pose_optimized_world.tolist(),
+        "thumb_tip_raw_world_m": kinematics.thumb_tip_raw_world_m.tolist(),
+        "thumb_tip_optimized_world_m": kinematics.thumb_tip_optimized_world_m.tolist(),
+        "index_tip_raw_world_m": kinematics.index_tip_raw_world_m.tolist(),
+        "index_tip_optimized_world_m": kinematics.index_tip_optimized_world_m.tolist(),
+        "thumb_base_raw_world_m": kinematics.thumb_base_raw_world_m.tolist(),
+        "thumb_base_optimized_world_m": kinematics.thumb_base_optimized_world_m.tolist(),
+        "index_base_raw_world_m": kinematics.index_base_raw_world_m.tolist(),
+        "index_base_optimized_world_m": kinematics.index_base_optimized_world_m.tolist(),
+        "wrist_linear_velocity_raw_m_s": kinematics.wrist_linear_velocity_raw_m_s.tolist(),
+        "wrist_linear_velocity_optimized_m_s": (
+            kinematics.wrist_linear_velocity_optimized_m_s.tolist()
+        ),
+        "wrist_angular_velocity_raw_rad_s": kinematics.wrist_angular_velocity_raw_rad_s.tolist(),
+        "wrist_angular_velocity_optimized_rad_s": (
+            kinematics.wrist_angular_velocity_optimized_rad_s.tolist()
+        ),
+        "midpoint_linear_velocity_raw_m_s": kinematics.midpoint_linear_velocity_raw_m_s.tolist(),
+        "midpoint_linear_velocity_optimized_m_s": (
+            kinematics.midpoint_linear_velocity_optimized_m_s.tolist()
+        ),
+        "midpoint_angular_velocity_raw_rad_s": (
+            kinematics.midpoint_angular_velocity_raw_rad_s.tolist()
+        ),
+        "midpoint_angular_velocity_optimized_rad_s": (
+            kinematics.midpoint_angular_velocity_optimized_rad_s.tolist()
+        ),
+    }
 
 
 class HandDetector(Protocol):

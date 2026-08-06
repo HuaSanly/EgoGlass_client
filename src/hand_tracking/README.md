@@ -31,3 +31,14 @@ visible in logs and stored output.
 World-coordinate results are intentionally absent until VIO provides the same
 frame's `T_camera_world`. See `SOURCE.md` for copied-code provenance and license
 details.
+
+Offline processing then runs `OfflineHandTemporalProcessor` per clip and hand:
+
+```text
+confidence filter -> bounded interpolation -> short-segment suppression
+-> grasp smoothing -> SG/EMA world kinematics -> grasp smoothing
+```
+
+Raw inference remains immutable. Final hands carry observed/interpolated
+provenance and contain world kinematics only when the bound Basalt run has a
+pose within the configured timestamp tolerance.

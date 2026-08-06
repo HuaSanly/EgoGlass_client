@@ -28,6 +28,20 @@ minimum_depth_m: 0.05
 maximum_depth_m: 3.0
 grasp_ratio_threshold: 1.0
 
+temporal_processing:
+  enabled: true
+  confidence_threshold: 0.3
+  interpolation_max_gap_frames: 20
+  minimum_segment_frames: 10
+  grasp_smoothing_window_frames: 5
+  grasp_flicker_max_frames: 5
+  sg_window_frames: 21
+  sg_polyorder: 2
+  orientation_ema_alpha: 0.15
+  minimum_smoothing_frames: 6
+  smoothing_fill_max_gap_frames: 10
+  maximum_vio_pose_gap_ms: 100
+
 sources:
   hamer_code_revision: 3a01849f4148352e9260b69bf28b65d1671a4905
   hamer_weights_revision: f64df318d49e7e014a6a7f5d0547cba87d6e4317

@@ -38,6 +38,11 @@ quality policy fixes ViTPose-H, HaMeR, CUDA, FP32, and disables detector and
 reconstruction fallback. Its remaining thresholds take effect only for newly
 submitted tasks.
 
+Only `offline-hand-tracking.yaml` contains `temporal_processing`. It controls
+confidence filtering, interpolation and segment limits, grasp smoothing,
+Savitzky-Golay/EMA optimization, and VIO timestamp association. The live profile
+does not load these fields.
+
 If an installation contains only the former `hand-tracking.yaml`, the
 configuration service copies it once into `live-hand-tracking.yaml`, creates the
 offline quality profile, and records `hand_tracking_profiles_v2` in

@@ -3,9 +3,13 @@
 from .frame import FramePacket
 from .hand_tracking import (
     Handedness,
+    HandKinematics,
+    HandTemporalMetadata,
     HandTrackingConfig,
     HandTrackingError,
     HandTrackingResult,
+    OfflineHandTemporalConfig,
+    TemporalSource,
     TrackedHand,
 )
 from .imu import ImuPacket, ImuSensor
@@ -17,6 +21,7 @@ __all__ = [
     "AlgorithmRunMetadata",
     "FramePacket",
     "HandTrackingConfig",
+    "OfflineHandTemporalConfig",
     "HandTrackingError",
     "HandTrackingResult",
     "Handedness",
@@ -25,6 +30,9 @@ __all__ = [
     "PlaybackFrame",
     "ProcessingArtifactRef",
     "TrackedHand",
+    "HandKinematics",
+    "HandTemporalMetadata",
+    "TemporalSource",
     "VioPose",
     "VioTrajectory",
 ]
