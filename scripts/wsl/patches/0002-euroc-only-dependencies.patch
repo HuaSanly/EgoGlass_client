@@ -1,0 +1,62 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b827394..bf36a6e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -201 +200,0 @@
+-find_package(rosbag CONFIG REQUIRED)
+@@ -289,3 +288,0 @@
+-    ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/dataset_io_kitti.h
+-    ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/dataset_io_rosbag.h
+-    ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/dataset_io_uzh.h
+@@ -348 +344 @@
+-  PRIVATE basalt::magic_enum rosbag apriltag opengv nlohmann_json::nlohmann_json fmt::fmt)
++  PRIVATE basalt::magic_enum apriltag opengv nlohmann_json::nlohmann_json fmt::fmt)
+diff --git a/src/io/dataset_io.cpp b/src/io/dataset_io.cpp
+index 0f6e9a2..a799604 100644
+--- a/src/io/dataset_io.cpp
++++ b/src/io/dataset_io.cpp
+@@ -38,3 +38,0 @@
+-#include <basalt/io/dataset_io_kitti.h>
+-#include <basalt/io/dataset_io_rosbag.h>
+-#include <basalt/io/dataset_io_uzh.h>
+@@ -49,6 +46,0 @@
+-  } else if (dataset_type == "bag") {
+-    return DatasetIoInterfacePtr(new RosbagIO);
+-  } else if (dataset_type == "uzh") {
+-    return DatasetIoInterfacePtr(new UzhIO);
+-  } else if (dataset_type == "kitti") {
+-    return DatasetIoInterfacePtr(new KittiIO);
+diff --git a/vcpkg.json b/vcpkg.json
+index e36dd6b..282d927 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -4,6 +4,0 @@
+-  "overrides": [
+-    {
+-      "name": "realsense2",
+-      "version": "2.51.1"
+-    }
+-  ],
+@@ -11,5 +5,7 @@
+     "boost-date-time",
+     "boost-filesystem",
++    "boost-format",
+     "boost-program-options",
+     "boost-regex",
++    "boost-thread",
+     "bzip2",
+@@ -41,7 +37,0 @@
+-    {
+-      "name": "realsense2",
+-      "features": [
+-        "rs-usb-backend",
+-        "tm2"
+-      ]
+-    },
+@@ -48,5 +37,4 @@
+     "tbb",
+     "basalt-headers",
+-    "opengv",
+-    "rosbag"
++    "opengv"
+   ]

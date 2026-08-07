@@ -9,7 +9,23 @@ from schemas import VioTrajectory
 
 
 class BasaltError(RuntimeError):
-    """Base class for errors raised by the Basalt adapter."""
+    """Base class for errors raised by the Basalt adapter.
+
+    Backend metadata is carried on failures as well as successful results so
+    the UI and headless workflows can persist enough evidence to diagnose a
+    retained WSL staging directory without parsing human-readable logs.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        returncode: int | None = None,
+        backend_metadata: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+        self.backend_metadata = backend_metadata
 
 
 class BasaltExportError(BasaltError):
@@ -22,10 +38,6 @@ class BasaltUnavailableError(BasaltError):
 
 class BasaltExecutionError(BasaltError):
     """Basalt returned a non-zero exit code or malformed output."""
-
-    def __init__(self, message: str, *, returncode: int | None = None) -> None:
-        super().__init__(message)
-        self.returncode = returncode
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,3 +65,5 @@ class BasaltRunResult:
     returncode: int
     stdout_path: Path
     stderr_path: Path
+    backend: str = "native"
+    backend_metadata: tuple[tuple[str, str], ...] = ()

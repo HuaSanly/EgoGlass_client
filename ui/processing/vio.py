@@ -107,14 +107,15 @@ class OfflineVioService:
             )
             return self._read_run(output, summary)
         except Exception as error:
-            self._write_failure_manifest(
-                output,
-                run_id=run_id,
-                session_id=session_id,
-                clip_id=clip_id,
-                started_at_unix_ns=started,
-                error=str(error),
-            )
+            if not (output / "run.json").is_file():
+                self._write_failure_manifest(
+                    output,
+                    run_id=run_id,
+                    session_id=session_id,
+                    clip_id=clip_id,
+                    started_at_unix_ns=started,
+                    error=str(error),
+                )
             raise
         finally:
             with self._lock:

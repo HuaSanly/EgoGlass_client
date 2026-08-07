@@ -14,7 +14,7 @@ from sensor_preprocessing import (
     SensorPreprocessingPipeline,
     derive_recorded_clock_mapping,
 )
-from slam_vio import BasaltVioConfig, BasaltVioRunner
+from slam_vio import BasaltError, BasaltVioConfig, BasaltVioRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +54,50 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_manifest(path: Path, payload: dict[str, object]) -> None:
+    """Atomically persist one VIO outcome."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
+
+
+def _failure_summary(
+    *,
+    output_path: Path,
+    session_id: str,
+    clip_id: str | None,
+    started_at_ns: int,
+    config: BasaltVioConfig,
+    error: BaseException,
+) -> dict[str, object]:
+    """Build the machine-readable failure evidence shared by UI and CLI runs."""
+
+    metadata = dict(getattr(error, "backend_metadata", ()))
+    return {
+        "schema_version": "1.0",
+        "contract_id": "basalt-vio-run-v1",
+        "run_id": output_path.name,
+        "session_id": session_id,
+        "clip_id": clip_id,
+        "state": "failed",
+        "started_at_unix_ns": started_at_ns,
+        "completed_at_unix_ns": time.time_ns(),
+        "error": str(error),
+        "backend": metadata.get("backend", config.backend),
+        "wsl_distribution": metadata.get("wsl_distribution", config.wsl_distribution),
+        "wsl_executable": metadata.get("wsl_executable", config.wsl_executable),
+        "basalt_revision": metadata.get("basalt_revision", config.basalt_revision),
+        "wsl_stage_path": metadata.get("wsl_stage_path"),
+        "staging_state": metadata.get("staging_state", "not_started"),
+        "returncode": getattr(error, "returncode", None),
+    }
+
+
 def run_session(
     session_directory: str | Path,
     output_directory: str | Path,
@@ -85,11 +129,26 @@ def run_session(
     selected_clip_ids = None if clip_id is None else {clip_id}
     bundles = preprocessing.iter_recorded_session(session_path, clip_ids=selected_clip_ids)
     runner = BasaltVioRunner(config)
-    result = runner.run(
-        bundles,
-        output_path,
-        calibration=preprocessing.calibration,
-    )
+    try:
+        result = runner.run(
+            bundles,
+            output_path,
+            calibration=preprocessing.calibration,
+        )
+    except BasaltError as error:
+        _write_manifest(
+            output_path / "run.json",
+            _failure_summary(
+                output_path=output_path,
+                session_id=reader.session.session_id,
+                clip_id=clip_id,
+                started_at_ns=started_at_ns,
+                config=config,
+                error=error,
+            ),
+        )
+        raise
+    backend_metadata = dict(result.backend_metadata)
     summary = {
         "schema_version": "1.0",
         "contract_id": "basalt-vio-run-v1",
@@ -107,6 +166,13 @@ def run_session(
         "trajectory_path": str(result.trajectory_path),
         "dataset_path": str(result.dataset.root),
         "command": list(result.command),
+        "backend": result.backend,
+        "wsl_distribution": backend_metadata.get("wsl_distribution"),
+        "wsl_executable": backend_metadata.get("wsl_executable"),
+        "basalt_revision": backend_metadata.get("basalt_revision"),
+        "wsl_stage_path": backend_metadata.get("wsl_stage_path"),
+        "staging_state": backend_metadata.get("staging_state"),
+        "returncode": result.returncode,
         "calibration_profile_id": preprocessing.calibration.calibration_profile_id,
         "transform_camera_to_imu": preprocessing.calibration.transform_camera_to_body,
         "sensor_config_path": str(Path(sensor_config_path).resolve()),
@@ -114,13 +180,7 @@ def run_session(
         "basalt_config_path": str(Path(basalt_config_path).resolve()),
         "basalt_config_sha256": _sha256(Path(basalt_config_path).resolve()),
     }
-    manifest_path = output_path / "run.json"
-    temporary_path = manifest_path.with_suffix(".json.tmp")
-    temporary_path.write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary_path.replace(manifest_path)
+    _write_manifest(output_path / "run.json", summary)
     return summary
 
 

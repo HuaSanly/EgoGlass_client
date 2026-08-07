@@ -1,4 +1,5 @@
 import ast
+import subprocess
 from pathlib import Path
 
 CLIENT_ROOT = Path(__file__).parents[1]
@@ -80,3 +81,73 @@ def test_documented_commands_use_the_single_conda_environment() -> None:
     assert "uv sync" not in combined
     assert ".venv\\Scripts" not in combined
     assert "conda run -n egoglass" in combined
+
+
+def test_wsl_setup_normalizes_distribution_output_without_char_overload() -> None:
+    script = (CLIENT_ROOT / "scripts" / "setup-basalt-wsl.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert '-replace "`0", \'\'' in script
+    assert ".Replace([char]0, '')" not in script
+
+
+def test_wsl_setup_maps_loopback_proxy_and_pins_basalt_revision() -> None:
+    powershell = (CLIENT_ROOT / "scripts" / "setup-basalt-wsl.ps1").read_text(
+        encoding="utf-8"
+    )
+    linux = (CLIENT_ROOT / "scripts" / "wsl" / "setup-basalt.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$proxyUri.IsLoopback" in powershell
+    assert "ip route show default" in powershell
+    assert "$proxyArgument" in powershell
+    assert 'export HTTPS_PROXY="$proxy_url"' in linux
+    assert 'fetch --depth 1 origin "$basalt_revision"' in linux
+    assert "clone --recurse-submodules" not in linux
+    assert "cmake_version=3.31.10" in linux
+    assert 'dpkg --compare-versions "$system_cmake_version" ge 3.24' in linux
+    assert '"$cmake_executable" --build' in linux
+    assert "-DCMAKE_CXX_FLAGS=-Wno-error=unused-variable" in linux
+    assert '"$source_directory/vcpkg-configuration.json"' in linux
+    assert "fetch --unshallow origin" in linux
+    assert "apply --unidiff-zero --check" in linux
+    assert 'cat-file -e "$vcpkg_baseline^{commit}"' in linux
+    assert 'current_revision=$(git -C "$source_directory" rev-parse HEAD)' in linux
+    assert '"$current_revision" != "$basalt_revision"' in linux
+    assert "configure_attempt=1" in linux
+    assert 'if [[ $configure_attempt -ge 3 ]]' in linux
+    assert "sleep 3" in linux
+    assert 'build_jobs=${EGOGLASS_BASALT_BUILD_JOBS:-4}' in linux
+    assert 'export VCPKG_MAX_CONCURRENCY="$build_jobs"' in linux
+    assert 'build "$build_directory" --parallel "$build_jobs"' in linux
+    assert "libgles2-mesa-dev" in linux
+    assert "libglu1-mesa-dev" in linux
+    assert "libx11-dev" in linux
+
+
+def test_wsl_basalt_patches_are_well_formed_git_patches() -> None:
+    patches = sorted((CLIENT_ROOT / "scripts" / "wsl" / "patches").glob("*.patch"))
+    assert [path.name for path in patches] == [
+        "0001-monocular-euroc.patch",
+        "0002-euroc-only-dependencies.patch",
+    ]
+    for patch in patches:
+        completed = subprocess.run(
+            ["git", "apply", "--numstat", str(patch)],
+            cwd=CLIENT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, f"{patch.name}: {completed.stderr}"
+
+    dependency_patch = patches[1].read_text(encoding="utf-8")
+    assert '+    "boost-format",' in dependency_patch
+    assert '+    "boost-thread",' in dependency_patch
+    assert "-#include <basalt/io/dataset_io_kitti.h>" in dependency_patch
+    assert "-#include <basalt/io/dataset_io_uzh.h>" in dependency_patch
+
+    monocular_patch = patches[0].read_text(encoding="utf-8")
+    assert "-      Eigen::Vector3d gyro, accel;" in monocular_patch

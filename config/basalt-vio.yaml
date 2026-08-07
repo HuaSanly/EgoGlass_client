@@ -1,7 +1,15 @@
-# Offline Basalt VIO configuration. Basalt is an external native executable.
+# Offline Basalt VIO configuration. The Windows client stages each run in WSL.
 schema_version: "1.0"
+backend: wsl
 executable: basalt_vio
 executable_args: []
+basalt_revision: 0f3b2b52c807f70ff4e2973ce253c73329eea7bc
+wsl_distribution: Nvidia_SDKM_Ubuntu_22.04_JetPack_7.2
+wsl_executable: /home/nvidia/egoglass/tools/basalt-build/basalt_vio
+wsl_stage_root: /home/nvidia/.cache/egoglass/basalt
+wsl_keep_stage_on_failure: true
+# Zero disables the wall-clock timeout for long offline sessions.
+wsl_timeout_seconds: 0
 dataset_type: euroc
 show_gui: false
 use_imu: true

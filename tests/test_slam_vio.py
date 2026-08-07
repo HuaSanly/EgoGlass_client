@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
 
+from run_vio import _failure_summary
 from sensor_preprocessing import (
     ImuCalibration,
     ImuSensorType,
@@ -19,8 +21,10 @@ from sensor_preprocessing import (
 from slam_vio import (
     BasaltEuRoCExporter,
     BasaltExecutionError,
+    BasaltUnavailableError,
     BasaltVioConfig,
     BasaltVioRunner,
+    WslBasaltExecutor,
     calibration_to_basalt_json,
     parse_euroc_trajectory,
     resolve_basalt_executable,
@@ -186,6 +190,224 @@ Path('trajectory.csv').write_text(
     assert result.command[0] == sys.executable
     assert result.dataset.root.is_dir()
     assert (tmp_path / "run" / "run.log").is_file()
+
+
+def test_repository_config_selects_wsl_without_native_fallback() -> None:
+    config = BasaltVioConfig.load(Path(__file__).parents[1] / "config/basalt-vio.yaml")
+
+    assert config.backend == "wsl"
+    assert config.wsl_distribution == "Nvidia_SDKM_Ubuntu_22.04_JetPack_7.2"
+    assert config.wsl_executable == "/home/nvidia/egoglass/tools/basalt-build/basalt_vio"
+    assert config.wsl_stage_root == "/home/nvidia/.cache/egoglass/basalt"
+    assert config.wsl_keep_stage_on_failure is True
+
+
+def test_wsl_config_rejects_unsafe_paths_and_gui() -> None:
+    for values in (
+        {"wsl_stage_root": "../unsafe"},
+        {"wsl_executable": "relative/basalt_vio"},
+        {"show_gui": True},
+    ):
+        try:
+            BasaltVioConfig(schema_version="1.0", backend="wsl", **values)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe WSL configuration was accepted: {values}")
+
+
+def test_wsl_executor_preserves_argument_boundaries_and_materializes_results(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "wsl.exe"
+    launcher.write_bytes(b"launcher")
+    helper = tmp_path / "run basalt.sh"
+    helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    output = tmp_path / "run with spaces"
+    calls: list[list[str]] = []
+    call_options: list[dict[str, object]] = []
+
+    def run_command(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        call_options.append(kwargs)
+        if "wslpath" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "/mnt/f/translated path\n",
+                "",
+            )
+        output.mkdir(parents=True, exist_ok=True)
+        _write_trajectory_fixture(output / "trajectory.csv")
+        (output / "basalt.stdout.log").write_text("ok\n", encoding="utf-8")
+        (output / "basalt.stderr.log").write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    dataset = BasaltEuRoCExporter().export(
+        _bundles(),
+        tmp_path / "dataset with spaces",
+        calibration=_calibration(),
+    )
+    config = BasaltVioConfig(schema_version="1.0", backend="wsl")
+    result = WslBasaltExecutor(
+        config,
+        command_runner=run_command,
+        wsl_executable=launcher,
+        helper_script=helper,
+    ).run(dataset, output)
+
+    execution = calls[-1]
+    assert "-lc" not in execution
+    assert execution[:5] == [
+        str(launcher),
+        "--distribution",
+        config.wsl_distribution,
+        "--exec",
+        "/bin/bash",
+    ]
+    assert "/mnt/f/translated path" in execution
+    assert call_options
+    assert all(options["encoding"] == "utf-8" for options in call_options)
+    assert all(options["errors"] == "replace" for options in call_options)
+    assert result.trajectory_path == output / "trajectory.csv"
+    assert dict(result.metadata)["staging_state"] == "cleaned"
+
+
+def test_wsl_executor_reports_nonzero_exit_without_native_fallback(tmp_path: Path) -> None:
+    launcher = tmp_path / "wsl.exe"
+    launcher.write_bytes(b"launcher")
+    helper = tmp_path / "run-basalt.sh"
+    helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    output = tmp_path / "run"
+
+    def run_command(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "wslpath" in command:
+            return subprocess.CompletedProcess(command, 0, "/mnt/f/path\n", "")
+        output.mkdir(parents=True, exist_ok=True)
+        return subprocess.CompletedProcess(command, 69, "", "missing Basalt")
+
+    dataset = BasaltEuRoCExporter().export(
+        _bundles(),
+        tmp_path / "dataset",
+        calibration=_calibration(),
+    )
+    executor = WslBasaltExecutor(
+        BasaltVioConfig(schema_version="1.0", backend="wsl"),
+        command_runner=run_command,
+        wsl_executable=launcher,
+        helper_script=helper,
+    )
+    try:
+        executor.run(dataset, output)
+    except BasaltExecutionError as error:
+        assert error.returncode == 69
+        assert "missing Basalt" in str(error)
+        metadata = dict(error.backend_metadata)
+        assert metadata["backend"] == "wsl"
+        assert metadata["staging_state"] == "retained"
+        assert metadata["wsl_stage_path"].startswith(
+            "/home/nvidia/.cache/egoglass/basalt/"
+        )
+    else:
+        raise AssertionError("failed WSL Basalt was accepted")
+
+
+def test_wsl_failure_summary_preserves_backend_diagnostics(tmp_path: Path) -> None:
+    config = BasaltVioConfig(schema_version="1.0", backend="wsl")
+    error = BasaltExecutionError(
+        "Basalt crashed",
+        returncode=134,
+        backend_metadata=(
+            ("backend", "wsl"),
+            ("wsl_distribution", config.wsl_distribution),
+            ("wsl_executable", config.wsl_executable),
+            ("basalt_revision", config.basalt_revision),
+            ("wsl_stage_path", f"{config.wsl_stage_root}/session/run"),
+            ("staging_state", "retained"),
+        ),
+    )
+
+    payload = _failure_summary(
+        output_path=tmp_path / "run",
+        session_id="a" * 32,
+        clip_id="clip-1",
+        started_at_ns=123,
+        config=config,
+        error=error,
+    )
+
+    assert payload["state"] == "failed"
+    assert payload["backend"] == "wsl"
+    assert payload["returncode"] == 134
+    assert payload["staging_state"] == "retained"
+    assert payload["wsl_stage_path"] == f"{config.wsl_stage_root}/session/run"
+
+
+def test_wsl_executor_rejects_missing_trajectory(tmp_path: Path) -> None:
+    launcher = tmp_path / "wsl.exe"
+    launcher.write_bytes(b"launcher")
+    helper = tmp_path / "run-basalt.sh"
+    helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    def run_command(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "wslpath" in command:
+            return subprocess.CompletedProcess(command, 0, "/mnt/f/path\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    dataset = BasaltEuRoCExporter().export(
+        _bundles(),
+        tmp_path / "dataset",
+        calibration=_calibration(),
+    )
+    executor = WslBasaltExecutor(
+        BasaltVioConfig(schema_version="1.0", backend="wsl"),
+        command_runner=run_command,
+        wsl_executable=launcher,
+        helper_script=helper,
+    )
+    try:
+        executor.run(dataset, tmp_path / "run")
+    except BasaltExecutionError as error:
+        assert "trajectory.csv" in str(error)
+    else:
+        raise AssertionError("missing WSL trajectory was accepted")
+
+
+def test_wsl_backend_does_not_call_native_resolver(tmp_path: Path, monkeypatch) -> None:
+    class UnavailableWsl:
+        def __init__(self, _config: BasaltVioConfig) -> None:
+            pass
+
+        def run(self, _dataset: object, _output: Path) -> None:
+            raise BasaltUnavailableError("WSL unavailable")
+
+    monkeypatch.setattr("slam_vio.runner.WslBasaltExecutor", UnavailableWsl)
+    monkeypatch.setattr(
+        "slam_vio.runner.resolve_basalt_executable",
+        lambda _value: (_ for _ in ()).throw(AssertionError("native fallback attempted")),
+    )
+    config = BasaltVioConfig(schema_version="1.0", backend="wsl")
+    try:
+        BasaltVioRunner(config).run(
+            _bundles(),
+            tmp_path / "run",
+            calibration=_calibration(),
+        )
+    except BasaltUnavailableError as error:
+        assert str(error) == "WSL unavailable"
+    else:
+        raise AssertionError("unavailable WSL backend was accepted")
+
+
+def test_wsl_helper_restricts_recursive_cleanup_to_stage_root() -> None:
+    script = (
+        Path(__file__).parents[1] / "scripts/wsl/run-basalt.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'case "$stage_directory"' in script
+    assert '"$stage_root"/*' in script
+    assert 'rm -rf -- "$stage_directory"' in script
+    assert "eval " not in script
 
 
 def test_resolver_finds_workspace_local_basalt_without_path(

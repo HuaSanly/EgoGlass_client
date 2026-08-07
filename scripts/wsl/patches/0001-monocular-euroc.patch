@@ -1,0 +1,12 @@
+diff --git a/include/basalt/io/dataset_io_euroc.h b/include/basalt/io/dataset_io_euroc.h
+index 862011c..6288933 100644
+--- a/include/basalt/io/dataset_io_euroc.h
++++ b/include/basalt/io/dataset_io_euroc.h
+@@ -162 +162,4 @@
+-    data->num_cams = 2;
++    // EuRoC is commonly stereo, but EgoGlass exports a valid monocular
++    // EuRoC layout. Keep the dataset camera count aligned with the files and
++    // calibration instead of indexing a missing second camera.
++    data->num_cams = fs::exists(path + "/mav0/cam1/data.csv") ? 2 : 1;
+@@ -207 +207,0 @@
+-      Eigen::Vector3d gyro, accel;

@@ -12,6 +12,7 @@ from .models import (
     BasaltUnavailableError,
 )
 from .runner import BasaltVioRunner, parse_euroc_trajectory, resolve_basalt_executable
+from .wsl_runner import WslBasaltExecutor, WslExecutionResult, resolve_wsl_executable
 
 __all__ = [
     "BasaltConfigError",
@@ -24,9 +25,12 @@ __all__ = [
     "BasaltUnavailableError",
     "BasaltVioConfig",
     "BasaltVioRunner",
+    "WslBasaltExecutor",
+    "WslExecutionResult",
     "calibration_is_verified",
     "calibration_to_basalt_json",
     "parse_euroc_trajectory",
     "resolve_basalt_executable",
+    "resolve_wsl_executable",
     "synchronize_imu_samples",
 ]

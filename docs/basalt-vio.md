@@ -1,46 +1,137 @@
 # Basalt VIO
 
-`src/slam_vio` is a thin adapter around the native Basalt executable. It does
-not copy Basalt's estimator into Python and it does not start a process for
-each frame. The first implementation is offline only.
+`src/slam_vio` is a thin offline adapter around Basalt. The Windows process
+exports one prepared capture session to EuRoC, invokes one Basalt process in
+WSL, and parses the resulting trajectory. Basalt is never started per frame and
+is not part of the live inference route.
+
+## Runtime boundary
+
+Windows owns PyQt, recording, hand tracking, task state, and result playback.
+The configured WSL2 distribution owns only the Basalt binaries and per-run
+staging data:
+
+```text
+Windows                                  WSL ext4
+capture session -> prepared EuRoC  ->    Basalt input staging
+UI processing job                 ->    basalt_vio
+run.json + trajectory.csv         <-    logs + trajectory.csv
+```
+
+The default installation uses:
+
+```text
+distribution: Nvidia_SDKM_Ubuntu_22.04_JetPack_7.2
+source:       /home/nvidia/egoglass/tools/basalt-src
+build:        /home/nvidia/egoglass/tools/basalt-build
+staging:      /home/nvidia/.cache/egoglass/basalt
+revision:     0f3b2b52c807f70ff4e2973ce253c73329eea7bc
+```
+
+There is no automatic fallback to the previous Windows-native Basalt build. A
+missing WSL distribution or executable makes the VIO stage fail explicitly;
+the surrounding video-processing job remains viewable as `partial` with its
+camera-space hand results.
+
+## Install
+
+Run once from `EgoGlass_client`:
+
+```powershell
+.\scripts\setup-basalt-wsl.ps1
+```
+
+The setup script installs Linux build dependencies, clones the pinned Basalt
+revision into WSL ext4, applies the repository's monocular EuRoC and
+EuRoC-only dependency patches, then builds:
+
+- `basalt_vio`
+- `basalt_calibrate`
+- `basalt_calibrate_imu`
+
+The Linux dependency set includes the X11, Mesa GLES, and GLU development
+headers required while compiling Pangolin, libepoxy, and GLEW. Basalt still
+runs headless in the client workflow.
+
+Ubuntu 22.04 provides CMake 3.22 while this Basalt revision requires 3.24. The
+setup script therefore installs the official pinned CMake 3.31.10 archive under
+`/home/nvidia/egoglass/tools` without replacing the distribution's system
+CMake. The Basalt checkout stays shallow. vcpkg retains its history because its
+version database references port tree objects outside the checked-out submodule
+commit; setup verifies the exact registry baseline declared by Basalt's
+`vcpkg-configuration.json` before configuration.
+
+The vcpkg package cache is persistent. Setup retries dependency configuration
+up to three times when a transient proxy or upstream download failure interrupts
+the manifest install; completed packages are restored from cache on retry.
+Build concurrency defaults to four jobs to stay within the WSL memory budget.
+Set `EGOGLASS_BASALT_BUILD_JOBS` before setup only when the WSL VM has enough
+memory for additional C++ template compiler processes.
+
+The pinned Basalt revision contains unused diagnostic variables in template
+instantiations. Setup preserves `-Wall` output but passes
+`-Wno-error=unused-variable` through Basalt's captured `CMAKE_CXX_FLAGS`,
+matching its existing treatment of other compiler-version-dependent warnings
+instead of patching estimator logic.
+
+It requires the configured WSL user to have passwordless `sudo`. Re-running the
+script is supported when the source contains exactly the EgoGlass patch set;
+unrelated source changes stop setup instead of being overwritten.
+
+Verify the installed binary directly:
+
+```powershell
+wsl.exe -d Nvidia_SDKM_Ubuntu_22.04_JetPack_7.2 --exec `
+  /home/nvidia/egoglass/tools/basalt-build/basalt_vio --help
+```
 
 ## Input boundary
 
 `SensorPreprocessingPipeline.iter_recorded_session()` supplies decoded,
 optionally undistorted BGR frames and IMU samples mapped to `session_time_ns`.
-The adapter writes the frames and timestamps into a temporary EuRoC dataset:
+The exporter writes:
 
 ```text
 mav0/
   cam0/data.csv
   cam0/data/*.png
   imu0/data.csv
+calibration.json
 ```
 
-The glasses record accelerometer and gyroscope samples as separate rows. Basalt
-requires both values on every IMU row, so the exporter takes the union of both
-sensor timestamps and linearly interpolates the other sensor only when the
-timestamp is bracketed by measured samples. It never extrapolates; skipped
-boundary timestamps are recorded in `export.json`.
+The glasses record accelerometer and gyroscope values as separate rows. Basalt
+requires both on every IMU row, so the exporter takes the union of sensor
+timestamps and linearly interpolates the other sensor only when bracketed by
+measured samples. It never extrapolates. Skipped boundary timestamps are
+recorded in `export.json`.
+
+The complete EuRoC directory is copied from the Windows filesystem to a unique
+`session_id/run_id` staging directory in WSL ext4 before Basalt starts. Command
+arguments are passed as separate `wsl.exe --exec` arguments and are never
+assembled into a shell command string.
+
+On success, `trajectory.csv`, stdout, stderr, and the run log are copied back to
+the Windows run directory and only that validated staging directory is removed.
+On failure, staging is retained by default for diagnosis. `run.json` records
+the backend, distribution, executable, pinned revision, exit code, staging path,
+and staging state.
 
 ## Calibration
 
-Basalt receives a generated `calibration.json` in its cereal format. The
-EgoGlass `transform_camera_to_imu` matrix is passed as Basalt's `T_imu_cam`,
-which maps a point from camera coordinates to IMU coordinates. When a non-unit
-`raw_imu_to_body_axes` calibration is supplied, prepared IMU rows and the
-exported extrinsic use the corresponding camera-to-body transform. Prepared
-frames are rectified by default, so the calibration uses a pinhole model and
-the rectified camera matrix to avoid applying distortion twice.
+Basalt receives a generated cereal `calibration.json`. EgoGlass
+`transform_camera_to_imu` is passed as Basalt `T_imu_cam`, mapping camera
+coordinates into IMU coordinates. When `raw_imu_to_body_axes` is non-unit, the
+prepared IMU rows and extrinsic both use the corresponding body frame.
 
-The repository sample calibration is deliberately unmeasured. The runner
-refuses it unless `allow_unverified_calibration` is enabled in the Basalt YAML
-or `--allow-unverified-calibration` is supplied for an integration test. A
-measured camera-IMU calibration must be used for any trajectory interpretation.
+Prepared frames are rectified by default, so Basalt receives a pinhole model
+and the rectified camera matrix. This avoids applying distortion twice.
 
-## Running
+The repository calibration is deliberately unmeasured. The runner rejects it
+unless `allow_unverified_calibration` is enabled or
+`--allow-unverified-calibration` is supplied for an integration test. Do not
+interpret a trajectory produced with sample calibration as physical motion.
 
-Install `basalt_vio` separately and run:
+## Run without UI
 
 ```powershell
 conda run -n egoglass python src\run_vio.py `
@@ -48,60 +139,23 @@ conda run -n egoglass python src\run_vio.py `
   --output local-data\vio-runs\<run-id>
 ```
 
-The Python adapter resolves the executable from an explicit configuration path,
-`EGOGLASS_BASALT_EXE`, the process `PATH`, or the workspace-local Windows build
-at `<workspace>/.tools/basalt-src/build/relwithdebinfo/basalt_vio.exe`. The local
-build and its vcpkg DLL directory are added to the child process environment, so
-the CLI does not need to be launched through `start-client.ps1`.
+The output contains the exported dataset, frozen calibration,
+`trajectory.csv`, `run.json`, and captured Basalt logs. The command imports no
+Qt, gateway, or task queue code.
 
-The output contains the EuRoC dataset, generated calibration, `trajectory.csv`,
-`run.json`, and captured Basalt stdout/stderr. `trajectory.csv` is parsed into
-`schemas.VioTrajectory` and `schemas.VioPose` objects. No Qt, gateway, or task
-queue is imported by this command.
+## UI processing route
 
-The checked-in `config/basalt-euroc-config.json` follows Basalt's official
-EuRoC offline defaults. `config/basalt-vio.yaml` controls the executable,
-thread count, GUI flag, precision, frame limit, and calibration policy.
+The video workbench has one processing action. Its background job attempts
+Basalt first, then runs offline hand tracking and temporal processing for the
+same session or selected clip. Successful world-space hand optimization binds
+to that exact `vio_run_id`; it never selects an unrelated newer trajectory.
 
-## Windows native build
-
-Basalt is kept outside this repository because it is a native third-party
-dependency. The tested Windows build uses Basalt commit `0f3b2b5` in
-`<workspace>/.tools/basalt-src`, Visual Studio 2022 x64 tools, and the bundled
-vcpkg tree. Build the `relwithdebinfo` preset with `basalt_vio` as the target,
-then add both the build directory and its vcpkg runtime directory to `PATH`:
-
-```powershell
-$basaltBuild = "F:\data\Project\EgoGlass\.tools\basalt-src\build\relwithdebinfo"
-$env:PATH = "$basaltBuild;$basaltBuild\vcpkg_installed\x64-windows\bin;$env:PATH"
-```
-
-The Basalt EuRoC reader in this Windows build accepts a monocular dataset when
-`mav0/cam1/data.csv` is absent. This is required for the current glasses
-capture, which has one camera. The exporter writes the standard EuRoC CSV form
-with bare image filenames; Basalt adds `cam0/data/` while reading them.
-
-The smoke run used session `224a88e7342e4702acea0c7d2a2cb6db` at 640x480 and
-produced 360 poses from 361 frames. The sample calibration is not measured, so
-that run required `--allow-unverified-calibration`; its trajectory is only an
-I/O integration check, not a calibrated motion result.
-
-## Native UI route
-
-The video-processing workbench has one `处理当前视频` action. That persistent
-offline job runs hand tracking first and then Basalt VIO for the same selected
-clip. There is no separate UI VIO task or live VIO route. The VIO stage starts
-after the hand-tracking model is released, and the processing job is marked
-complete only after both stages finish.
-
-The VIO stage stores its run under the selected session:
+VIO runs are stored under:
 
 ```text
 <session>/derived/vio/basalt/<run-id>/
 ```
 
-When the processing job completes, reopening the session workbench discovers the
-newest valid `trajectory.csv`. The spatial OpenGL view draws the complete
-trajectory and selects the pose nearest the shared playback `session_time_ns`,
-so video, hand results, and VIO remain on one timeline. The live collection view
-never starts this service and online inference is unchanged.
+If Basalt fails, the processing job is marked `partial`, 2D overlays and
+camera-space 3D hands remain available, and no world translation is invented.
+The live collection page never starts Basalt.

@@ -62,8 +62,10 @@ that revision and the SHA256 of all six YAML files in its `run.json`. The queue
 also stores the validated sensor calibration and offline perception values captured at
 submission, so later edits cannot change an already queued task.
 
-`basalt-vio.yaml` controls the optional offline VIO adapter. It is separate from
-hand tracking and is not consumed by the Qt runtime yet. The adapter exports a
-prepared session to EuRoC, runs `basalt_vio`, and stores the parsed trajectory
-alongside the run. Keep `allow_unverified_calibration: false` for real work;
-the checked-in calibration profiles are integration samples only.
+`basalt-vio.yaml` controls the optional offline WSL VIO adapter. It pins the WSL
+distribution, Basalt executable and revision, ext4 staging root, timeout, and
+failure-retention policy. The Windows client exports a prepared session to
+EuRoC, stages it into WSL, and copies the parsed trajectory and logs back into
+the run directory. There is no Windows-native fallback. Keep
+`allow_unverified_calibration: false` for real work; the checked-in calibration
+profiles are integration samples only.

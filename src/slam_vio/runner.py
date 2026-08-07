@@ -16,10 +16,12 @@ from .calibration import calibration_is_verified
 from .config import BasaltVioConfig
 from .euroc_export import BasaltEuRoCExporter
 from .models import (
+    BasaltDataset,
     BasaltExecutionError,
     BasaltRunResult,
     BasaltUnavailableError,
 )
+from .wsl_runner import WslBasaltExecutor
 
 _DEFAULT_EXECUTABLE_NAMES = frozenset({"basalt_vio", "basalt_vio.exe"})
 
@@ -152,6 +154,26 @@ class BasaltVioRunner:
             calibration=calibration,
             input_is_rectified=self.config.input_is_rectified,
         )
+        if self.config.backend == "wsl":
+            execution = WslBasaltExecutor(self.config).run(dataset, output)
+            trajectory = parse_euroc_trajectory(execution.trajectory_path)
+            return BasaltRunResult(
+                output_directory=output,
+                dataset=dataset,
+                trajectory=trajectory,
+                trajectory_path=execution.trajectory_path,
+                command=execution.command,
+                returncode=execution.returncode,
+                stdout_path=execution.stdout_path,
+                stderr_path=execution.stderr_path,
+                backend="wsl",
+                backend_metadata=execution.metadata,
+            )
+        return self._run_native(dataset, output)
+
+    def _run_native(self, dataset: BasaltDataset, output: Path) -> BasaltRunResult:
+        """Run the existing host-native executable without WSL fallback."""
+
         executable = resolve_basalt_executable(self.config.executable)
         if executable is None:
             raise BasaltUnavailableError(f"Basalt executable not found: {self.config.executable}")
@@ -219,4 +241,10 @@ class BasaltVioRunner:
             returncode=completed.returncode,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
+            backend="native",
+            backend_metadata=(
+                ("native_executable", str(executable)),
+                ("basalt_revision", self.config.basalt_revision),
+                ("staging_state", "not_applicable"),
+            ),
         )

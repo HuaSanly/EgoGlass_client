@@ -47,7 +47,7 @@ Run once from this directory:
 .\scripts\setup_client.ps1
 ```
 
-This creates or updates native Windows Conda environment `egoglass` with
+This creates or updates the native Windows Conda environment `egoglass` with
 Python 3.11, PyTorch 2.5.1, and CUDA 12.1. Download model artifacts separately:
 
 ```powershell
@@ -55,6 +55,17 @@ conda run -n egoglass python scripts\download_hand_tracking_models.py
 ```
 
 Neither command executes code from `reference_code/HumanEgo`.
+
+Offline Basalt runs in WSL rather than in the Windows Conda environment. Install
+the pinned WSL build once:
+
+```powershell
+.\scripts\setup-basalt-wsl.ps1
+```
+
+The configured WSL user needs passwordless `sudo` for dependency installation.
+See [Basalt VIO](docs/basalt-vio.md) for the exact distribution, paths, staging
+lifecycle, and verification command.
 
 ## Run
 
@@ -86,9 +97,8 @@ unavailable or misses a final hand frame by more than 100 ms, the run is marked
 `partial`: camera-space results remain usable and no world coordinate is
 invented for the unmatched frame.
 
-Basalt VIO is an optional native dependency. After installing `basalt_vio`,
-run it against the same prepared capture session without starting Qt or the
-gateway:
+Basalt VIO is an optional WSL dependency. Run it against the same prepared
+capture session without starting Qt or the gateway:
 
 ```powershell
 conda run -n egoglass python src\run_vio.py `
