@@ -100,6 +100,7 @@ class ProcessingWorkbench(QWidget):
     processRequested = pyqtSignal()
     exportRequested = pyqtSignal()
     resultSelectionChanged = pyqtSignal()
+    handResultKindChanged = pyqtSignal()
 
     RAW_RESULT = "__raw__"
 
@@ -121,6 +122,27 @@ class ProcessingWorkbench(QWidget):
     def primary_run_id(self) -> str | None:
         data = self.result_combo.currentData()
         return data if isinstance(data, str) and data != self.RAW_RESULT else None
+
+    @property
+    def task_profile_id(self) -> str | None:
+        value = self.task_profile_combo.currentData()
+        return value if isinstance(value, str) and value else None
+
+    @property
+    def hand_result_kind(self) -> str:
+        value = self.hand_result_combo.currentData()
+        return value if value in {"raw", "final"} else "final"
+
+    def set_task_profiles(self, profiles: tuple[tuple[str, str], ...]) -> None:
+        selected = self.task_profile_id
+        self.task_profile_combo.blockSignals(True)
+        self.task_profile_combo.clear()
+        for profile_id, display_name in profiles:
+            self.task_profile_combo.addItem(display_name, userData=profile_id)
+        index = self.task_profile_combo.findData(selected)
+        self.task_profile_combo.setCurrentIndex(max(0, index))
+        self.task_profile_combo.blockSignals(False)
+        self.process_button.setEnabled(bool(profiles))
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -149,6 +171,13 @@ class ProcessingWorkbench(QWidget):
         title_column.addWidget(self.context_label)
         row.addLayout(title_column)
         row.addStretch(1)
+        row.addWidget(CaptionLabel("Task profile", self))
+        self.task_profile_combo = ComboBox(self)
+        self.task_profile_combo.setMinimumWidth(150)
+        self.task_profile_combo.setToolTip(
+            "Frozen Grounding DINO/SAM2 object prompts for this processing run"
+        )
+        row.addWidget(self.task_profile_combo)
         self.process_button = PrimaryPushButton("处理当前视频", self)
         self.process_button.setIcon(FluentIcon.PLAY)
         self.process_button.setToolTip("逐帧运行手部追踪，并在同一离线任务中运行 SLAM/VIO")
@@ -212,10 +241,17 @@ class ProcessingWorkbench(QWidget):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
         layout.addWidget(StrongBodyLabel("预览选项", card))
-        self.overlay_check = CheckBox("显示手部覆盖层", card)
+        self.overlay_check = CheckBox("显示手部与物体覆盖层", card)
         self.overlay_check.setChecked(True)
         self.overlay_check.toggled.connect(self.canvas_overlay_enabled)
         layout.addWidget(self.overlay_check)
+        self.hand_result_combo = ComboBox(card)
+        self.hand_result_combo.addItem("最终手部结果", userData="final")
+        self.hand_result_combo.addItem("原始逐帧结果", userData="raw")
+        self.hand_result_combo.currentIndexChanged.connect(
+            lambda _index: self.handResultKindChanged.emit()
+        )
+        layout.addWidget(self.hand_result_combo)
         return card
 
     def _build_transport(self, parent: QWidget) -> SimpleCardWidget:
@@ -322,11 +358,7 @@ class ProcessingWorkbench(QWidget):
         if linked_run_id is None:
             return None
         return next(
-            (
-                run
-                for run in self._vio_runs
-                if run.is_viewable and run.run_id == linked_run_id
-            ),
+            (run for run in self._vio_runs if run.is_viewable and run.run_id == linked_run_id),
             None,
         )
 

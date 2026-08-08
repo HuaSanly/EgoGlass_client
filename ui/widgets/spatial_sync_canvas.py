@@ -63,6 +63,7 @@ _CAMERA_TO_SCENE = np.asarray(
 )
 _LEFT_COLOR = (0.12, 0.82, 0.91, 1.0)
 _RIGHT_COLOR = (1.0, 0.40, 0.34, 1.0)
+_OBJECT_COLOR = (1.0, 0.76, 0.20, 0.92)
 _GRID_COLOR = (0.24, 0.32, 0.43, 0.42)
 _AXIS_COLORS = np.asarray(
     (
@@ -231,6 +232,12 @@ class SpatialSyncCanvas(QWidget):
         self._right_points = GLScatterPlotItem(
             pos=_EMPTY_POINTS, color=_RIGHT_COLOR, size=5, pxMode=True
         )
+        self._object_points = GLScatterPlotItem(
+            pos=_EMPTY_POINTS, color=_OBJECT_COLOR, size=6, pxMode=True
+        )
+        self._object_axes = GLLinePlotItem(
+            pos=_EMPTY_POINTS, color=_AXIS_COLORS, width=2, mode="lines", antialias=True
+        )
         axis_font = QFont("Segoe UI", 8)
         self._head_axis_labels = tuple(
             GLTextItem(text=label, color=color, font=axis_font, pos=(0.0, 0.0, 0.0))
@@ -257,6 +264,8 @@ class SpatialSyncCanvas(QWidget):
             self._left_points,
             self._right_lines,
             self._right_points,
+            self._object_points,
+            self._object_axes,
             *self._head_axis_labels,
             *self._camera_axis_labels,
         ):
@@ -289,6 +298,7 @@ class SpatialSyncCanvas(QWidget):
             self._set_axis_items(state)
             self._set_hand_items(state.left_hand_points_m, self._left_lines, self._left_points)
             self._set_hand_items(state.right_hand_points_m, self._right_lines, self._right_points)
+            self._set_object_items(state)
             self._grid_item.setVisible(state.show_ground)
         self._update_state_label()
 
@@ -377,6 +387,30 @@ class SpatialSyncCanvas(QWidget):
         )
         scatter.setData(pos=values if len(values) == 21 else _EMPTY_POINTS)
 
+    def _set_object_items(self, state: SpatialSceneState) -> None:
+        points = (
+            _to_scene(np.asarray(state.object_points_m, dtype=np.float64))
+            if state.object_points_m
+            else _EMPTY_POINTS
+        )
+        axis_segments: list[np.ndarray] = []
+        for axis in state.object_axes_m:
+            values = _to_scene(np.asarray(axis, dtype=np.float64))
+            axis_segments.append(_line_segments(values, ((0, 1), (0, 2), (0, 3))))
+        segments = np.concatenate(axis_segments) if axis_segments else _EMPTY_POINTS
+        self._object_points.setData(pos=points)
+        self._object_axes.setData(
+            pos=segments,
+            color=(
+                np.tile(_AXIS_COLORS, (len(axis_segments), 1))
+                if axis_segments
+                else _AXIS_COLORS
+            ),
+        )
+        visible = state.reference_frame is SpatialReferenceFrame.WORLD
+        self._object_points.setVisible(visible and len(points) > 0)
+        self._object_axes.setVisible(visible and len(segments) > 0)
+
     def _clear_geometry(self) -> None:
         for item in (
             self._head_axis_item,
@@ -386,6 +420,8 @@ class SpatialSyncCanvas(QWidget):
             self._left_points,
             self._right_lines,
             self._right_points,
+            self._object_points,
+            self._object_axes,
         ):
             item.setData(pos=_EMPTY_POINTS)
         self._grid_item.setVisible(False)

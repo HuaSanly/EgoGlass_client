@@ -56,9 +56,7 @@ class ProcessingPreset:
             raise ValueError("inference stride must be positive")
 
 
-DEFAULT_PRESETS = (
-    ProcessingPreset(),
-)
+DEFAULT_PRESETS = (ProcessingPreset(),)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +78,8 @@ class ProcessingJob:
     configuration_revision: int = 0
     configuration_sha256_by_file: tuple[tuple[str, str], ...] = ()
     configuration_snapshot_json: str = "{}"
+    task_profile_id: str | None = None
+    task_profile_snapshot_json: str = "{}"
 
     @property
     def progress_fraction(self) -> float:
@@ -125,6 +125,7 @@ class ProcessingRunInfo:
     is_viewable: bool
     unavailable_reason: str | None = None
     vio_run_id: str | None = None
+    task_profile_id: str | None = None
 
     def covers_clip(self, clip_id: str) -> bool:
         return self.is_viewable and (self.clip_id is None or self.clip_id == clip_id)

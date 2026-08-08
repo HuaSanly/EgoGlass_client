@@ -106,6 +106,25 @@ class ProcessingResultStore:
         with self._connect() as connection:
             return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
+    def iter_results(self, *, raw: bool = False) -> tuple[dict[str, object], ...]:
+        """Return ordered immutable frame payloads for dataset assembly.
+
+        The method never performs hold-previous lookup. Dataset construction must
+        preserve the exact finalized result associated with each stored frame.
+        """
+
+        if raw and self.schema_version == "1":
+            return ()
+        table = "raw_frame_results" if raw else "frame_results"
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT result_json FROM {table}
+                ORDER BY clip_id ASC, frame_index ASC, session_time_ns ASC
+                """
+            ).fetchall()
+        return tuple(json.loads(row["result_json"]) for row in rows)
+
     @property
     def schema_version(self) -> str:
         with self._connect() as connection:
@@ -159,9 +178,7 @@ class ProcessingResultStore:
 
     def _connect(self) -> sqlite3.Connection:
         if self.read_only:
-            connection = sqlite3.connect(
-                f"{self.path.as_uri()}?mode=ro", uri=True, timeout=5.0
-            )
+            connection = sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, timeout=5.0)
             connection.execute("PRAGMA query_only = ON")
         else:
             connection = sqlite3.connect(self.path, timeout=5.0)

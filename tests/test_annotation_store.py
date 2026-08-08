@@ -136,6 +136,8 @@ def test_publish_resolves_exact_pts_and_writes_immutable_content_revision(
 
     assert revision.annotation_revision_id == repeated.annotation_revision_id
     assert revision.content_sha256 == repeated.content_sha256
+    assert store.revision(SESSION_ID, revision.annotation_revision_id) == revision
+    assert store.revision(SESSION_ID) == revision
     assert revision.episodes[0].start.mp4_pts == 90_000
     assert revision.episodes[0].start.timing_status == "exact"
     assert revision.episodes[0].end_exclusive.mp4_pts == 720_000

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import statistics
 import threading
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
+    ID_PATTERN,
     AnnotationDraft,
     AnnotationQuality,
     AnnotationQualityCheck,
@@ -249,10 +251,28 @@ class AnnotationStore:
             updated_draft = draft.model_copy(
                 update={"latest_published_revision_id": revision.annotation_revision_id}
             )
-            _write_json_atomic(
-                self._draft_path(session_id), updated_draft.model_dump(mode="json")
-            )
+            _write_json_atomic(self._draft_path(session_id), updated_draft.model_dump(mode="json"))
             return revision
+
+    def revision(
+        self,
+        session_id: str,
+        revision_id: str | None = None,
+    ) -> PublishedRevision:
+        """Read one immutable published revision for dataset provenance."""
+
+        selected = revision_id or self._latest_revision_id(session_id)
+        if selected is None:
+            raise AnnotationNotFoundError("annotation revision is unavailable")
+        if not re.fullmatch(ID_PATTERN, selected):
+            raise AnnotationNotFoundError("annotation revision id is invalid")
+        path = self._revisions_path(session_id) / f"{selected}.json"
+        if not path.is_file():
+            raise AnnotationNotFoundError("annotation revision is unavailable")
+        revision = PublishedRevision.model_validate(_read_json(path))
+        if revision.session_id != session_id or revision.annotation_revision_id != selected:
+            raise AnnotationNotFoundError("annotation revision provenance is invalid")
+        return revision
 
     def media_path(self, session_id: str, clip_id: str) -> Path:
         summary = self._session_summary(session_id)
@@ -374,14 +394,10 @@ class AnnotationStore:
                     <= episode.end_frame_index_exclusive
                 ):
                     issues.append(f"阶段 {phase.phase_id} 没有完全位于 episode 内")
-            ordered_phases = sorted(
-                episode.phases, key=lambda phase: phase.start_frame_index
-            )
+            ordered_phases = sorted(episode.phases, key=lambda phase: phase.start_frame_index)
             if any(
                 previous.end_frame_index_exclusive > current.start_frame_index
-                for previous, current in zip(
-                    ordered_phases, ordered_phases[1:], strict=False
-                )
+                for previous, current in zip(ordered_phases, ordered_phases[1:], strict=False)
             ):
                 issues.append(f"episode {episode.episode_id} 内存在重叠阶段")
         for clip_id, clip_episodes in by_clip.items():
@@ -418,9 +434,7 @@ class AnnotationStore:
             if not episode.phases:
                 issues.append(f"{prefix} 至少需要一个内部阶段")
             fps = clip_fps.get(episode.clip_id, 30.0)
-            duration_seconds = (
-                episode.end_frame_index_exclusive - episode.start_frame_index
-            ) / fps
+            duration_seconds = (episode.end_frame_index_exclusive - episode.start_frame_index) / fps
             if duration_seconds < 1:
                 warnings.append(f"{prefix} 短于 1 秒")
             if duration_seconds > 120:
@@ -510,9 +524,7 @@ class AnnotationStore:
             last = rows[last_index]
             deltas = [
                 rows[current][0] - rows[previous][0]
-                for previous, current in zip(
-                    sorted_indices, sorted_indices[1:], strict=False
-                )
+                for previous, current in zip(sorted_indices, sorted_indices[1:], strict=False)
                 if rows[current][0] > rows[previous][0]
             ]
             pts_delta = round(statistics.median(deltas)) if deltas else round(last[2] / fps)

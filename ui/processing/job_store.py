@@ -14,7 +14,7 @@ from .models import (
     ProcessingPreset,
 )
 
-_SCHEMA_VERSION = "4"
+_SCHEMA_VERSION = "5"
 
 
 class ProcessingJobStore:
@@ -36,11 +36,16 @@ class ProcessingJobStore:
         configuration_revision: int = 0,
         configuration_sha256_by_file: tuple[tuple[str, str], ...] = (),
         configuration_snapshot_json: str = "{}",
+        task_profile_id: str | None = None,
+        task_profile_snapshot_json: str = "{}",
     ) -> ProcessingJob:
         _validate_identifier(session_id, "session_id")
         if clip_id is not None:
             _validate_identifier(clip_id, "clip_id")
+        if task_profile_id is not None:
+            _validate_identifier(task_profile_id, "task_profile_id")
         _validate_configuration_snapshot(configuration_snapshot_json)
+        _validate_configuration_snapshot(task_profile_snapshot_json)
         now_ns = time.time_ns()
         job_id = uuid.uuid4().hex
         with self._connect() as connection:
@@ -50,8 +55,9 @@ class ProcessingJobStore:
                     job_id, session_id, clip_id, preset_json, state,
                     created_at_unix_ns, updated_at_unix_ns, detail, retry_of_job_id,
                     configuration_revision, configuration_sha256_json
-                    , configuration_snapshot_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    , configuration_snapshot_json, task_profile_id,
+                    task_profile_snapshot_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -70,6 +76,8 @@ class ProcessingJobStore:
                         sort_keys=True,
                     ),
                     configuration_snapshot_json,
+                    task_profile_id,
+                    task_profile_snapshot_json,
                 ),
             )
         return self.require(job_id)
@@ -194,6 +202,7 @@ class ProcessingJobStore:
         configuration_revision: int = 0,
         configuration_sha256_by_file: tuple[tuple[str, str], ...] = (),
         configuration_snapshot_json: str = "{}",
+        task_profile_snapshot_json: str | None = None,
     ) -> ProcessingJob:
         job = self.require(job_id)
         if job.state not in {
@@ -211,6 +220,12 @@ class ProcessingJobStore:
             configuration_revision=configuration_revision,
             configuration_sha256_by_file=configuration_sha256_by_file,
             configuration_snapshot_json=configuration_snapshot_json,
+            task_profile_id=job.task_profile_id,
+            task_profile_snapshot_json=(
+                job.task_profile_snapshot_json
+                if task_profile_snapshot_json is None
+                else task_profile_snapshot_json
+            ),
         )
 
     def recover_interrupted(self) -> int:
@@ -333,6 +348,8 @@ class ProcessingJobStore:
                     configuration_revision INTEGER NOT NULL DEFAULT 0,
                     configuration_sha256_json TEXT NOT NULL DEFAULT '{}',
                     configuration_snapshot_json TEXT NOT NULL DEFAULT '{}'
+                    , task_profile_id TEXT,
+                    task_profile_snapshot_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS jobs_state_created
                     ON jobs(state, created_at_unix_ns);
@@ -346,19 +363,15 @@ class ProcessingJobStore:
                     "INSERT INTO metadata(key, value) VALUES ('schema_version', ?)",
                     (_SCHEMA_VERSION,),
                 )
-            elif row["value"] in {"1", "2", "3"}:
+            elif row["value"] in {"1", "2", "3", "4"}:
                 columns = {
                     str(item["name"])
                     for item in connection.execute("PRAGMA table_info(jobs)").fetchall()
                 }
                 if "started_at_unix_ns" not in columns:
-                    connection.execute(
-                        "ALTER TABLE jobs ADD COLUMN started_at_unix_ns INTEGER"
-                    )
+                    connection.execute("ALTER TABLE jobs ADD COLUMN started_at_unix_ns INTEGER")
                 if "finished_at_unix_ns" not in columns:
-                    connection.execute(
-                        "ALTER TABLE jobs ADD COLUMN finished_at_unix_ns INTEGER"
-                    )
+                    connection.execute("ALTER TABLE jobs ADD COLUMN finished_at_unix_ns INTEGER")
                 if "configuration_revision" not in columns:
                     connection.execute(
                         "ALTER TABLE jobs ADD COLUMN configuration_revision "
@@ -372,6 +385,13 @@ class ProcessingJobStore:
                 if "configuration_snapshot_json" not in columns:
                     connection.execute(
                         "ALTER TABLE jobs ADD COLUMN configuration_snapshot_json "
+                        "TEXT NOT NULL DEFAULT '{}'"
+                    )
+                if "task_profile_id" not in columns:
+                    connection.execute("ALTER TABLE jobs ADD COLUMN task_profile_id TEXT")
+                if "task_profile_snapshot_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE jobs ADD COLUMN task_profile_snapshot_json "
                         "TEXT NOT NULL DEFAULT '{}'"
                     )
                 connection.execute(
@@ -427,6 +447,10 @@ def _job_from_row(row: sqlite3.Row) -> ProcessingJob:
             sorted((str(key), str(value)) for key, value in configuration_hashes.items())
         ),
         configuration_snapshot_json=row["configuration_snapshot_json"],
+        task_profile_id=(
+            str(row["task_profile_id"]) if row["task_profile_id"] is not None else None
+        ),
+        task_profile_snapshot_json=row["task_profile_snapshot_json"],
     )
 
 

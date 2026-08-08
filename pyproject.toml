@@ -14,8 +14,10 @@ dependencies = [
   "ahrs==0.4.0",
   "av>=16,<17",
   "fastapi>=0.115,<1",
+  "iopath>=0.1.10",
   "numpy>=2,<3",
   "opencv-python-headless>=4.10,<5",
+  "pillow>=9.4",
   "PyOpenGL==3.1.0",
   "pyqtgraph==0.14.0",
   "PyQt6==6.8.1",
@@ -24,6 +26,8 @@ dependencies = [
   "pydantic>=2.10,<3",
   "pyyaml>=6,<7",
   "scipy>=1.14,<2",
+  "tqdm>=4.66.1",
+  "transformers>=4.45,<6",
   "uvicorn[standard]>=0.34,<1",
 ]
 
@@ -40,6 +44,8 @@ packages = [
   "src/sensor_preprocessing",
   "src/hand_tracking",
   "src/slam_vio",
+  "src/phase_analysis",
+  "src/object_tracking",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
@@ -58,6 +64,14 @@ exclude = [
 hamer_revision = "3a01849f4148352e9260b69bf28b65d1671a4905"
 wilor_mini_revision = "ebec42f94c389070cdd7dda6fd1bf0b4a659c960"
 chumpy_version = "0.70"
+setup_script = "scripts/setup_client.ps1"
+
+[tool.egoglass.object-tracking]
+dino_model_revision = "a2bb814dd30d776dcf7e30523b00659f4f141c71"
+sam2_model_revision = "7c218beaf0bb87874785f32b582f640134fc1c09"
+sam2_revision = "2b90b9f5ceec907a1c18123530e92e794ad901a4"
+cotracker_model_revision = "bf55ea50d4390e1820a267f131cd6587240fb2c5"
+cotracker_revision = "82e02e8029753ad4ef13cf06be7f4fc5facdda4d"
 setup_script = "scripts/setup_client.ps1"
 
 [tool.pytest.ini_options]

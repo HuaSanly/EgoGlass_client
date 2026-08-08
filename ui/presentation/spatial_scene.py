@@ -38,6 +38,8 @@ class SpatialSceneState:
     has_imu_pose: bool
     has_vio_pose: bool
     show_ground: bool
+    object_points_m: tuple[tuple[float, float, float], ...] = ()
+    object_axes_m: tuple[tuple[tuple[float, float, float], ...], ...] = ()
 
 
 def build_spatial_scene_state(
@@ -54,6 +56,7 @@ def build_spatial_scene_state(
         (0.0, 0.0, 0.0, 1.0),
     ),
     allow_imu_world_fallback: bool = True,
+    object_overlays: object | None = None,
 ) -> SpatialSceneState:
     """Build one scene using a single frame's IMU, VIO and hand observations.
 
@@ -122,6 +125,17 @@ def build_spatial_scene_state(
         tuple(float(value) for value in point)
         for point in _transform_points(_axis_points(0.22), transform_display_camera)
     )
+    overlay_payload = (
+        object_overlays
+        if object_overlays is not None
+        else hand_result.get("object_overlays")
+        if isinstance(hand_result, dict)
+        else None
+    )
+    object_points, object_axes = _object_geometry(
+        overlay_payload,
+        vio_first_pose=vio_first_pose,
+    )
     return SpatialSceneState(
         reference_frame,
         left_world,
@@ -133,6 +147,8 @@ def build_spatial_scene_state(
         has_imu,
         has_vio,
         True,
+        object_points,
+        object_axes,
     )
 
 
@@ -233,6 +249,84 @@ def _frame_index(result: dict[str, object] | None) -> int | None:
         return None
     value = result.get("frame_index")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _object_geometry(
+    overlays: object,
+    *,
+    vio_first_pose: VioPose | None,
+) -> tuple[
+    tuple[tuple[float, float, float], ...],
+    tuple[tuple[tuple[float, float, float], ...], ...],
+]:
+    """Map current object clouds and coordinate frames into display-world axes."""
+
+    if not isinstance(overlays, list) or vio_first_pose is None:
+        return (), ()
+    transform_display_world = np.linalg.inv(_vio_transform(vio_first_pose))
+    display_points: list[tuple[float, float, float]] = []
+    display_axes: list[tuple[tuple[float, float, float], ...]] = []
+    for overlay in overlays:
+        if not isinstance(overlay, dict):
+            continue
+        triangulation = overlay.get("triangulation")
+        if not isinstance(triangulation, dict):
+            continue
+        points_world = _finite_points(triangulation.get("points_world_m"))
+        initial_pose = _flat_transform(triangulation.get("transform_object_to_world"))
+        if not points_world or initial_pose is None:
+            continue
+        pose = overlay.get("pose")
+        current_pose = initial_pose
+        if pose is not None:
+            if not isinstance(pose, dict):
+                continue
+            current_pose = _flat_transform(pose.get("transform_object_to_world"))
+            if current_pose is None:
+                continue
+        transform_display_object = transform_display_world @ current_pose
+        transform_display_points = transform_display_object @ np.linalg.inv(initial_pose)
+        display_points.extend(_transform_points(points_world, transform_display_points))
+        display_axes.append(_transform_points(_axis_points(0.12), transform_display_object))
+    return tuple(display_points), tuple(display_axes)
+
+
+def _finite_points(value: object) -> tuple[tuple[float, float, float], ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    points: list[tuple[float, float, float]] = []
+    for point in value:
+        if not isinstance(point, (list, tuple)) or len(point) != 3:
+            return ()
+        if not all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item))
+            for item in point
+        ):
+            return ()
+        points.append(tuple(float(item) for item in point))
+    return tuple(points)
+
+
+def _flat_transform(value: object) -> np.ndarray | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 16:
+        return None
+    if not all(
+        isinstance(item, (int, float))
+        and not isinstance(item, bool)
+        and math.isfinite(float(item))
+        for item in value
+    ):
+        return None
+    transform = np.asarray(value, dtype=np.float64).reshape(4, 4)
+    if not np.allclose(transform[3], (0.0, 0.0, 0.0, 1.0), atol=1e-6):
+        return None
+    try:
+        np.linalg.inv(transform)
+    except np.linalg.LinAlgError:
+        return None
+    return transform
 
 
 __all__ = ["SpatialReferenceFrame", "SpatialSceneState", "build_spatial_scene_state"]

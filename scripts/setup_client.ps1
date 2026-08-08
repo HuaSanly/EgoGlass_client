@@ -48,6 +48,26 @@ Invoke-Checked -Executable $pythonPath -ArgumentList @(
     "-m", "pip", "install", "--no-deps",
     "easy_ViTPose @ git+https://github.com/JunkyByte/easy_ViTPose.git@bb9860359e55b099a507c8000e360d48a27cc36d"
 )
+$previousSam2BuildCuda = $env:SAM2_BUILD_CUDA
+try {
+    $env:SAM2_BUILD_CUDA = "0"
+    Invoke-Checked -Executable $pythonPath -ArgumentList @(
+        "-m", "pip", "install", "--no-deps",
+        "sam-2 @ git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4"
+    )
+}
+finally {
+    if ($null -eq $previousSam2BuildCuda) {
+        Remove-Item Env:SAM2_BUILD_CUDA -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:SAM2_BUILD_CUDA = $previousSam2BuildCuda
+    }
+}
+Invoke-Checked -Executable $pythonPath -ArgumentList @(
+    "-m", "pip", "install", "--no-deps",
+    "cotracker @ git+https://github.com/facebookresearch/co-tracker.git@82e02e8029753ad4ef13cf06be7f4fc5facdda4d"
+)
 
 $sitePackages = & $pythonPath -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"
 $chumpyCode = Join-Path $sitePackages "chumpy\ch.py"

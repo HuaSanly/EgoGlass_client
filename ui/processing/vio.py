@@ -45,6 +45,7 @@ class VioRunInfo:
         (0.0, 0.0, 0.0, 1.0),
     )
     error: str | None = None
+    calibration_verified: bool = False
 
     @property
     def is_viewable(self) -> bool:
@@ -181,6 +182,7 @@ class OfflineVioService:
             trajectory,
             transform,
             str(error) if error else None,
+            bool(payload.get("calibration_verified", False)),
         )
 
     @staticmethod

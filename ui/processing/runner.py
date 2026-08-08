@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
 from collections.abc import Callable
 from pathlib import Path
+
+import numpy as np
 
 from hand_tracking import (
     HandTrackingConfig,
@@ -15,6 +18,16 @@ from hand_tracking import (
     TemporalProcessingStats,
     release_pipeline_resources,
 )
+from object_tracking import (
+    ObjectFrameInput,
+    ObjectTrackingConfig,
+    ObjectTrackingError,
+    OfflineObjectProcessing,
+    TaskProfile,
+    load_object_tracking_config,
+)
+from phase_analysis import PhaseAnalysisConfig, PhaseAnalysisService, PhaseInputFrame
+from schemas.phase import ObjectCentricWindow, PhaseAnalysisResult
 from sensor_preprocessing import (
     CaptureSessionReader,
     SensorCalibration,
@@ -40,12 +53,12 @@ class SessionProcessingRunner:
         *,
         sensor_config_path: str | Path = "config/sensor-preprocessing.yaml",
         offline_hand_tracking_config_path: str | Path = "config/offline-hand-tracking.yaml",
+        object_tracking_config_path: str | Path = "config/object-tracking.yaml",
         tracker_factory: Callable[[], HumanEgoHandTrackingPipeline] | None = None,
     ) -> None:
         self.sensor_config_path = Path(sensor_config_path).resolve()
-        self.offline_hand_tracking_config_path = Path(
-            offline_hand_tracking_config_path
-        ).resolve()
+        self.offline_hand_tracking_config_path = Path(offline_hand_tracking_config_path).resolve()
+        self.object_tracking_config_path = Path(object_tracking_config_path).resolve()
         self._tracker_factory = tracker_factory
         self._tracker: HumanEgoHandTrackingPipeline | None = None
 
@@ -86,9 +99,7 @@ class SessionProcessingRunner:
 
         reader = CaptureSessionReader.open(session_path)
         frame_evidence = tuple(
-            frame
-            for clip in reader.session.clips
-            for frame in reader.iter_frames(clip.clip_id)
+            frame for clip in reader.session.clips for frame in reader.iter_frames(clip.clip_id)
         )
         imu_evidence = tuple(reader.iter_imu_samples())
         recorded_mapping = derive_recorded_clock_mapping(
@@ -128,17 +139,21 @@ class SessionProcessingRunner:
         effective_hand_config = hand_config or HandTrackingConfig.load(
             self.offline_hand_tracking_config_path
         )
-        temporal_config = (
-            effective_hand_config.temporal_processing or OfflineHandTemporalConfig()
-        )
+        temporal_config = effective_hand_config.temporal_processing or OfflineHandTemporalConfig()
         temporal_processor = OfflineHandTemporalProcessor(
             temporal_config,
             grasp_ratio_threshold=effective_hand_config.grasp_ratio_threshold,
         )
         tracker = self._tracker_for_worker(effective_hand_config)
         raw_results_by_clip: dict[str, list[HandTrackingResult]] = {}
+        final_results_by_clip: dict[str, list[HandTrackingResult]] = {}
         temporal_stats: list[TemporalProcessingStats] = []
         partial = vio_error is not None or vio_run_info is None or not vio_run_info.is_viewable
+        phase_payload: dict[str, object] = {
+            "state": "unavailable",
+            "reason": "VIO unavailable",
+        }
+        object_payload: dict[str, object] = {"state": "not_requested"}
         try:
             for bundle in preprocessing.iter_recorded_session(
                 session_path,
@@ -162,16 +177,62 @@ class SessionProcessingRunner:
                     clip_results,
                     trajectory=vio_run_info.trajectory if vio_run_info is not None else None,
                     transform_camera_to_imu=(
-                        vio_run_info.transform_camera_to_imu
-                        if vio_run_info is not None
-                        else None
+                        vio_run_info.transform_camera_to_imu if vio_run_info is not None else None
                     ),
                 )
                 partial = partial or output.partial_world_coverage
                 temporal_stats.append(output.stats)
                 for final_result in output.final_results:
                     result_store.put_final(final_result.to_json_dict())
+                    final_results_by_clip.setdefault(final_result.sequence_id, []).append(
+                        final_result
+                    )
                     detected_count += len(final_result.hands)
+            if vio_run_info is not None and vio_run_info.is_viewable:
+                phase_started_ns = time.perf_counter_ns()
+                phase_result = self._run_phase_analysis(
+                    output_directory,
+                    final_results_by_clip,
+                    vio_run_info,
+                )
+                phase_payload = {
+                    "state": "completed",
+                    "frame_count": len(phase_result.frames),
+                    "segment_count": len(phase_result.segments),
+                    "object_window_count": len(phase_result.object_centric_windows),
+                    "artifact": "phases.jsonl",
+                    "duration_ns": time.perf_counter_ns() - phase_started_ns,
+                    "configuration": PhaseAnalysisConfig().model_dump(mode="json"),
+                    "configuration_sha256": _json_sha256(
+                        PhaseAnalysisConfig().model_dump(mode="json")
+                    ),
+                }
+                if job.task_profile_id is not None:
+                    object_started_ns = time.perf_counter_ns()
+                    try:
+                        object_payload = self._run_object_tracking(
+                            output_directory,
+                            job.task_profile_id,
+                            job.task_profile_snapshot_json,
+                            job.configuration_snapshot_json,
+                            phase_result.object_centric_windows,
+                            final_results_by_clip,
+                            preprocessing,
+                            session_path,
+                            vio_run_info,
+                            is_canceled,
+                        )
+                        object_payload["duration_ns"] = time.perf_counter_ns() - object_started_ns
+                    except ProcessingCanceled:
+                        raise
+                    except ObjectTrackingError as error:
+                        partial = True
+                        object_payload = {"state": "failed", "error": str(error)}
+                        self._write_log(run_log_path, f"object stage partial: {error}")
+            elif job.task_profile_id is not None:
+                partial = True
+                object_payload = {"state": "blocked", "error": "VIO unavailable"}
+                self._write_log(run_log_path, "object stage blocked: VIO unavailable")
         except BaseException as error:
             state = "canceled" if isinstance(error, ProcessingCanceled) else "failed"
             self._write_log(run_log_path, f"run {state}: {error}")
@@ -189,6 +250,8 @@ class SessionProcessingRunner:
                 vio_run_id=vio_run_info.run_id if vio_run_info is not None else None,
                 vio_error=vio_error,
                 temporal_stats=_aggregate_temporal_stats(temporal_stats),
+                phase_analysis=phase_payload,
+                object_tracking=object_payload,
             )
             raise
 
@@ -208,6 +271,8 @@ class SessionProcessingRunner:
             vio_run_id=vio_run_info.run_id if vio_run_info is not None else None,
             vio_error=vio_error,
             temporal_stats=_aggregate_temporal_stats(temporal_stats),
+            phase_analysis=phase_payload,
+            object_tracking=object_payload,
         )
         return ProcessingRunSummary(
             run_id=output_directory.name,
@@ -244,6 +309,148 @@ class SessionProcessingRunner:
         self._tracker = None
         release_pipeline_resources(tracker)
 
+    def _run_phase_analysis(
+        self,
+        output_directory: Path,
+        final_results_by_clip: dict[str, list[HandTrackingResult]],
+        vio_run_info: VioRunInfo,
+    ) -> PhaseAnalysisResult:
+        inputs: list[PhaseInputFrame] = []
+        for clip_id, results in final_results_by_clip.items():
+            for result in sorted(results, key=lambda item: item.frame_index):
+                pose = vio_run_info.pose_at(result.session_time_ns)
+                if pose is None:
+                    continue
+                hand_speeds = [
+                    float(np.linalg.norm(hand.kinematics.midpoint_linear_velocity_optimized_m_s))
+                    for hand in result.hands
+                    if hand.kinematics is not None
+                ]
+                inputs.append(
+                    PhaseInputFrame(
+                        clip_id=clip_id,
+                        frame_index=result.frame_index,
+                        session_time_ns=result.session_time_ns,
+                        head_position_m=pose.position_m,
+                        head_quaternion_wxyz=pose.quaternion_wxyz,
+                        hand_linear_speed_m_s=max(hand_speeds, default=0.0),
+                        grasping=any(hand.is_grasping for hand in result.hands),
+                    )
+                )
+        phase_result = PhaseAnalysisService(PhaseAnalysisConfig()).analyze(
+            output_directory.name,
+            inputs,
+        )
+        with (output_directory / "phases.jsonl").open(
+            "w", encoding="utf-8", newline="\n"
+        ) as stream:
+            for frame in phase_result.frames:
+                stream.write(json.dumps(frame.model_dump(mode="json"), ensure_ascii=False) + "\n")
+        (output_directory / "phase-analysis.json").write_text(
+            json.dumps(
+                phase_result.model_dump(mode="json"),
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return phase_result
+
+    def _run_object_tracking(
+        self,
+        output_directory: Path,
+        task_profile_id: str,
+        task_profile_snapshot_json: str,
+        configuration_snapshot_json: str,
+        windows: tuple[ObjectCentricWindow, ...],
+        final_results_by_clip: dict[str, list[HandTrackingResult]],
+        preprocessing: SensorPreprocessingPipeline,
+        session_path: Path,
+        vio_run_info: VioRunInfo,
+        is_canceled: Callable[[], bool],
+    ) -> dict[str, object]:
+        configuration_snapshot = json.loads(configuration_snapshot_json)
+        object_config_snapshot = (
+            configuration_snapshot.get("object_tracking")
+            if isinstance(configuration_snapshot, dict)
+            else None
+        )
+        config = (
+            ObjectTrackingConfig.model_validate_json(json.dumps(object_config_snapshot))
+            if isinstance(object_config_snapshot, dict)
+            else load_object_tracking_config(self.object_tracking_config_path)
+        )
+        snapshot = json.loads(task_profile_snapshot_json)
+        profile = (
+            TaskProfile.model_validate(snapshot)
+            if isinstance(snapshot, dict) and snapshot
+            else config.profile(task_profile_id)
+        )
+        if profile.profile_id != task_profile_id:
+            raise ObjectTrackingError("task profile snapshot id does not match queued job")
+        final_hands = {
+            (clip_id, result.frame_index): result.hands
+            for clip_id, results in final_results_by_clip.items()
+            for result in results
+        }
+        window_keys = {
+            (window.clip_id, frame_index)
+            for window in windows
+            for frame_index in range(window.start_frame_index, window.end_frame_index_exclusive)
+        }
+        frames_by_clip: dict[str, list[ObjectFrameInput]] = {}
+        for bundle in preprocessing.iter_recorded_session(
+            session_path,
+            verify_media_hashes=False,
+            clip_ids=set(final_results_by_clip),
+        ):
+            key = (bundle.sequence_id, bundle.frame_index)
+            if key not in window_keys:
+                continue
+            frames_by_clip.setdefault(bundle.sequence_id, []).append(
+                ObjectFrameInput(
+                    clip_id=bundle.sequence_id,
+                    frame_index=bundle.frame_index,
+                    session_time_ns=bundle.session_time_ns,
+                    image_bgr=bundle.image_bgr,
+                    intrinsics=np.asarray(
+                        bundle.calibration.rectified_camera_matrix,
+                        dtype=np.float64,
+                    ),
+                    hands=final_hands.get(key, ()),
+                )
+            )
+        if not frames_by_clip:
+            raise ObjectTrackingError("object windows contain no decoded frames")
+        if vio_run_info.trajectory is None:
+            raise ObjectTrackingError("object tracking requires a parsed VIO trajectory")
+        pipeline = OfflineObjectProcessing(config)
+        result = pipeline.run(
+            output_directory.name,
+            profile,
+            windows,
+            {
+                key: tuple(sorted(value, key=lambda frame: frame.frame_index))
+                for key, value in frames_by_clip.items()
+            },
+            vio_run_info.trajectory,
+            np.asarray(vio_run_info.transform_camera_to_imu, dtype=np.float64),
+            output_directory / "objects",
+            is_canceled=is_canceled,
+        )
+        return {
+            "state": "completed",
+            "task_profile_id": task_profile_id,
+            "configuration": config.model_dump(mode="json"),
+            "configuration_sha256": _json_sha256(config.model_dump(mode="json")),
+            "mask_count": len(result.masks),
+            "track_count": len(result.tracks),
+            "triangulation_count": len(result.triangulations),
+            "pose_count": len(result.poses),
+            "artifact": "objects/object-result.json",
+        }
+
     @staticmethod
     def _write_log(path: Path, message: str) -> None:
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -268,6 +475,8 @@ class SessionProcessingRunner:
         vio_run_id: str | None = None,
         vio_error: str | None = None,
         temporal_stats: TemporalProcessingStats | None = None,
+        phase_analysis: dict[str, object] | None = None,
+        object_tracking: dict[str, object] | None = None,
     ) -> None:
         payload = {
             "schema_version": "1.0",
@@ -295,11 +504,43 @@ class SessionProcessingRunner:
             "raw_detected_hand_count": raw_detected_hand_count,
             "vio_run_id": vio_run_id,
             "vio_error": vio_error,
+            "task_profile_id": job.task_profile_id,
+            "task_profile": json.loads(job.task_profile_snapshot_json),
+            "phase_analysis": phase_analysis,
+            "object_tracking": object_tracking,
             "temporal_processing": (
-                _temporal_stats_payload(temporal_stats)
-                if temporal_stats is not None
-                else None
+                _temporal_stats_payload(temporal_stats) if temporal_stats is not None else None
             ),
+            "stages": {
+                "capture_validation": {
+                    "state": "completed" if input_frame_count else "pending",
+                    "input_frame_count": input_frame_count,
+                },
+                "sensor_preprocessing": {
+                    "state": "completed" if input_frame_count else "pending",
+                    "output_frame_count": input_frame_count,
+                },
+                "basalt_vio": {
+                    "state": "failed" if vio_error else ("completed" if vio_run_id else "pending"),
+                    "run_id": vio_run_id,
+                    "error": vio_error,
+                },
+                "hand_inference": {
+                    "state": "completed" if inferred_frame_count else "pending",
+                    "input_frame_count": input_frame_count,
+                    "output_frame_count": inferred_frame_count,
+                },
+                "hand_temporal_processing": {
+                    "state": "completed" if temporal_stats is not None else "pending",
+                    "output_hand_count": detected_hand_count,
+                },
+                "phase_analysis": phase_analysis,
+                "object_tracking": object_tracking,
+                "result_index": {
+                    "state": "completed" if state in {"completed", "partial"} else state,
+                    "artifact": "results.sqlite",
+                },
+            },
             "error": error,
         }
         temporary = path.with_suffix(".json.tmp")
@@ -324,8 +565,7 @@ def _processing_configuration(
     if hand_payload is None:
         hand_payload = payload.get("hand_tracking")
     if not all(
-        isinstance(value, dict)
-        for value in (sensor_payload, calibration_payload, hand_payload)
+        isinstance(value, dict) for value in (sensor_payload, calibration_payload, hand_payload)
     ):
         raise ValueError("processing configuration snapshot is incomplete")
     assert isinstance(sensor_payload, dict)
@@ -375,10 +615,7 @@ def _aggregate_temporal_stats(
     if not stats:
         return TemporalProcessingStats(**dict.fromkeys(fields, 0))
     return TemporalProcessingStats(
-        **{
-            field: sum(getattr(item, field) for item in stats)
-            for field in fields
-        }
+        **{field: sum(getattr(item, field) for item in stats) for field in fields}
     )
 
 
@@ -405,3 +642,13 @@ def _temporal_stats_payload(stats: TemporalProcessingStats) -> dict[str, object]
             "kinematic_optimization": stats.kinematic_optimization_duration_ns,
         },
     }
+
+
+def _json_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()

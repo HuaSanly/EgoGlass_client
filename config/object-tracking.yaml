@@ -1,0 +1,36 @@
+schema_version: "1.0"
+
+# Object models run only in the offline processing worker. Add one or more
+# task profiles before submitting a dataset-quality processing job.
+dino_model_id: "IDEA-Research/grounding-dino-tiny"
+dino_model_revision: "a2bb814dd30d776dcf7e30523b00659f4f141c71"
+sam2_repo_id: "facebook/sam2-hiera-tiny"
+sam2_model_revision: "7c218beaf0bb87874785f32b582f640134fc1c09"
+sam2_checkpoint_name: "sam2_hiera_tiny.pt"
+sam2_config: "configs/sam2/sam2_hiera_t.yaml"
+sam2_code_revision: "2b90b9f5ceec907a1c18123530e92e794ad901a4"
+cotracker_repository: "facebook/cotracker3"
+cotracker_model_revision: "bf55ea50d4390e1820a267f131cd6587240fb2c5"
+cotracker_checkpoint_name: "scaled_offline.pth"
+cotracker_code_revision: "82e02e8029753ad4ef13cf06be7f4fc5facdda4d"
+device: cuda
+require_cuda: true
+box_threshold: 0.3
+mask_min_area_ratio: 0.001
+keypoint_count: 20
+morphology_close_kernel: 7
+morphology_erode_kernel: 5
+inner_edge_kernel: 5
+cotracker_resolution: 640
+cotracker_chunk_size: 100
+triangulation_frame_stride: 3
+triangulation_huber_scale_px: 3.0
+maximum_vio_pose_gap_ms: 100
+maximum_grasp_latch_distance_m: 0.35
+profiles:
+  - profile_id: default-manipulation
+    display_name: "Generic handled object"
+    object_prompts:
+      obj1: "object held or manipulated by the hands ."
+    arm_prompt: "human arms . human hands ."
+    orientation_method: pca1

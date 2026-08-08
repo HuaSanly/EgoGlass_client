@@ -15,6 +15,7 @@ from sensor_preprocessing import (
     derive_recorded_clock_mapping,
 )
 from slam_vio import BasaltError, BasaltVioConfig, BasaltVioRunner
+from slam_vio.calibration import calibration_is_verified
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -174,6 +175,7 @@ def run_session(
         "staging_state": backend_metadata.get("staging_state"),
         "returncode": result.returncode,
         "calibration_profile_id": preprocessing.calibration.calibration_profile_id,
+        "calibration_verified": calibration_is_verified(preprocessing.calibration),
         "transform_camera_to_imu": preprocessing.calibration.transform_camera_to_body,
         "sensor_config_path": str(Path(sensor_config_path).resolve()),
         "sensor_config_sha256": _sha256(Path(sensor_config_path).resolve()),

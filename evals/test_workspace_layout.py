@@ -10,6 +10,8 @@ EXPECTED_PACKAGES = {
     "src/sensor_preprocessing",
     "src/hand_tracking",
     "src/slam_vio",
+    "src/phase_analysis",
+    "src/object_tracking",
 }
 
 

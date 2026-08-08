@@ -1,6 +1,9 @@
 import ast
 import subprocess
+import tomllib
 from pathlib import Path
+
+import yaml
 
 CLIENT_ROOT = Path(__file__).parents[1]
 EXPECTED_PACKAGES = {
@@ -8,6 +11,8 @@ EXPECTED_PACKAGES = {
     "sensor_preprocessing",
     "hand_tracking",
     "slam_vio",
+    "phase_analysis",
+    "object_tracking",
 }
 
 
@@ -83,22 +88,44 @@ def test_documented_commands_use_the_single_conda_environment() -> None:
     assert "conda run -n egoglass" in combined
 
 
-def test_wsl_setup_normalizes_distribution_output_without_char_overload() -> None:
-    script = (CLIENT_ROOT / "scripts" / "setup-basalt-wsl.ps1").read_text(
-        encoding="utf-8"
+def test_object_tracking_setup_pins_sources_and_declares_sam2_runtime_dependencies() -> None:
+    with (CLIENT_ROOT / "pyproject.toml").open("rb") as stream:
+        project = tomllib.load(stream)
+    environment = yaml.safe_load(
+        (CLIENT_ROOT / "environment.yml").read_text(encoding="utf-8")
     )
+    setup = (CLIENT_ROOT / "scripts" / "setup_client.ps1").read_text(encoding="utf-8")
+    project_dependencies = set(project["project"]["dependencies"])
+    pip_dependencies = set(environment["dependencies"][-1]["pip"])
 
-    assert '-replace "`0", \'\'' in script
+    assert {
+        "iopath>=0.1.10",
+        "pillow>=9.4",
+        "tqdm>=4.66.1",
+        "transformers>=4.45,<6",
+    } <= project_dependencies
+    assert {
+        "iopath>=0.1.10",
+        "pillow>=9.4.0",
+        "tqdm>=4.66.1",
+        "transformers>=4.45,<6",
+    } <= pip_dependencies
+    assert "facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4" in setup
+    assert '"sam-2 @ git+https://github.com/facebookresearch/sam2.git@' in setup
+    assert "facebookresearch/co-tracker.git@82e02e8029753ad4ef13cf06be7f4fc5facdda4d" in setup
+    assert '$env:SAM2_BUILD_CUDA = "0"' in setup
+
+
+def test_wsl_setup_normalizes_distribution_output_without_char_overload() -> None:
+    script = (CLIENT_ROOT / "scripts" / "setup-basalt-wsl.ps1").read_text(encoding="utf-8")
+
+    assert "-replace \"`0\", ''" in script
     assert ".Replace([char]0, '')" not in script
 
 
 def test_wsl_setup_maps_loopback_proxy_and_pins_basalt_revision() -> None:
-    powershell = (CLIENT_ROOT / "scripts" / "setup-basalt-wsl.ps1").read_text(
-        encoding="utf-8"
-    )
-    linux = (CLIENT_ROOT / "scripts" / "wsl" / "setup-basalt.sh").read_text(
-        encoding="utf-8"
-    )
+    powershell = (CLIENT_ROOT / "scripts" / "setup-basalt-wsl.ps1").read_text(encoding="utf-8")
+    linux = (CLIENT_ROOT / "scripts" / "wsl" / "setup-basalt.sh").read_text(encoding="utf-8")
 
     assert "$proxyUri.IsLoopback" in powershell
     assert "ip route show default" in powershell
@@ -117,9 +144,9 @@ def test_wsl_setup_maps_loopback_proxy_and_pins_basalt_revision() -> None:
     assert 'current_revision=$(git -C "$source_directory" rev-parse HEAD)' in linux
     assert '"$current_revision" != "$basalt_revision"' in linux
     assert "configure_attempt=1" in linux
-    assert 'if [[ $configure_attempt -ge 3 ]]' in linux
+    assert "if [[ $configure_attempt -ge 3 ]]" in linux
     assert "sleep 3" in linux
-    assert 'build_jobs=${EGOGLASS_BASALT_BUILD_JOBS:-4}' in linux
+    assert "build_jobs=${EGOGLASS_BASALT_BUILD_JOBS:-4}" in linux
     assert 'export VCPKG_MAX_CONCURRENCY="$build_jobs"' in linux
     assert 'build "$build_directory" --parallel "$build_jobs"' in linux
     assert "libgles2-mesa-dev" in linux

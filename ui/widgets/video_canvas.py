@@ -104,6 +104,7 @@ class VideoCanvas(QWidget):
         self._frame: LiveFrame | PlaybackFrame | None = None
         self._image: QImage | None = None
         self._overlay: dict[str, object] | None = None
+        self._object_mask_cache: dict[str, QImage] = {}
         self._primary_overlay_enabled = True
         self._latest_frame_key: tuple[str, str, int] | None = None
         self._pending_presentation = False
@@ -226,7 +227,11 @@ class VideoCanvas(QWidget):
             latest_overlay_frame_index=overlay_key[2] if overlay_key is not None else None,
             overlay_frame_age=active_overlay[1] if active_overlay is not None else None,
             overlay_visible=(
-                active_overlay is not None and _has_drawable_hands(active_overlay[0])
+                active_overlay is not None
+                and (
+                    _has_drawable_hands(active_overlay[0])
+                    or _has_drawable_objects(active_overlay[0])
+                )
             ),
         )
 
@@ -275,11 +280,11 @@ class VideoCanvas(QWidget):
         source_width = _positive_number(result.get("source_image_width_px"))
         source_height = _positive_number(result.get("source_image_height_px"))
         hands = result.get("hands")
-        if source_width is None or source_height is None or not isinstance(hands, list):
+        if source_width is None or source_height is None:
             return
         geometry = _fit_inside(canvas, source_width, source_height)
         offset_x, offset_y = geometry.minimum
-        for hand in hands:
+        for hand in hands if isinstance(hands, list) else ():
             if not isinstance(hand, dict):
                 continue
             color = QColor("#16a085") if hand.get("handedness") == "left" else QColor("#f59e0b")
@@ -310,6 +315,61 @@ class VideoCanvas(QWidget):
                     4,
                     4,
                 )
+        self._paint_object_overlays(painter, geometry, result.get("object_overlays"))
+
+    def _paint_object_overlays(
+        self,
+        painter: QPainter,
+        geometry: FittedImageGeometry,
+        value: object,
+    ) -> None:
+        if not isinstance(value, list):
+            return
+        palette = (QColor("#2f6fed"), QColor("#ec5b56"), QColor("#18a77b"))
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                continue
+            color = palette[index % len(palette)]
+            mask_path = item.get("mask_path")
+            if isinstance(mask_path, str):
+                image = self._object_mask(mask_path, color)
+                if image is not None:
+                    painter.save()
+                    painter.setOpacity(0.28)
+                    painter.drawImage(_rect(geometry), image)
+                    painter.restore()
+            track = item.get("track")
+            if not isinstance(track, dict):
+                continue
+            points = _points(track.get("points_xy_px"))
+            visibility = track.get("visibility")
+            if not isinstance(visibility, list):
+                continue
+            painter.setPen(QPen(QColor("#ffffff"), 1))
+            painter.setBrush(color)
+            for point, visible in zip(points, visibility, strict=False):
+                if not isinstance(visible, (int, float)) or float(visible) < 0.5:
+                    continue
+                x = geometry.minimum[0] + point[0] * geometry.scale
+                y = geometry.minimum[1] + point[1] * geometry.scale
+                painter.drawEllipse(QRectF(x - 3, y - 3, 6, 6))
+
+    def _object_mask(self, path: str, color: QColor) -> QImage | None:
+        cache_key = f"{path}:{color.name()}"
+        cached = self._object_mask_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        mask = QImage(path)
+        if mask.isNull():
+            return None
+        alpha = mask.convertToFormat(QImage.Format.Format_Grayscale8)
+        image = QImage(alpha.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(color)
+        image.setAlphaChannel(alpha)
+        self._object_mask_cache[cache_key] = image
+        if len(self._object_mask_cache) > 64:
+            self._object_mask_cache.pop(next(iter(self._object_mask_cache)))
+        return image
 
     def _active_overlay(self) -> tuple[dict[str, object], int] | None:
         result = self._overlay
@@ -412,6 +472,11 @@ def _has_drawable_hands(result: dict[str, object]) -> bool:
         )
         for hand in hands
     )
+
+
+def _has_drawable_objects(result: dict[str, object]) -> bool:
+    overlays = result.get("object_overlays")
+    return isinstance(overlays, list) and any(isinstance(item, dict) for item in overlays)
 
 
 def _frame_stream_id(frame: LiveFrame | PlaybackFrame) -> str:

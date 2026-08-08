@@ -56,16 +56,23 @@ def test_job_queue_persists_submission_configuration_provenance(tmp_path) -> Non
         configuration_revision=7,
         configuration_sha256_by_file=(("hand-tracking.yaml", "abc123"),),
         configuration_snapshot_json='{"hand_tracking": {"detector": "mediapipe"}}',
+        task_profile_id="default-manipulation",
+        task_profile_snapshot_json='{"display_name": "old"}',
     )
 
     restarted = ProcessingJobStore(path).require(job.job_id)
     assert restarted.configuration_revision == 7
-    assert restarted.configuration_sha256_by_file == (
-        ("hand-tracking.yaml", "abc123"),
+    assert restarted.configuration_sha256_by_file == (("hand-tracking.yaml", "abc123"),)
+    assert restarted.configuration_snapshot_json == ('{"hand_tracking": {"detector": "mediapipe"}}')
+    assert restarted.task_profile_id == "default-manipulation"
+    assert restarted.task_profile_snapshot_json == '{"display_name": "old"}'
+
+    store.request_cancel(job.job_id)
+    retried = store.retry(
+        job.job_id,
+        task_profile_snapshot_json='{"display_name": "current"}',
     )
-    assert restarted.configuration_snapshot_json == (
-        '{"hand_tracking": {"detector": "mediapipe"}}'
-    )
+    assert retried.task_profile_snapshot_json == '{"display_name": "current"}'
 
 
 def test_completed_run_wins_a_cancel_requested_after_its_last_frame(tmp_path) -> None:
@@ -123,9 +130,7 @@ def test_queue_migrates_v1_timestamps_without_losing_history(tmp_path) -> None:
     ProcessingJobStore(path)
 
     with sqlite3.connect(path) as connection:
-        columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(jobs)")
-        }
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(jobs)")}
         version = connection.execute(
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()
@@ -135,8 +140,10 @@ def test_queue_migrates_v1_timestamps_without_losing_history(tmp_path) -> None:
         "configuration_revision",
         "configuration_sha256_json",
         "configuration_snapshot_json",
+        "task_profile_id",
+        "task_profile_snapshot_json",
     } <= columns
-    assert version == ("4",)
+    assert version == ("5",)
 
 
 def test_results_are_addressed_by_clip_frame_and_session_time(tmp_path) -> None:

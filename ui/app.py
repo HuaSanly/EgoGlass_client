@@ -19,6 +19,7 @@ from ui.configuration import ClientRuntimeConfig
 
 from .application.runtime_host import RuntimeConfig, UnifiedRuntimeHost
 from .logging_config import configure_logging
+from .views.dataset_builder import DatasetView
 from .views.home import HomeView
 from .views.processing_pipeline import ProcessingPipelineView
 from .views.processing_settings import ProcessingSettingsView
@@ -37,6 +38,7 @@ class MainWindow(FluentWindow):
             application.setFont(QFont("Microsoft YaHei UI", 10))
         self.runtime = runtime
         self.processing_view = VideoProcessingView(runtime, self)
+        self.dataset_view = DatasetView(runtime, self)
         self.pipeline_view = ProcessingPipelineView(runtime, self)
         self.home_view = HomeView(runtime, self)
         self.settings_view = ProcessingSettingsView(runtime, self)
@@ -50,12 +52,14 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setExpandWidth(220)
         QTimer.singleShot(0, self._set_navigation_labels)
         self.addSubInterface(self.processing_view, FluentIcon.MOVIE, "视频处理")
+        self.addSubInterface(self.dataset_view, FluentIcon.LIBRARY, "数据集")
         self.addSubInterface(self.pipeline_view, FluentIcon.HISTORY, "流水线")
         self.addSubInterface(self.home_view, FluentIcon.CAMERA, "实时采集")
         self.addSubInterface(self.settings_view, FluentIcon.SETTING, "系统设置")
 
     def _set_navigation_labels(self) -> None:
         labels = {
+            "datasetView": "\u6570\u636e\u96c6",
             "videoProcessingView": "\u89c6\u9891\u5904\u7406",
             "processingPipelineView": "\u6d41\u6c34\u7ebf",
             "homeView": "\u5b9e\u65f6\u91c7\u96c6",
@@ -74,6 +78,7 @@ class MainWindow(FluentWindow):
         errors: list[Exception] = []
         for operation in (
             self.processing_view.close_resources,
+            self.dataset_view.close_resources,
             self.pipeline_view.close_resources,
             self.home_view.close_resources,
             self.settings_view.close_resources,
@@ -157,9 +162,7 @@ def main(argv: list[str] | None = None) -> int:
             host=configured.host if args.host is None else args.host,
             port=configured.port if args.port is None else args.port,
             discovery_port=(
-                configured.discovery_port
-                if args.discovery_port is None
-                else args.discovery_port
+                configured.discovery_port if args.discovery_port is None else args.discovery_port
             ),
             recordings_root=recordings_root,
             pairing_token=args.pairing_token,

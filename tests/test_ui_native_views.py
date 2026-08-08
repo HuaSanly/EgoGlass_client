@@ -314,7 +314,7 @@ def _processing_run(
     )
 
 
-def test_fluent_window_registers_four_processing_first_routes(
+def test_fluent_window_registers_dataset_processing_first_routes(
     qt_application: QApplication,
 ) -> None:
     runtime = RuntimeStub()
@@ -323,11 +323,12 @@ def test_fluent_window_registers_four_processing_first_routes(
         window.show()
         qt_application.processEvents()
 
-        assert window.stackedWidget.count() == 4
+        assert window.stackedWidget.count() == 5
         assert window.stackedWidget.widget(0) is window.processing_view
-        assert window.stackedWidget.widget(1) is window.pipeline_view
-        assert window.stackedWidget.widget(2) is window.home_view
-        assert window.stackedWidget.widget(3) is window.settings_view
+        assert window.stackedWidget.widget(1) is window.dataset_view
+        assert window.stackedWidget.widget(2) is window.pipeline_view
+        assert window.stackedWidget.widget(3) is window.home_view
+        assert window.stackedWidget.widget(4) is window.settings_view
         assert window.stackedWidget.currentWidget() is window.processing_view
         assert window.processing_view.showing_hall
         assert len(window.processing_view.findChildren(VideoCanvas)) == 1

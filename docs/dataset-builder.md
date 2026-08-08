@@ -1,19 +1,21 @@
 # Dataset Builder
 
-`dataset-builder` will assemble immutable, versioned training datasets from raw
+`ui.dataset_builder` assembles immutable, versioned training datasets from raw
 capture references, compatible derived artifacts, and reviewed annotations. It
 owns sample construction, coordinate conversion, schema validation, dataset
 splits, provenance, and export. It does not run perception algorithms or mutate
 source sessions.
 
-This package currently defines the dataset-builder boundary only. No HumanEgo
-or other third-party source has been copied into the package.
+The algorithm stages remain in `src/phase_analysis` and `src/object_tracking`.
+The UI-owned builder only performs quality review, virtual episode assembly,
+provenance, deterministic session-grouped splitting, and publication.
 
 ## Directory purpose
 
 | Path | Purpose |
 | --- | --- |
-| `src/dataset_builder/` | Planned dataset-assembly package. |
+| `ui/dataset_builder/` | Candidate discovery, quality gates, virtual episodes, and publication. |
+| `src/schemas/dataset.py` | Stable JSONL and Manifest contracts. |
 | `tests/` | Shared fast tests, identified by `test_dataset_builder_` filenames. |
 | `evals/` | Shared periodic evaluations, identified by `test_dataset_builder_` filenames. |
 | `config/` | Shared versioned client configuration. |
@@ -21,21 +23,33 @@ or other third-party source has been copied into the package.
 
 ## Module purpose
 
-| Module | Future responsibility |
+| Module | Responsibility |
 | --- | --- |
-| `pipeline.py` | Orchestrate one reproducible dataset build. |
-| `sample_builder.py` | Assemble frame-level and episode-level samples. |
-| `coordinate_conversion.py` | Convert versioned perception frames into the training representation. |
-| `schema_validation.py` | Validate every emitted sample and cross-reference. |
-| `dataset_split.py` | Create deterministic train, validation, and test splits. |
-| `provenance.py` | Record source sessions, annotations, code, configuration, and model versions. |
-| `export.py` | Publish a new immutable dataset version. |
+| `builder.py` | Assemble and atomically publish Manifest plus JSONL artifacts. |
+| `quality.py` | Enforce hard gates and auditable soft-gate overrides. |
+| `episodes.py` | Split valid frame runs into virtual episode spans. |
+| `catalog.py` | Discover processing runs for the Fluent dataset hall. |
+| `models.py` | UI workflow state that does not belong in public schemas. |
 
-## Planned boundary
+## Publication boundary
 
-Inputs will be immutable capture references, compatible derived artifacts, and
-reviewed annotations. Output will be a separately versioned dataset; source
-sessions and previously registered datasets remain read-only.
+Inputs are immutable capture references, completed offline runs, verified
+Basalt calibration, object-stage artifacts, and reviewed annotations. Output is
+a separately versioned dataset. Source sessions and previously published
+datasets remain read-only. Video cuts are stored as frame/time spans; MP4 files
+are only created by a separate explicit media export.
+
+Every virtual episode must be fully covered by an immutable
+`episode-annotation-v1` revision. Published episode labels and phases are copied
+into `episodes.jsonl`; every frame keeps explicit hand-result, object-result,
+annotation-revision, processing-run, and VIO-run references.
+
+Publication is transactional: all JSONL, quality, split, and provenance files
+are written to a same-volume staging directory and moved into the final dataset
+ID only after every artifact hash is available. `provenance.json` records source
+media hashes, the processing configuration snapshot, frozen object task profile,
+model revisions, verified Basalt calibration evidence, the annotation revision
+hash, and hashes for all derived object masks and stage artifacts.
 
 ## Verification
 

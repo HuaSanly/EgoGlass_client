@@ -257,6 +257,36 @@ def test_new_jobs_only_accept_and_use_the_per_frame_quality_preset(tmp_path: Pat
         raise AssertionError("unknown preset should be rejected")
 
 
+def test_object_model_configuration_is_frozen_when_job_is_submitted(tmp_path: Path) -> None:
+    session_id = "a" * 32
+    (tmp_path / session_id).mkdir()
+    runner = FakeRunner()
+    runner.object_tracking_config_path = Path("config/object-tracking.yaml").resolve()
+    service = VideoProcessingService(tmp_path, runner=runner)  # type: ignore[arg-type]
+
+    job = service.enqueue(session_id, task_profile_id="default-manipulation")
+
+    snapshot = json.loads(job.configuration_snapshot_json)
+    assert snapshot["object_tracking"]["dino_model_revision"]
+    assert snapshot["object_tracking"]["cotracker_code_revision"]
+    assert dict(job.configuration_sha256_by_file)["object-tracking.yaml"]
+    assert json.loads(job.task_profile_snapshot_json)["profile_id"] == "default-manipulation"
+
+
+def test_object_model_snapshot_round_trips_strict_profiles() -> None:
+    from object_tracking import load_object_tracking_config
+    from object_tracking.config import ObjectTrackingConfig
+
+    config = load_object_tracking_config(Path("config/object-tracking.yaml"))
+    snapshot = json.dumps(config.model_dump(mode="json"))
+
+    restored = ObjectTrackingConfig.model_validate_json(snapshot)
+
+    assert tuple(profile.profile_id for profile in restored.profiles) == tuple(
+        profile.profile_id for profile in config.profiles
+    )
+
+
 def test_historical_non_quality_preset_remains_readable_and_retryable(
     tmp_path: Path,
 ) -> None:
@@ -316,6 +346,129 @@ def test_completed_run_with_invalid_result_store_is_not_viewable(tmp_path: Path)
     assert not info.is_viewable
     assert info.unavailable_reason
     assert not info.covers_clip("b" * 32)
+
+
+def test_result_lookup_adds_validated_object_overlays(tmp_path: Path) -> None:
+    session_id = "a" * 32
+    clip_id = "b" * 32
+    run = tmp_path / session_id / "derived" / "video-processing" / "run-objects"
+    objects = run / "objects"
+    masks = objects / "masks"
+    masks.mkdir(parents=True)
+    mask_path = masks / "obj1-000003.png"
+    mask_path.write_bytes(b"mask")
+    outside = run / "outside.png"
+    outside.write_bytes(b"outside")
+    now = time.time_ns()
+    (run / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run.name,
+                "session_id": session_id,
+                "clip_id": clip_id,
+                "state": "completed",
+                "preset": {
+                    "preset_id": "hand-tracking-quality",
+                    "display_name": "quality",
+                    "inference_stride_frames": 1,
+                },
+                "started_at_unix_ns": now,
+                "completed_at_unix_ns": now,
+                "input_frame_count": 1,
+                "inferred_frame_count": 1,
+                "detected_hand_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = ProcessingResultStore(run / "results.sqlite")
+    store.put_final(
+        {
+            "session_id": session_id,
+            "sequence_id": clip_id,
+            "frame_index": 3,
+            "session_time_ns": 100,
+            "hands": [],
+        }
+    )
+    store.put_raw(
+        {
+            "session_id": session_id,
+            "sequence_id": clip_id,
+            "frame_index": 3,
+            "session_time_ns": 100,
+            "hands": [{"handedness": "right", "confidence": 0.25}],
+        }
+    )
+    (objects / "object-result.json").write_text(
+        json.dumps(
+            {
+                "masks": [
+                    {
+                        "object_id": "obj1",
+                        "clip_id": clip_id,
+                        "frame_index": 3,
+                        "mask_relative_path": "masks/obj1-000003.png",
+                    },
+                    {
+                        "object_id": "obj2",
+                        "clip_id": clip_id,
+                        "frame_index": 3,
+                        "mask_relative_path": "../outside.png",
+                    },
+                ],
+                "tracks": [
+                    {
+                        "object_id": "obj1",
+                        "clip_id": clip_id,
+                        "frame_indices": [3],
+                        "points_xy_px": [[[10.0, 20.0]]],
+                        "visibility": [[1.0]],
+                    }
+                ],
+                "triangulations": [{"object_id": "obj1", "valid_point_count": 3}],
+                "poses": [{"object_id": "obj1", "clip_id": clip_id, "frame_index": 3}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
+
+    result = service.result_for_frame(session_id, run.name, clip_id, 3, 100)
+
+    assert result is not None
+    overlays = result["object_overlays"]
+    assert isinstance(overlays, list) and len(overlays) == 2
+    first = next(item for item in overlays if item["object_id"] == "obj1")
+    second = next(item for item in overlays if item["object_id"] == "obj2")
+    assert first["mask_path"] == str(mask_path.resolve())
+    assert first["track"] == {"points_xy_px": [[10.0, 20.0]], "visibility": [1.0]}
+    assert second["mask_path"] is None
+    raw = service.result_for_frame(
+        session_id,
+        run.name,
+        clip_id,
+        3,
+        100,
+        hand_result_kind="raw",
+    )
+    assert raw is not None and raw["hands"][0]["confidence"] == 0.25
+    assert raw["object_overlays"] == overlays
+    with pytest.raises(ValueError, match="hand_result_kind"):
+        service.result_for_frame(
+            session_id,
+            run.name,
+            clip_id,
+            3,
+            100,
+            hand_result_kind="unsupported",
+        )
+
+    (objects / "object-result.json").write_text("{broken", encoding="utf-8")
+    restarted = VideoProcessingService(tmp_path, runner=FakeRunner())  # type: ignore[arg-type]
+    assert "object_overlays" not in restarted.result_for_frame(
+        session_id, run.name, clip_id, 3, 100
+    )
 
 
 def test_gpu_claim_failure_marks_job_failed_and_releases_ownership(tmp_path: Path) -> None:

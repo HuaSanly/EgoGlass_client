@@ -119,17 +119,14 @@ class UnifiedRuntimeHost:
             recordings_root,
             runner=SessionProcessingRunner(
                 sensor_config_path=sensor_config_path,
-                offline_hand_tracking_config_path=config_directory
-                / "offline-hand-tracking.yaml",
+                offline_hand_tracking_config_path=config_directory / "offline-hand-tracking.yaml",
             ),
             on_gpu_job_changed=self._on_gpu_job_changed,
             offline_vio_runner=self.vio_processing.run,
             configuration_provenance_provider=self._configuration_provenance,
         )
         self._apply_video_processing_defaults(
-            self.configuration_service.snapshot()
-            .require_module("video_processing")
-            .values
+            self.configuration_service.snapshot().require_module("video_processing").values
         )
         self.discovery = (
             LanDiscoveryService(
@@ -259,6 +256,7 @@ class UnifiedRuntimeHost:
         *,
         clip_id: str | None = None,
         preset_id: str | None = None,
+        task_profile_id: str | None = None,
     ) -> None:
         self._track_sync_command(
             "start-processing",
@@ -266,18 +264,15 @@ class UnifiedRuntimeHost:
                 session_id,
                 clip_id=clip_id,
                 preset_id=preset_id,
+                task_profile_id=task_profile_id,
             ),
         )
 
     def request_processing_cancel(self, job_id: str) -> None:
-        self._track_sync_command(
-            "cancel-processing", lambda: self.video_processing.cancel(job_id)
-        )
+        self._track_sync_command("cancel-processing", lambda: self.video_processing.cancel(job_id))
 
     def request_processing_retry(self, job_id: str) -> None:
-        self._track_sync_command(
-            "retry-processing", lambda: self.video_processing.retry(job_id)
-        )
+        self._track_sync_command("retry-processing", lambda: self.video_processing.retry(job_id))
 
     def request_live_inference(self, enabled: bool) -> None:
         self._track_command("live-inference", self.perception.set_live_enabled(enabled))
@@ -369,6 +364,8 @@ class UnifiedRuntimeHost:
         clip_id: str,
         frame_index: int,
         session_time_ns: int,
+        *,
+        hand_result_kind: str = "final",
     ) -> concurrent.futures.Future[dict[str, object] | None]:
         return self.submit(
             asyncio.to_thread(
@@ -378,6 +375,7 @@ class UnifiedRuntimeHost:
                 clip_id,
                 frame_index,
                 session_time_ns,
+                hand_result_kind=hand_result_kind,
             )
         )
 
@@ -432,9 +430,7 @@ class UnifiedRuntimeHost:
             if algorithm_changed:
                 perception_status = await self.perception.status()
                 if perception_status["offline_processing"]:
-                    warnings.append(
-                        "离线任务正在占用 GPU，实时手部模型配置将在实时推理恢复时加载"
-                    )
+                    warnings.append("离线任务正在占用 GPU，实时手部模型配置将在实时推理恢复时加载")
                 else:
                     await self.perception.reload_tracker_configuration()
 
@@ -451,9 +447,7 @@ class UnifiedRuntimeHost:
     def _apply_video_processing_defaults(self, values: Mapping[str, object]) -> None:
         self.video_processing.set_configuration_defaults(
             default_preset_id=str(values["default_preset_id"]),
-            auto_enqueue_on_session_complete=bool(
-                values["auto_enqueue_on_session_complete"]
-            ),
+            auto_enqueue_on_session_complete=bool(values["auto_enqueue_on_session_complete"]),
             default_output_result_type=str(values["default_output_result_type"]),
         )
 
@@ -468,21 +462,15 @@ class UnifiedRuntimeHost:
         )
         calibration_path = Path(str(sensor["calibration_file"]))
         if not calibration_path.is_absolute():
-            calibration_path = (
-                self.configuration_service.config_directory / calibration_path
-            )
+            calibration_path = self.configuration_service.config_directory / calibration_path
         sensor["calibration_file"] = str(calibration_path.resolve())
         model_directory = Path(str(offline_hand["model_directory"]))
         if not model_directory.is_absolute():
-            model_directory = (
-                self.configuration_service.config_directory / model_directory
-            )
+            model_directory = self.configuration_service.config_directory / model_directory
         offline_hand["model_directory"] = str(model_directory.resolve())
         execution_snapshot = {
             "sensor_preprocessing": sensor,
-            "sensor_calibration": SensorCalibration.load(
-                calibration_path
-            ).model_dump(mode="json"),
+            "sensor_calibration": SensorCalibration.load(calibration_path).model_dump(mode="json"),
             "offline_hand_tracking": offline_hand,
         }
         return (
@@ -694,24 +682,12 @@ def _configuration_result_from_request(
     )
 
     def modules_for(impact: ConfigImpact) -> tuple[str, ...]:
-        selected = {
-            change.module_id for change in request.changes if change.impact is impact
-        }
-        return tuple(
-            module_id
-            for module_id in module_order
-            if module_id in selected
-        )
+        selected = {change.module_id for change in request.changes if change.impact is impact}
+        return tuple(module_id for module_id in module_order if module_id in selected)
 
-    changed = {
-        change.module_id for change in request.changes
-    }
+    changed = {change.module_id for change in request.changes}
     return ConfigApplyResult(
-        changed_modules=tuple(
-            module_id
-            for module_id in module_order
-            if module_id in changed
-        ),
+        changed_modules=tuple(module_id for module_id in module_order if module_id in changed),
         immediate_applied=modules_for(ConfigImpact.IMMEDIATE),
         pending_restart=modules_for(ConfigImpact.RESTART_CLIENT),
         pending_next_task=modules_for(ConfigImpact.NEXT_TASK),
@@ -758,10 +734,7 @@ def _configuration_result_detail(
 
 def _mutable_configuration_values(value: object) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(key): _mutable_configuration_values(item)
-            for key, item in value.items()
-        }
+        return {str(key): _mutable_configuration_values(item) for key, item in value.items()}
     if isinstance(value, tuple):
         return [_mutable_configuration_values(item) for item in value]
     if isinstance(value, Path):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -7,6 +8,8 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
+
+from object_tracking import load_object_tracking_config
 
 from .export import ExportSummary, export_annotated_clip
 from .job_store import ProcessingJobStore
@@ -40,14 +43,14 @@ class VideoProcessingService:
     ) -> None:
         self.recordings_root = Path(recordings_root).expanduser().resolve()
         self.recordings_root.mkdir(parents=True, exist_ok=True)
-        self.store = ProcessingJobStore(
-            self.recordings_root / ".processing" / "jobs.sqlite3"
-        )
+        self.store = ProcessingJobStore(self.recordings_root / ".processing" / "jobs.sqlite3")
         self.runner = runner or SessionProcessingRunner()
         self.on_gpu_job_changed = on_gpu_job_changed
         self.offline_vio_runner = offline_vio_runner
         self.configuration_provenance_provider = configuration_provenance_provider
         self._condition = threading.Condition()
+        self._object_cache_lock = threading.Lock()
+        self._object_result_cache: dict[Path, tuple[int, dict[str, object]]] = {}
         self._stop_requested = False
         self._thread: threading.Thread | None = None
         self._active_job_id: str | None = None
@@ -98,15 +101,19 @@ class VideoProcessingService:
         *,
         clip_id: str | None = None,
         preset_id: str | None = None,
+        task_profile_id: str | None = None,
     ) -> ProcessingJob:
         self._session_path(session_id)
         preset_id = preset_id or self._default_preset_id
         preset = next((item for item in self.presets if item.preset_id == preset_id), None)
         if preset is None:
             raise KeyError(f"unknown processing preset {preset_id!r}")
-        configuration_revision, configuration_hashes, configuration_snapshot = (
-            self._configuration_provenance()
-        )
+        (
+            configuration_revision,
+            configuration_hashes,
+            configuration_snapshot,
+            task_profile_snapshot,
+        ) = self._submission_provenance(task_profile_id)
         job = self.store.enqueue(
             session_id,
             clip_id,
@@ -114,6 +121,8 @@ class VideoProcessingService:
             configuration_revision=configuration_revision,
             configuration_sha256_by_file=tuple(sorted(configuration_hashes.items())),
             configuration_snapshot_json=configuration_snapshot,
+            task_profile_id=task_profile_id,
+            task_profile_snapshot_json=task_profile_snapshot,
         )
         self._notify_changed()
         return job
@@ -124,14 +133,19 @@ class VideoProcessingService:
         return job
 
     def retry(self, job_id: str) -> ProcessingJob:
-        configuration_revision, configuration_hashes, configuration_snapshot = (
-            self._configuration_provenance()
-        )
+        original = self.store.require(job_id)
+        (
+            configuration_revision,
+            configuration_hashes,
+            configuration_snapshot,
+            task_profile_snapshot,
+        ) = self._submission_provenance(original.task_profile_id)
         job = self.store.retry(
             job_id,
             configuration_revision=configuration_revision,
             configuration_sha256_by_file=tuple(sorted(configuration_hashes.items())),
             configuration_snapshot_json=configuration_snapshot,
+            task_profile_snapshot_json=task_profile_snapshot,
         )
         self._notify_changed()
         return job
@@ -200,6 +214,35 @@ class VideoProcessingService:
         revision, values, snapshot = provider()
         return revision, dict(values), snapshot
 
+    def _submission_provenance(
+        self,
+        task_profile_id: str | None,
+    ) -> tuple[int, dict[str, str], str, str]:
+        revision, hashes, snapshot_json = self._configuration_provenance()
+        try:
+            snapshot = json.loads(snapshot_json)
+        except json.JSONDecodeError as error:
+            raise ValueError("configuration provenance snapshot is invalid JSON") from error
+        if not isinstance(snapshot, dict):
+            raise ValueError("configuration provenance snapshot must be an object")
+        task_profile_snapshot = "{}"
+        if task_profile_id is not None:
+            config_path = self.runner.object_tracking_config_path
+            object_config = load_object_tracking_config(config_path)
+            task_profile_snapshot = json.dumps(
+                object_config.profile(task_profile_id).model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            snapshot["object_tracking"] = object_config.model_dump(mode="json")
+            hashes[config_path.name] = _sha256(config_path)
+        return (
+            revision,
+            hashes,
+            json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+            task_profile_snapshot,
+        )
+
     def result_for_frame(
         self,
         session_id: str,
@@ -207,16 +250,114 @@ class VideoProcessingService:
         clip_id: str,
         frame_index: int,
         session_time_ns: int,
+        *,
+        hand_result_kind: str = "final",
     ) -> dict[str, object] | None:
         path = self._run_directory(session_id, run_id) / "results.sqlite"
         manifest = self._read_run_manifest(session_id, run_id)
         stride = int(manifest["preset"]["inference_stride_frames"])
-        return ProcessingResultStore(path, read_only=True).result_for_frame(
+        store = ProcessingResultStore(path, read_only=True)
+        if hand_result_kind == "raw":
+            result = store.raw_result_for_frame(clip_id, frame_index, session_time_ns)
+        elif hand_result_kind == "final":
+            result = store.result_for_frame(
+                clip_id,
+                frame_index,
+                session_time_ns,
+                hold_previous_frames=max(0, stride - 1),
+            )
+        else:
+            raise ValueError("hand_result_kind must be 'raw' or 'final'")
+        if result is None:
+            return None
+        overlays = self._object_overlays_for_frame(
+            path.parent,
             clip_id,
             frame_index,
-            session_time_ns,
-            hold_previous_frames=max(0, stride - 1),
         )
+        if overlays:
+            result = {**result, "object_overlays": overlays}
+        return result
+
+    def _object_overlays_for_frame(
+        self,
+        run_directory: Path,
+        clip_id: str,
+        frame_index: int,
+    ) -> list[dict[str, object]]:
+        path = run_directory / "objects" / "object-result.json"
+        if not path.is_file():
+            return []
+        try:
+            modified_ns = path.stat().st_mtime_ns
+        except OSError:
+            return []
+        with self._object_cache_lock:
+            cached = self._object_result_cache.get(path)
+            if cached is None or cached[0] != modified_ns:
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    return []
+                if not isinstance(payload, dict):
+                    return []
+                self._object_result_cache[path] = (modified_ns, payload)
+            else:
+                payload = cached[1]
+        masks = {
+            str(item.get("object_id")): item
+            for item in _object_items(payload, "masks")
+            if isinstance(item, dict)
+            and item.get("clip_id") == clip_id
+            and item.get("frame_index") == frame_index
+        }
+        poses = {
+            str(item.get("object_id")): item
+            for item in _object_items(payload, "poses")
+            if isinstance(item, dict)
+            and item.get("clip_id") == clip_id
+            and item.get("frame_index") == frame_index
+        }
+        triangulations = {
+            str(item.get("object_id")): item
+            for item in _object_items(payload, "triangulations")
+            if isinstance(item, dict)
+        }
+        tracks: dict[str, dict[str, object]] = {}
+        for item in _object_items(payload, "tracks"):
+            if not isinstance(item, dict) or item.get("clip_id") != clip_id:
+                continue
+            indices = item.get("frame_indices")
+            points = item.get("points_xy_px")
+            visibility = item.get("visibility")
+            if not isinstance(indices, list) or frame_index not in indices:
+                continue
+            offset = indices.index(frame_index)
+            if not isinstance(points, list) or not isinstance(visibility, list):
+                continue
+            if offset >= len(points) or offset >= len(visibility):
+                continue
+            tracks[str(item.get("object_id"))] = {
+                "points_xy_px": points[offset],
+                "visibility": visibility[offset],
+            }
+        object_ids = sorted(set(masks) | set(poses) | set(triangulations) | set(tracks))
+        overlays: list[dict[str, object]] = []
+        for object_id in object_ids:
+            mask = masks.get(object_id)
+            relative_mask = mask.get("mask_relative_path") if mask else None
+            overlays.append(
+                {
+                    "object_id": object_id,
+                    "mask_path": _object_artifact_path(
+                        run_directory / "objects", relative_mask
+                    ),
+                    "track": tracks.get(object_id),
+                    "pose": poses.get(object_id),
+                    "triangulation": triangulations.get(object_id),
+                }
+            )
+        return overlays
 
     def list_runs(self, session_id: str) -> tuple[ProcessingRunInfo, ...]:
         root = self._session_path(session_id) / "derived" / "video-processing"
@@ -276,10 +417,12 @@ class VideoProcessingService:
             if job is None:
                 with self._condition:
                     self._condition.wait_for(
-                        lambda: self._stop_requested
-                        or any(
-                            item.state is ProcessingJobState.QUEUED
-                            for item in self.store.list_jobs()
+                        lambda: (
+                            self._stop_requested
+                            or any(
+                                item.state is ProcessingJobState.QUEUED
+                                for item in self.store.list_jobs()
+                            )
                         ),
                         timeout=1.0,
                     )
@@ -328,9 +471,7 @@ class VideoProcessingService:
                     job,
                     self._session_path(job.session_id),
                     output,
-                    progress=lambda current, count: self._progress(
-                        job.job_id, current, count
-                    ),
+                    progress=lambda current, count: self._progress(job.job_id, current, count),
                     is_canceled=lambda: self._is_canceled(job.job_id),
                     vio_run_info=vio_run_info,
                     vio_error=vio_error,
@@ -500,8 +641,9 @@ def _processing_run_info(
         results_path,
         unavailable_reason is None,
         unavailable_reason,
-        str(payload["vio_run_id"])
-        if isinstance(payload.get("vio_run_id"), str)
+        str(payload["vio_run_id"]) if isinstance(payload.get("vio_run_id"), str) else None,
+        str(payload["task_profile_id"])
+        if isinstance(payload.get("task_profile_id"), str)
         else None,
     )
 
@@ -518,3 +660,26 @@ def _required_integer(payload: dict[str, object], key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise TypeError(f"{key} must be a non-negative integer")
     return value
+
+
+def _object_artifact_path(root: Path, value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    candidate = (root / value).resolve()
+    resolved_root = root.resolve()
+    if not candidate.is_relative_to(resolved_root) or not candidate.is_file():
+        return None
+    return str(candidate)
+
+
+def _object_items(payload: dict[str, object], key: str) -> list[object]:
+    value = payload.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

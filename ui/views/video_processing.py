@@ -7,6 +7,7 @@ from PyQt6.QtCore import QEvent, QTimer
 from PyQt6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 from qfluentwidgets import InfoBar
 
+from object_tracking import ObjectTrackingError, load_object_tracking_config
 from ui.application.runtime_host import UnifiedRuntimeHost
 from ui.gateway.recording_models import RecordingLibrary, RecordingSession
 from ui.processing import ProcessingJob, ProcessingJobState, ProcessingRunInfo, VioRunInfo
@@ -46,15 +47,11 @@ class VideoProcessingView(QWidget):
         self._last_frame_key: tuple[str, str, int, int] | None = None
         self._last_processing_revision = -1
         self._last_replay_error: str | None = None
-        self._run_futures: dict[
-            str, concurrent.futures.Future[tuple[ProcessingRunInfo, ...]]
-        ] = {}
+        self._run_futures: dict[str, concurrent.futures.Future[tuple[ProcessingRunInfo, ...]]] = {}
         self._pending_run_refreshes: set[str] = set()
         self._runs: dict[str, tuple[ProcessingRunInfo, ...]] = {}
         self._vio_runs: dict[str, tuple[VioRunInfo, ...]] = {}
-        self._vio_run_futures: dict[
-            str, concurrent.futures.Future[tuple[VioRunInfo, ...]]
-        ] = {}
+        self._vio_run_futures: dict[str, concurrent.futures.Future[tuple[VioRunInfo, ...]]] = {}
         self._pending_vio_refreshes: set[str] = set()
         self._result_futures: dict[
             str,
@@ -64,6 +61,7 @@ class VideoProcessingView(QWidget):
             ],
         ] = {}
         self._build_ui()
+        self._load_task_profiles()
 
         self._frame_timer = QTimer(self)
         self._frame_timer.setInterval(16)
@@ -91,10 +89,30 @@ class VideoProcessingView(QWidget):
         self.workbench.processRequested.connect(self._process_current_clip)
         self.workbench.exportRequested.connect(self._export_current_result)
         self.workbench.resultSelectionChanged.connect(self._clear_result_queries)
+        self.workbench.handResultKindChanged.connect(self._clear_result_queries)
 
         # Stable compatibility handles for render tests and canvas consumers.
         self.canvas = self.workbench.canvas
         self.spatial_canvas = self.workbench.spatial_canvas
+
+    def _load_task_profiles(self) -> None:
+        configuration_service = getattr(self.runtime, "configuration_service", None)
+        config_directory = (
+            configuration_service.config_directory if configuration_service is not None else None
+        )
+        path = (
+            config_directory / "object-tracking.yaml"
+            if config_directory is not None
+            else "config/object-tracking.yaml"
+        )
+        try:
+            config = load_object_tracking_config(path)
+        except ObjectTrackingError:
+            self.workbench.set_task_profiles(())
+            return
+        self.workbench.set_task_profiles(
+            tuple((profile.profile_id, profile.display_name) for profile in config.profiles)
+        )
 
     @property
     def showing_hall(self) -> bool:
@@ -369,16 +387,19 @@ class VideoProcessingView(QWidget):
         if existing is not None and not existing[1].done():
             return
         key = (frame.session_id, frame.clip_id, frame.frame_index, frame.session_time_ns)
-        self._result_futures["primary"] = (
-            key,
-            self.runtime.processing_result(
-                frame.session_id,
-                run_id,
-                frame.clip_id,
-                frame.frame_index,
-                frame.session_time_ns,
-            ),
+        arguments = (
+            frame.session_id,
+            run_id,
+            frame.clip_id,
+            frame.frame_index,
+            frame.session_time_ns,
         )
+        future = (
+            self.runtime.processing_result(*arguments, hand_result_kind="raw")
+            if self.workbench.hand_result_kind == "raw"
+            else self.runtime.processing_result(*arguments)
+        )
+        self._result_futures["primary"] = (key, future)
 
     def _resolve_result_queries(self, frame_key: tuple[str, str, int, int]) -> None:
         refresh_current_frame = False
@@ -414,11 +435,21 @@ class VideoProcessingView(QWidget):
         if selection is None:
             self._show_error("当前没有可处理的视频片段")
             return
-        self.runtime.request_processing(
-            selection.session_id,
-            clip_id=selection.clip_id,
-            preset_id=None,
-        )
+        try:
+            self.runtime.request_processing(
+                selection.session_id,
+                clip_id=selection.clip_id,
+                preset_id=None,
+                task_profile_id=self.workbench.task_profile_id,
+            )
+        except TypeError as error:
+            if "task_profile_id" not in str(error):
+                raise
+            self.runtime.request_processing(
+                selection.session_id,
+                clip_id=selection.clip_id,
+                preset_id=None,
+            )
 
     def _export_current_result(self) -> None:
         selection = self._selection
@@ -449,8 +480,7 @@ def _result_counts(
     session: RecordingSession,
 ) -> dict[str, int]:
     return {
-        clip.clip_id: sum(run.covers_clip(clip.clip_id) for run in runs)
-        for clip in session.clips
+        clip.clip_id: sum(run.covers_clip(clip.clip_id) for run in runs) for clip in session.clips
     }
 
 
