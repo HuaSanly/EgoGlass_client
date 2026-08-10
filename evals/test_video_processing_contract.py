@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -195,3 +196,28 @@ def test_case_vp_008_only_valid_completed_runs_are_viewable(tmp_path: Path) -> N
 
     assert by_id["good-run"].covers_clip(clip_id)
     assert not by_id["bad-run"].is_viewable
+
+
+def test_case_vp_009_startup_recovers_mistagged_queue_without_data_loss(tmp_path: Path) -> None:
+    database = tmp_path / "jobs.sqlite3"
+    store = ProcessingJobStore(database)
+    job = store.enqueue(
+        "a" * 32,
+        None,
+        ProcessingPreset(),
+        configuration_revision=3,
+        configuration_snapshot_json='{"offline_hand_tracking": {"detector": "vitpose"}}',
+    )
+    store.set_setting("auto_enqueue", "false")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'"
+        )
+
+    reopened = ProcessingJobStore(database)
+    assert reopened.require(job.job_id).configuration_revision == 3
+    assert reopened.setting("auto_enqueue", "missing") == "false"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone() == ("5",)

@@ -146,6 +146,58 @@ def test_queue_migrates_v1_timestamps_without_losing_history(tmp_path) -> None:
     assert version == ("5",)
 
 
+def test_queue_recovers_known_mistagged_v6_without_losing_history(tmp_path) -> None:
+    path = tmp_path / "jobs.sqlite3"
+    store = ProcessingJobStore(path)
+    job = store.enqueue(
+        "a" * 32,
+        None,
+        ProcessingPreset(),
+        configuration_revision=9,
+        configuration_sha256_by_file=(("offline-hand-tracking.yaml", "sha"),),
+        configuration_snapshot_json='{"offline_hand_tracking": {"detector": "vitpose"}}',
+    )
+    store.set_setting("auto_enqueue", "true")
+
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'"
+        )
+
+    reopened = ProcessingJobStore(path)
+    recovered = reopened.require(job.job_id)
+    assert recovered.configuration_revision == 9
+    assert recovered.configuration_sha256_by_file == (("offline-hand-tracking.yaml", "sha"),)
+    assert recovered.configuration_snapshot_json == (
+        '{"offline_hand_tracking": {"detector": "vitpose"}}'
+    )
+    assert reopened.setting("auto_enqueue", "missing") == "true"
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone() == ("5",)
+        assert connection.execute("SELECT count(*) FROM jobs").fetchone() == (1,)
+
+
+def test_queue_rejects_unknown_v6_shape(tmp_path) -> None:
+    path = tmp_path / "jobs.sqlite3"
+    store = ProcessingJobStore(path)
+    store.enqueue("a" * 32, None, ProcessingPreset())
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE jobs ADD COLUMN unknown_field TEXT")
+        connection.execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'"
+        )
+
+    try:
+        ProcessingJobStore(path)
+    except RuntimeError as error:
+        assert str(error) == "unsupported video-processing queue schema"
+    else:
+        raise AssertionError("unknown v6 queue shape was accepted")
+
+
 def test_results_are_addressed_by_clip_frame_and_session_time(tmp_path) -> None:
     path = tmp_path / "results.sqlite"
     store = ProcessingResultStore(path)

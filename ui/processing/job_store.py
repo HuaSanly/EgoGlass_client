@@ -15,6 +15,30 @@ from .models import (
 )
 
 _SCHEMA_VERSION = "5"
+_MISTAGGED_SCHEMA_VERSION = "6"
+_JOB_COLUMNS = frozenset(
+    {
+        "job_id",
+        "session_id",
+        "clip_id",
+        "preset_json",
+        "state",
+        "created_at_unix_ns",
+        "updated_at_unix_ns",
+        "progress_current",
+        "progress_total",
+        "detail",
+        "run_id",
+        "retry_of_job_id",
+        "started_at_unix_ns",
+        "finished_at_unix_ns",
+        "configuration_revision",
+        "configuration_sha256_json",
+        "configuration_snapshot_json",
+        "task_profile_id",
+        "task_profile_snapshot_json",
+    }
+)
 
 
 class ProcessingJobStore:
@@ -394,6 +418,19 @@ class ProcessingJobStore:
                         "ALTER TABLE jobs ADD COLUMN task_profile_snapshot_json "
                         "TEXT NOT NULL DEFAULT '{}'"
                     )
+                connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
+                    (_SCHEMA_VERSION,),
+                )
+            elif row["value"] == _MISTAGGED_SCHEMA_VERSION:
+                columns = {
+                    str(item["name"])
+                    for item in connection.execute("PRAGMA table_info(jobs)").fetchall()
+                }
+                if columns != _JOB_COLUMNS:
+                    raise RuntimeError("unsupported video-processing queue schema")
+                # Version 6 was briefly written by a development build without
+                # changing the v5 table. Normalize only that exact known shape.
                 connection.execute(
                     "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
                     (_SCHEMA_VERSION,),
