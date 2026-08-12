@@ -1,38 +1,27 @@
-"""Stable data shapes shared by the client host and algorithm services."""
+"""Stable recording contracts shared by storage, API, and UI."""
 
-from .frame import FramePacket
-from .hand_tracking import (
-    Handedness,
-    HandKinematics,
-    HandTemporalMetadata,
-    HandTrackingConfig,
-    HandTrackingError,
-    HandTrackingResult,
-    OfflineHandTemporalConfig,
-    TemporalSource,
-    TrackedHand,
+from .recording import (
+    CaptureRecordingManifest,
+    CaptureRecordingQualityReport,
+    FrameMetadataMatchStatus,
+    RecordingFrameRow,
+    RecordingImuRow,
+    RecordingLibrary,
+    RecordingOutput,
+    RecordingState,
+    RecordingStatus,
+    RecordingSummary,
 )
-from .imu import ImuPacket, ImuSensor
-from .playback import PlaybackFrame
-from .processing import AlgorithmRunMetadata, ProcessingArtifactRef
-from .trajectory import VioPose, VioTrajectory
 
 __all__ = [
-    "AlgorithmRunMetadata",
-    "FramePacket",
-    "HandTrackingConfig",
-    "OfflineHandTemporalConfig",
-    "HandTrackingError",
-    "HandTrackingResult",
-    "Handedness",
-    "ImuPacket",
-    "ImuSensor",
-    "PlaybackFrame",
-    "ProcessingArtifactRef",
-    "TrackedHand",
-    "HandKinematics",
-    "HandTemporalMetadata",
-    "TemporalSource",
-    "VioPose",
-    "VioTrajectory",
+    "CaptureRecordingManifest",
+    "CaptureRecordingQualityReport",
+    "FrameMetadataMatchStatus",
+    "RecordingFrameRow",
+    "RecordingImuRow",
+    "RecordingLibrary",
+    "RecordingOutput",
+    "RecordingState",
+    "RecordingStatus",
+    "RecordingSummary",
 ]

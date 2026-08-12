@@ -1,7 +1,0 @@
-# Optional online orchestration around sensor preprocessing and hand tracking.
-schema_version: "1.0"
-enabled: false
-
-# HaMeR is deliberately run on one worker. When it is busy, the newest decoded
-# WebRTC frame replaces older pending frames instead of delaying the media path.
-max_live_inference_fps: 6.0

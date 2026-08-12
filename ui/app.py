@@ -6,29 +6,29 @@ import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-os.environ.setdefault("GLOG_minloglevel", "2")
-os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
-
-from PyQt6.QtCore import QTimer
+import yaml
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication
 from qfluentwidgets import FluentIcon, FluentWindow, Theme, setTheme, setThemeColor
 
-from ui.configuration import ClientRuntimeConfig
-
 from .application.runtime_host import RuntimeConfig, UnifiedRuntimeHost
 from .logging_config import configure_logging
 from .views.home import HomeView
-from .views.processing_pipeline import ProcessingPipelineView
-from .views.processing_settings import ProcessingSettingsView
-from .views.video_processing import VideoProcessingView
+from .views.recording_library import RecordingLibraryView
 
 LOGGER = logging.getLogger(__name__)
+_CONFIG_KEYS = {
+    "schema_version",
+    "host",
+    "port",
+    "discovery_port",
+    "enable_discovery",
+    "recordings_root",
+}
 
 
 class MainWindow(FluentWindow):
-    """Own the processing-first Fluent workspace and orderly runtime shutdown."""
+    """Own the two-page recording client and orderly runtime shutdown."""
 
     def __init__(self, runtime: UnifiedRuntimeHost) -> None:
         super().__init__()
@@ -36,36 +36,18 @@ class MainWindow(FluentWindow):
         if application is not None:
             application.setFont(QFont("Microsoft YaHei UI", 10))
         self.runtime = runtime
-        self.processing_view = VideoProcessingView(runtime, self)
-        self.pipeline_view = ProcessingPipelineView(runtime, self)
         self.home_view = HomeView(runtime, self)
-        self.settings_view = ProcessingSettingsView(runtime, self)
+        self.library_view = RecordingLibraryView(runtime, self)
         self._shutdown_complete = False
 
-        self.setWindowTitle("EgoGlass")
+        self.setWindowTitle("EgoGlass Recording Client")
         self.resize(1440, 900)
-        self.setMinimumSize(1180, 780)
+        self.setMinimumSize(1180, 760)
         self.setMicaEffectEnabled(False)
         self.navigationInterface.setAcrylicEnabled(True)
-        self.navigationInterface.setExpandWidth(220)
-        QTimer.singleShot(0, self._set_navigation_labels)
-        self.addSubInterface(self.processing_view, FluentIcon.MOVIE, "视频处理")
-        self.addSubInterface(self.pipeline_view, FluentIcon.HISTORY, "流水线")
-        self.addSubInterface(self.home_view, FluentIcon.CAMERA, "实时采集")
-        self.addSubInterface(self.settings_view, FluentIcon.SETTING, "系统设置")
-
-    def _set_navigation_labels(self) -> None:
-        labels = {
-            "videoProcessingView": "\u89c6\u9891\u5904\u7406",
-            "processingPipelineView": "\u6d41\u6c34\u7ebf",
-            "homeView": "\u5b9e\u65f6\u91c7\u96c6",
-            "processingSettingsView": "\u53c2\u6570\u7ba1\u7406",
-        }
-        for route_key, label in labels.items():
-            item = self.navigationInterface.widget(route_key)
-            if item is not None:
-                item.setText(label)
-                item.setToolTip(label)
+        self.navigationInterface.setExpandWidth(200)
+        self.addSubInterface(self.home_view, FluentIcon.CAMERA, "\u5b9e\u65f6\u5f55\u5236")
+        self.addSubInterface(self.library_view, FluentIcon.LIBRARY, "\u5f55\u5236\u5e93")
 
     def shutdown(self) -> None:
         if self._shutdown_complete:
@@ -73,10 +55,8 @@ class MainWindow(FluentWindow):
         self._shutdown_complete = True
         errors: list[Exception] = []
         for operation in (
-            self.processing_view.close_resources,
-            self.pipeline_view.close_resources,
             self.home_view.close_resources,
-            self.settings_view.close_resources,
+            self.library_view.close_resources,
             self.runtime.stop,
         ):
             try:
@@ -86,19 +66,17 @@ class MainWindow(FluentWindow):
         if len(errors) == 1:
             raise errors[0]
         if errors:
-            raise ExceptionGroup("native client shutdown failed", errors)
+            raise ExceptionGroup("recording client shutdown failed", errors)
 
     def closeEvent(self, event: object) -> None:
         try:
             self.shutdown()
         except Exception:
-            LOGGER.exception("native client shutdown failed")
+            LOGGER.exception("recording client shutdown failed")
         super().closeEvent(event)
 
 
 class NativeApplication:
-    """Own QApplication while gateway, recording, and perception stay in-process."""
-
     def __init__(self, runtime: UnifiedRuntimeHost) -> None:
         self.runtime = runtime
         self.window: MainWindow | None = None
@@ -122,7 +100,7 @@ class NativeApplication:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the native EgoGlass client")
+    parser = argparse.ArgumentParser(description="Run the EgoGlass recording client")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     parser.add_argument("--discovery-port", type=int)
@@ -141,17 +119,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def load_runtime_config(path: Path = Path("config/client-runtime.yaml")) -> RuntimeConfig:
+    resolved = path.expanduser().resolve(strict=True)
+    payload = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("client runtime config must be a YAML mapping")
+    unknown = set(payload) - _CONFIG_KEYS
+    if unknown:
+        raise ValueError(f"unknown client runtime config keys: {sorted(unknown)}")
+    if payload.get("schema_version") != "1.0":
+        raise ValueError("unsupported client runtime config schema")
+    recordings_root = Path(str(payload.get("recordings_root", "../local-data/recordings")))
+    if not recordings_root.is_absolute():
+        recordings_root = (resolved.parent / recordings_root).resolve()
+    return RuntimeConfig(
+        host=str(payload.get("host", "0.0.0.0")),
+        port=int(payload.get("port", 8770)),
+        discovery_port=int(payload.get("discovery_port", 8771)),
+        recordings_root=recordings_root,
+        enable_discovery=bool(payload.get("enable_discovery", True)),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.smoke_test:
         return 0
     configure_logging()
-    configured = ClientRuntimeConfig.load("config/client-runtime.yaml")
-    recordings_root = (
-        Path(args.recordings_root)
-        if args.recordings_root is not None
-        else configured.recordings_root
-    )
+    configured = load_runtime_config()
     runtime = UnifiedRuntimeHost(
         RuntimeConfig(
             host=configured.host if args.host is None else args.host,
@@ -161,7 +156,11 @@ def main(argv: list[str] | None = None) -> int:
                 if args.discovery_port is None
                 else args.discovery_port
             ),
-            recordings_root=recordings_root,
+            recordings_root=(
+                configured.recordings_root
+                if args.recordings_root is None
+                else args.recordings_root
+            ),
             pairing_token=args.pairing_token,
             enable_discovery=configured.enable_discovery and not args.disable_discovery,
         )

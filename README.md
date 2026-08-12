@@ -1,60 +1,40 @@
-# EgoGlass Client
+# EgoGlass Recording Client
 
-The Windows client receives Glass3 video and IMU, records capture sessions,
-processes stored video, optionally runs online perception, and provides a native UI.
-The runtime uses one Python process and one Conda environment named `egoglass`.
+The Windows client discovers a Rokid Glass3 Enterprise device, terminates its
+WebRTC connection, previews the live video and raw IMU streams, and writes one
+independent directory per recording. It intentionally contains no perception,
+SLAM/VIO, annotation, dataset, or offline-processing runtime.
 
 ## Layout
 
 ```text
-src/
-  schemas/                  # Public frame, IMU, playback, and result types
-  sensor_preprocessing/     # Time mapping, calibration, and prepared inputs
-  hand_tracking/            # Live and offline hand-tracking algorithms
-  slam_vio/                 # Basalt-backed offline VIO adapter
-  process_video.py          # Thin no-UI offline processing entry point
-ui/
-  application/              # Runtime lifecycle and native client host
-  gateway/                  # WebRTC ingress, recording, and raw sessions
-  processing/               # UI-backed queue, results, and export
-config/                     # Shared client configuration
-tests/                      # Deterministic gate tests
-evals/                      # Periodic quality evaluations and device evidence
-scripts/                    # Setup, launch, benchmark, and inspection
-docs/                       # Component operation notes
+src/schemas/                 # Recording manifest, CSV, quality, and API contracts
+ui/application/              # Native client lifecycle
+ui/gateway/                  # Discovery, WebRTC ingress, recording, and HTTP API
+ui/views/                    # Recording console and recording library
+ui/widgets/                  # Video, raw-IMU plots, and synchronized playback
+config/client-runtime.yaml   # Gateway and recording-root settings
+tests/                       # Deterministic recording gate tests
+evals/                       # Recording quality and soak evaluations
+scripts/                     # Setup, launch, benchmark, and inspection
+docs/                        # Operator and gateway documentation
 ```
 
-PyQt owns the main thread. WebRTC and Uvicorn use one asyncio thread;
-RGB conversion, inference, recording, playback, and IMU orientation use bounded
-workers inside that same process. The native UI calls runtime objects directly.
-HTTP port `8770` remains available for Glass3 signaling and external diagnostics.
-
-Hand tracking adapts HumanEgo's MediaPipe/ViTPose + HaMeR flow. Source and
-license records for adapted model code live beside the hand-tracking module.
-
-See [native UI](docs/native-ui.md), [video processing](docs/video-processing.md),
-[ingest gateway](docs/ingest-gateway.md),
-[sensor preprocessing](docs/sensor-preprocessing.md),
-[hand tracking](docs/hand-tracking.md), [spatial perception](docs/spatial-perception.md),
-[interaction processing](docs/interaction-processing.md), and
-[dataset builder](docs/dataset-builder.md).
+PyQt owns the main thread. Uvicorn, aiortc, discovery, and capture run on the
+runtime thread. RGB conversion, MP4 writing, CSV writing, and replay decoding
+use bounded workers so recording finalization does not stop WebRTC reception.
 
 ## Setup
 
-Run once from this directory:
+Use the existing Windows Conda environment definition:
 
 ```powershell
 .\scripts\setup_client.ps1
 ```
 
-This creates or updates native Windows Conda environment `egoglass` with
-Python 3.11, PyTorch 2.5.1, and CUDA 12.1. Download model artifacts separately:
-
-```powershell
-conda run -n egoglass python scripts\download_hand_tracking_models.py
-```
-
-Neither command executes code from `reference_code/HumanEgo`.
+`environment.yml` is intentionally unchanged in this branch so existing
+workstations are not pruned. The installable project in `pyproject.toml` has no
+Torch, HaMeR, ViTPose, MediaPipe, Basalt, OpenCV, SciPy, or PyOpenGL dependency.
 
 ## Run
 
@@ -62,51 +42,44 @@ Neither command executes code from `reference_code/HumanEgo`.
 .\scripts\start-client.ps1
 ```
 
-This launches one `python -m ui` process. Closing the native window or pressing
-`Ctrl+C` stops discovery, signaling, capture, inference, workers, and the UI.
-Active capture sessions are finalized before shutdown.
+Open the EgoGlass application on Glass3. The device discovers the client on
+UDP port 8771 and connects to the signaling service on TCP port 8770. The
+native window then provides live preview, raw accelerometer and gyroscope
+plots, recording controls, and the recording library.
 
-Completed recordings live under ignored path `local-data/recordings/`.
-Annotation revisions are written beneath each session's `annotations/`
-directory and do not modify source MP4 or telemetry files.
+One Start-to-Stop operation creates one `recording_id`:
 
-For a single no-UI offline run, use the thin CLI against a complete capture
-session. It does not start the gateway or Qt:
-
-```powershell
-conda run -n egoglass python src\process_video.py `
-  --session local-data\recordings\<session-id> `
-  --output local-data\headless-runs\<run-id>
+```text
+local-data/recordings/<recording_id>/
+  manifest.json
+  video.mp4
+  imu.csv
+  frames.csv
+  quality.json
+  annotations/
+  derived/
 ```
 
-The command writes immutable per-frame inference to `raw_results.jsonl`, the
-temporalized camera/world result to `results.jsonl`, and provenance plus stage
-metrics to `run.json`. Basalt is attempted before hand processing. If VIO is
-unavailable or misses a final hand frame by more than 100 ms, the run is marked
-`partial`: camera-space results remain usable and no world coordinate is
-invented for the unmatched frame.
+The writer first uses `.recording-<recording_id>.partial/`. It validates the
+MP4, both CSV files, counts, and SHA256 values before atomically publishing the
+final directory. IMU rows start at countdown start; `inside_video_span` marks
+the samples between the first and last saved video frames. Stopping a recording
+closes its time window, so later IMU samples cannot enter the completed files.
 
-Basalt VIO is an optional native dependency. After installing `basalt_vio`,
-run it against the same prepared capture session without starting Qt or the
-gateway:
+The library can replay `video.mp4` with an IMU cursor driven by the shared
+`recording_time_ns`. Playback is an integrity check only and does not run any
+algorithm.
+
+Inspect a completed recording independently:
 
 ```powershell
-conda run -n egoglass python src\run_vio.py `
-  --session local-data\recordings\<session-id> `
-  --output local-data\vio-runs\<run-id>
+conda run -n egoglass python scripts\inspect-recording.py `
+  local-data\recordings\<recording-id>
 ```
 
-The default `config/basalt-vio.yaml` rejects the repository's unverified sample
-calibration. Use `--allow-unverified-calibration` only for integration tests;
-real trajectory work requires a measured camera-IMU calibration. The runner
-exports an EuRoC `mav0/` dataset, `calibration.json`, Basalt logs, and parses
-`trajectory.csv` into typed poses.
+The command fails on an invalid layout, CSV row, count, hash, or MP4 stream.
 
-## License
-
-The client source is licensed under GPLv3 because its native UI links PyQt6
-and PyQt6-Fluent-Widgets. Dependency license details are recorded in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+See [native UI](docs/native-ui.md) and [ingest gateway](docs/ingest-gateway.md).
 
 ## Verification
 
@@ -114,11 +87,11 @@ and PyQt6-Fluent-Widgets. Dependency license details are recorded in
 conda run -n egoglass python -m pytest
 conda run -n egoglass python -m pytest -q evals
 conda run -n egoglass ruff check src ui tests evals scripts
+git diff --check
 ```
 
-Run the CUDA model eval separately:
+## License
 
-```powershell
-$env:EGOGLASS_RUN_HAND_MODEL_EVAL = "1"
-conda run -n egoglass python -m pytest -q -s evals\test_hand_tracking_model.py
-```
+The client source is GPLv3 because its native UI links PyQt6 and
+PyQt6-Fluent-Widgets. Dependency notices are in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

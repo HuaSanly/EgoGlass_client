@@ -5,8 +5,6 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from schemas.imu import ImuPacket, ImuSensor
-
 
 class WebRtcPhase(StrEnum):
     IDLE = "idle"
@@ -178,19 +176,6 @@ class ImuSample(BaseModel):
     accuracy: int = Field(ge=-1, le=3)
     values: tuple[float, float, float]
 
-    def to_packet(self, session_id: str) -> ImuPacket:
-        """Convert device telemetry to the algorithm-facing IMU schema."""
-
-        return ImuPacket(
-            session_id=session_id,
-            sensor=ImuSensor(self.sensor_type.value),
-            sequence_number=self.sequence_number,
-            sensor_event_ns=self.sensor_event_monotonic_ns,
-            received_at_ns=self.received_at_elapsed_realtime_ns,
-            values=self.values,
-            accuracy=self.accuracy,
-        )
-
     @model_validator(mode="after")
     def validate_android_sensor_type(self) -> ImuSample:
         expected = {
@@ -229,7 +214,7 @@ class ImuTelemetryStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["0.1"] = "0.1"
-    session_id: str | None = None
+    connection_session_id: str | None = None
     device_session_id: str | None = None
     channel_state: ImuChannelState = ImuChannelState.UNAVAILABLE
     messages_received: int = Field(default=0, ge=0)
@@ -245,7 +230,7 @@ class WebRtcStatus(BaseModel):
 
     schema_version: Literal["1.0"] = "1.0"
     phase: WebRtcPhase
-    session_id: str | None = None
+    connection_session_id: str | None = None
     device_session_id: str | None = None
     connection_state: str | None = None
     frames_received: int = Field(default=0, ge=0)

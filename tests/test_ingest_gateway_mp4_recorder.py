@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from fractions import Fraction
 from pathlib import Path
 
@@ -47,6 +48,7 @@ class VariableRateVideoTrack(NonMonotonicVideoTrack):
         ]
         self.index = 0
 
+
 def test_recorder_normalizes_non_monotonic_webrtc_timestamps(tmp_path: Path) -> None:
     async def scenario() -> None:
         path = tmp_path / "clip.mp4"
@@ -81,6 +83,42 @@ def test_recorder_normalizes_non_monotonic_webrtc_timestamps(tmp_path: Path) -> 
             for previous, current in zip(mp4_times, mp4_times[1:], strict=False)
         )
         assert [frame.pts for frame in track.frames] == original_timestamps
+
+    asyncio.run(scenario())
+
+
+def test_recorder_finalization_does_not_block_the_receive_event_loop(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        recorder = PyAvH264Mp4Recorder(
+            tmp_path / "yielding-finalize.mp4",
+            VariableRateVideoTrack(),
+            perf_clock=iter(
+                (1_000_000_000, 1_033_000_000, 1_083_000_000, 1_123_000_000)
+            ).__next__,
+        )
+        await recorder.start()
+        await recorder.wait()
+
+        finalization_started = threading.Event()
+        finalization_release = threading.Event()
+        original_finalize = recorder._finalize_container
+
+        def controlled_finalize(container: object, stream: object) -> None:
+            finalization_started.set()
+            assert finalization_release.wait(timeout=5)
+            original_finalize(container, stream)  # type: ignore[arg-type]
+
+        recorder._finalize_container = controlled_finalize  # type: ignore[method-assign]
+        stopping = asyncio.create_task(recorder.stop())
+        assert await asyncio.to_thread(finalization_started.wait, 5)
+        assert await asyncio.sleep(0, result="receive-loop-responsive") == (
+            "receive-loop-responsive"
+        )
+        assert not stopping.done()
+        finalization_release.set()
+        await stopping
 
     asyncio.run(scenario())
 

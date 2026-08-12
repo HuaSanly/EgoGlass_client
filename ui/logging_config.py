@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-import warnings
 from collections.abc import Callable
 
 
@@ -51,20 +50,3 @@ def configure_logging() -> None:
     for handler in logging.getLogger().handlers:
         handler.addFilter(RepeatedMediaErrorFilter())
     logging.getLogger("aioice").setLevel(logging.WARNING)
-    logging.getLogger("OpenGL.acceleratesupport").setLevel(logging.WARNING)
-    logging.getLogger("absl").setLevel(logging.ERROR)
-    warnings.filterwarnings(
-        "ignore",
-        message=r"Importing from timm\.models\.layers is deprecated.*",
-        category=FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"Using torch\.cross without specifying the dim arg is deprecated.*",
-        category=UserWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"You are using `torch\.load` with `weights_only=False`.*",
-        category=FutureWarning,
-    )

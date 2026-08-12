@@ -29,7 +29,7 @@ $condaBase = (conda info --base).Trim()
 $pythonPath = Join-Path $condaBase "envs\$EnvironmentName\python.exe"
 if (Test-Path -LiteralPath $pythonPath -PathType Leaf) {
     Invoke-Checked -Executable conda -ArgumentList @(
-        "env", "update", "--name", $EnvironmentName, "--file", $environmentFile, "--prune"
+        "env", "update", "--name", $EnvironmentName, "--file", $environmentFile
     )
 } else {
     Invoke-Checked -Executable conda -ArgumentList @(
@@ -37,47 +37,10 @@ if (Test-Path -LiteralPath $pythonPath -PathType Leaf) {
     )
 }
 
-Invoke-Checked -Executable $pythonPath -ArgumentList @(
-    "-m", "pip", "install", "--no-build-isolation", "chumpy==0.70"
-)
-Invoke-Checked -Executable $pythonPath -ArgumentList @(
-    "-m", "pip", "install", "--no-deps",
-    "hamer @ git+https://github.com/geopavlakos/hamer.git@3a01849f4148352e9260b69bf28b65d1671a4905"
-)
-Invoke-Checked -Executable $pythonPath -ArgumentList @(
-    "-m", "pip", "install", "--no-deps",
-    "easy_ViTPose @ git+https://github.com/JunkyByte/easy_ViTPose.git@bb9860359e55b099a507c8000e360d48a27cc36d"
-)
-
-$sitePackages = & $pythonPath -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"
-$chumpyCode = Join-Path $sitePackages "chumpy\ch.py"
-$chumpyInit = Join-Path $sitePackages "chumpy\__init__.py"
-$hamerDataset = Join-Path $sitePackages "hamer\datasets\vitdet_dataset.py"
-
-$content = Get-Content -LiteralPath $chumpyCode -Raw
-$content = $content.Replace("inspect.getargspec", "inspect.getfullargspec")
-Set-Content -LiteralPath $chumpyCode -Value $content -Encoding UTF8
-
-$content = Get-Content -LiteralPath $chumpyInit -Raw
-$content = $content.Replace(
-    "from numpy import bool, int, float, complex, object, unicode, str, nan, inf",
-    "from numpy import nan, inf"
-)
-Set-Content -LiteralPath $chumpyInit -Value $content -Encoding UTF8
-
-$content = Get-Content -LiteralPath $hamerDataset -Raw
-$content = $content.Replace("            print(f'{downsampling_factor=}')`r`n", "")
-$content = $content.Replace("            print(f'{downsampling_factor=}')`n", "")
-Set-Content -LiteralPath $hamerDataset -Value $content -Encoding UTF8
-
 Push-Location $clientRoot
 try {
     Invoke-Checked -Executable $pythonPath -ArgumentList @(
         "-m", "pip", "install", "--no-deps", "-e", "."
-    )
-    Invoke-Checked -Executable $pythonPath -ArgumentList @(
-        "-c",
-        "import torch; assert torch.cuda.is_available(); value=(torch.tensor([2.0], device='cuda')**2).item(); assert value == 4.0; print(torch.__version__, torch.cuda.get_device_name(0))"
     )
 } finally {
     Pop-Location

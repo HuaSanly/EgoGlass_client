@@ -1,6 +1,6 @@
-"""PyQt Fluent application views."""
+"""PyQt Fluent recording-client views."""
 
 from .home import HomeView
-from .video_processing import VideoProcessingView
+from .recording_library import RecordingLibraryView
 
-__all__ = ["HomeView", "VideoProcessingView"]
+__all__ = ["HomeView", "RecordingLibraryView"]

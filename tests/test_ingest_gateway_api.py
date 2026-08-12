@@ -1,609 +1,177 @@
-import sys
+from __future__ import annotations
+
 from pathlib import Path
 
-from starlette.testclient import TestClient
+from fastapi.testclient import TestClient
 
-import ui.gateway.app as app_module
-from ui.gateway.app import create_app
-from ui.gateway.live_frames import LiveFrameBuffer
-from ui.gateway.recording import (
-    RecordingClipNotFoundError,
-    RecordingSessionNotFoundError,
-)
-from ui.gateway.recording_models import (
-    RecordingClip,
+from schemas.recording import (
     RecordingLibrary,
-    RecordingSession,
+    RecordingOutput,
     RecordingState,
     RecordingStatus,
+    RecordingSummary,
 )
+from ui.gateway.app import create_app
 from ui.gateway.webrtc_models import (
-    ImuChannelState,
-    ImuSensorStatus,
-    ImuSensorType,
     ImuTelemetryStatus,
-    StreamControlCommand,
     StreamControlState,
     StreamControlStatus,
-    WebRtcOffer,
-)
-from ui.gateway.webrtc_runtime import (
-    StreamControlCommandError,
-    StreamControlCommandTimeoutError,
-    StreamControlUnavailableError,
-    WebRtcSessionRuntime,
+    WebRtcAnswer,
+    WebRtcPhase,
+    WebRtcStatus,
 )
 
-PAIRING_TOKEN = "api-pairing-token-123456"
 
+class _WebRtcRuntime:
+    def __init__(self) -> None:
+        self.control_commands = []
+        self.capture_sink = None
 
-class HandTrackingApiRuntime:
-    def __init__(self, _video_path: Path) -> None:
-        self.closed = False
+    def set_capture_telemetry_sink(self, sink: object) -> None:
+        self.capture_sink = sink
 
-    async def status(self) -> dict[str, object]:
-        return {
-            "schema_version": "1.0",
-            "state": "ready",
-            "detail": "latest result is ready",
-            "live_frames_received": 3,
-            "live_frames_dropped": 1,
-            "live_inferences": 2,
-            "latest_result": None,
-            "last_error": None,
-        }
+    def set_display_frame_sink(self, _sink: object) -> None:
+        return None
 
-    async def status_events(self):
-        yield await self.status()
-        yield None
+    def set_display_imu_sink(self, _sink: object) -> None:
+        return None
 
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-class ControlRuntime:
-    def __init__(self, error: Exception | None = None) -> None:
-        self.error = error
-        self.commands: list[StreamControlCommand] = []
+    async def status(self) -> WebRtcStatus:
+        return WebRtcStatus(phase=WebRtcPhase.STREAMING)
 
     async def control_status(self) -> StreamControlStatus:
-        return StreamControlStatus(state=StreamControlState.READY)
+        return StreamControlStatus(state=StreamControlState.STREAMING)
 
-    async def recording_source(self) -> None:
-        return None
-
-    async def send_control_command(
-        self,
-        command: StreamControlCommand,
-    ) -> StreamControlStatus:
-        if self.error is not None:
-            raise self.error
-        self.commands.append(command)
-        return StreamControlStatus(
-            command_id=command.command_id,
-            state=(
-                StreamControlState.STARTING
-                if command.action == "start"
-                else StreamControlState.STOPPED
-            ),
-        )
-
-    async def close(self) -> None:
-        return None
-
-
-class ImuRuntime:
     async def imu_status(self) -> ImuTelemetryStatus:
-        return ImuTelemetryStatus(
-            session_id="session-imu-test",
-            device_session_id="device-session-imu-test",
-            channel_state=ImuChannelState.RECEIVING,
-            messages_received=3,
-            capabilities_received=1,
-            samples_received=2,
-            sensors={
-                ImuSensorType.ACCELEROMETER: ImuSensorStatus(sample_count=2),
-                ImuSensorType.GYROSCOPE: ImuSensorStatus(),
-            },
-        )
+        return ImuTelemetryStatus(sensors={})
+
+    async def send_control_command(self, command: object) -> StreamControlStatus:
+        self.control_commands.append(command)
+        return StreamControlStatus(state=StreamControlState.STOPPED)
+
+    async def accept_offer(self, _offer: object, _token: str) -> WebRtcAnswer:
+        return WebRtcAnswer(session_id="a" * 32, sdp="v=0\r\n" + "x" * 16)
 
     async def close(self) -> None:
         return None
 
 
-class RecordingApiRuntime:
-    def __init__(self, media_path: Path) -> None:
-        self.media_file = media_path
-        self.session_id = "b" * 32
-        self.clip_id = "c" * 32
+class _RecordingRuntime:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.recording_id = "1" * 32
+        directory = root / self.recording_id
+        directory.mkdir(parents=True)
+        self.video = directory / "video.mp4"
+        self.imu = directory / "imu.csv"
+        self.frames = directory / "frames.csv"
+        self.video.write_bytes(b"video")
+        self.imu.write_text("sample_index\n", encoding="utf-8")
+        self.frames.write_text("frame_index\n", encoding="utf-8")
         self.state = RecordingState.READY
         self.deleted = False
-        self.display_name: str | None = None
-        self.session_commands: list[str] = []
 
     async def status(self) -> RecordingStatus:
-        return RecordingStatus(state=self.state, session_id=self.session_id)
+        return RecordingStatus(state=self.state, output=RecordingOutput())
 
     async def start(self) -> RecordingStatus:
-        return RecordingStatus(
-            state=RecordingState.COUNTDOWN,
-            session_id=self.session_id,
-            clip_id=self.clip_id,
-            countdown_started_at_unix_ms=1000,
-            recording_starts_at_unix_ms=4000,
-        )
+        self.state = RecordingState.COUNTDOWN
+        return await self.status()
 
     async def stop(self) -> RecordingStatus:
-        return RecordingStatus(state=RecordingState.READY, session_id=self.session_id)
-
-    async def session_command(self, action: str) -> RecordingStatus:
-        self.session_commands.append(action)
-        return RecordingStatus(state=RecordingState.READY)
+        self.state = RecordingState.READY
+        return await self.status()
 
     async def library(self) -> RecordingLibrary:
-        if self.deleted:
-            return RecordingLibrary(sessions=[])
         return RecordingLibrary(
-            sessions=[
-                RecordingSession(
-                    session_id=self.session_id,
-                    started_at_unix_ms=4000,
-                    display_name=self.display_name,
-                    clips=[
-                        RecordingClip(
-                            clip_id=self.clip_id,
-                            recorded_at_unix_ms=4000,
-                            ended_at_unix_ms=5000,
-                            duration_ms=1000,
-                            file_size_bytes=self.media_file.stat().st_size,
-                            media_url=(
-                                f"/api/v1/recordings/media/{self.session_id}/{self.clip_id}"
-                            ),
-                        )
-                    ],
-                )
-            ]
+            recordings=[] if self.deleted else [self._summary()]
         )
 
-    async def media_path(self, session_id: str, clip_id: str) -> Path | None:
-        if not self.deleted and (session_id, clip_id) == (
-            self.session_id,
-            self.clip_id,
-        ):
-            return self.media_file
-        return None
-
-    async def delete_clip(
-        self,
-        session_id: str,
-        clip_id: str,
-    ) -> RecordingLibrary:
-        if self.deleted or (session_id, clip_id) != (self.session_id, self.clip_id):
-            raise RecordingClipNotFoundError("recording clip not found")
+    async def delete(self, recording_id: str) -> RecordingLibrary:
+        assert recording_id == self.recording_id
         self.deleted = True
-        return RecordingLibrary(sessions=[])
+        return RecordingLibrary(recordings=[])
 
-    async def rename_session(
-        self,
-        session_id: str,
-        display_name: str,
-    ) -> RecordingLibrary:
-        if self.deleted or session_id != self.session_id:
-            raise RecordingSessionNotFoundError("recording session not found")
-        self.display_name = display_name
-        return await self.library()
+    async def media_path(self, recording_id: str) -> Path | None:
+        return self.video if recording_id == self.recording_id and not self.deleted else None
 
-    async def delete_session(self, session_id: str) -> RecordingLibrary:
-        if self.deleted or session_id != self.session_id:
-            raise RecordingSessionNotFoundError("recording session not found")
-        self.deleted = True
-        return RecordingLibrary(sessions=[])
+    async def artifact_path(self, recording_id: str, artifact: str) -> Path | None:
+        if recording_id != self.recording_id or self.deleted:
+            return None
+        return {"imu.csv": self.imu, "frames.csv": self.frames}.get(artifact)
 
     async def close(self) -> None:
         return None
 
-
-def test_health_and_removed_fallback_routes() -> None:
-    with TestClient(create_app()) as client:
-        health = client.get("/api/v1/health")
-        status = client.get("/api/v1/status")
-        probe = client.post(
-            "/api/v1/rtsp/probe",
-            json={"host": "obsolete.example.test", "device_id": "obsolete"},
+    def _summary(self) -> RecordingSummary:
+        return RecordingSummary(
+            recording_id=self.recording_id,
+            recorded_at_unix_ns=1,
+            ended_at_unix_ns=2,
+            duration_ns=1,
+            width=640,
+            height=480,
+            fps=30,
+            file_size_bytes=5,
+            frame_count=1,
+            imu_sample_count=0,
+            hashes_verified=True,
         )
 
-    assert health.status_code == 200
-    assert health.json()["service"] == "ingest-gateway"
-    assert status.status_code == 404
-    assert probe.status_code == 404
 
-
-def test_native_display_status_exposes_bounded_presentation_metrics() -> None:
-    frame_buffer = LiveFrameBuffer()
+def _client(tmp_path: Path) -> tuple[TestClient, _RecordingRuntime, _WebRtcRuntime]:
+    recording = _RecordingRuntime(tmp_path)
+    webrtc = _WebRtcRuntime()
     app = create_app(
-        live_frame_buffer=frame_buffer,
+        webrtc_runtime=webrtc,  # type: ignore[arg-type]
+        recording_runtime=recording,  # type: ignore[arg-type]
         viewer_allowed_hosts=frozenset({"testclient"}),
     )
-    with TestClient(app) as client:
-        response = client.get("/api/v1/native-display/status")
-
-    assert response.status_code == 200
-    assert response.json()["presentation_queue_depth"] == 0
-    assert response.json()["presentation_frames_dropped"] == 0
-    assert response.json()["presentation_starvations"] == 0
-    assert response.json()["presentation_interval_ms"] == 33.333
-    assert response.json()["display_poll_fps"] == 0.0
-    assert response.json()["presentation_fps"] == 0.0
-    assert response.json()["presentation_frames_presented"] == 0
-    assert response.json()["conversion_gap_p95_ms"] == 0.0
-    assert response.json()["conversion_gap_max_ms"] == 0.0
-    assert response.json()["source_pts_gap_p95_ms"] == 0.0
-    assert response.json()["source_pts_gap_max_ms"] == 0.0
+    return TestClient(app), recording, webrtc
 
 
-def test_webrtc_offer_requires_pairing_token_and_returns_safe_answer() -> None:
-    peers: list[object] = []
+def test_recording_api_exposes_flat_recordings_and_csv(tmp_path: Path) -> None:
+    client, recording, _webrtc = _client(tmp_path)
+    with client:
+        library = client.get("/api/v1/recordings/library")
+        assert library.status_code == 200
+        assert library.json()["recordings"][0]["recording_id"] == recording.recording_id
 
-    class Peer:
-        def __init__(self, _callbacks: object) -> None:
-            self.closed = False
-            peers.append(self)
+        video = client.get(f"/api/v1/recordings/{recording.recording_id}/video.mp4")
+        assert video.status_code == 200
+        assert video.content == b"video"
+        assert client.get(
+            f"/api/v1/recordings/{recording.recording_id}/imu.csv"
+        ).status_code == 200
+        assert client.get(
+            f"/api/v1/recordings/{recording.recording_id}/frames.csv"
+        ).status_code == 200
 
-        @property
-        def negotiated_video_codec(self) -> str:
-            return "H264"
-
-        async def accept_offer(self, offer: WebRtcOffer) -> str:
-            assert "offer" in offer.sdp
-            return "v=0\r\nanswer-session-description"
-
-        async def close(self) -> None:
-            self.closed = True
-
-    webrtc_runtime = WebRtcSessionRuntime(PAIRING_TOKEN, Peer)
-    payload = {
-        "schema_version": "1.0",
-        "device_session_id": "device-session-0001",
-        "type": "offer",
-        "sdp": "v=0\r\noffer-session-description",
-    }
-
-    with TestClient(create_app(webrtc_runtime=webrtc_runtime)) as client:
-        unauthorized = client.post("/api/v1/webrtc/sessions", json=payload)
-        accepted = client.post(
-            "/api/v1/webrtc/sessions",
-            json=payload,
-            headers={"Authorization": f"Bearer {PAIRING_TOKEN}"},
-        )
-        replacement_payload = {**payload, "device_session_id": "device-session-0002"}
-        replacement = client.post(
-            "/api/v1/webrtc/sessions",
-            json=replacement_payload,
-            headers={"Authorization": f"Bearer {PAIRING_TOKEN}"},
-        )
-        status = client.get("/api/v1/webrtc/status")
-
-    assert unauthorized.status_code == 401
-    assert PAIRING_TOKEN not in unauthorized.text
-    assert accepted.status_code == 200
-    assert replacement.status_code == 200
-    assert replacement.json()["session_id"] != accepted.json()["session_id"]
-    assert peers[0].closed
-    assert status.json()["video_codec"] == "H264"
-    assert accepted.json()["type"] == "answer"
-    assert status.json()["phase"] == "negotiating"
-    assert status.json()["device_session_id"] == "device-session-0002"
+        deleted = client.delete(f"/api/v1/recordings/{recording.recording_id}")
+        assert deleted.status_code == 200
+        assert deleted.json()["recordings"] == []
 
 
-def test_stream_control_api_is_loopback_only_and_supports_commands() -> None:
-    runtime = ControlRuntime()
-    app = create_app(
-        webrtc_runtime=runtime,  # type: ignore[arg-type]
-        viewer_allowed_hosts=frozenset({"testclient"}),
-    )
-    payload = {"action": "start"}
-    with TestClient(app) as client:
-        status = client.get("/api/v1/webrtc/control")
-        command = client.post(
-            "/api/v1/webrtc/control/commands",
-            json=payload,
-        )
-
-    assert status.status_code == 200
-    assert status.json()["state"] == "ready"
-    assert command.status_code == 200
-    command_id = command.json()["command_id"]
-    assert len(command_id) == 32
-    assert all(character in "0123456789abcdef" for character in command_id)
-    assert command.json()["state"] == "starting"
-    assert runtime.commands[0].command_id == command_id
-    assert runtime.commands[0].action == "start"
-
-    with TestClient(
-        create_app(webrtc_runtime=ControlRuntime())  # type: ignore[arg-type]
-    ) as client:
-        forbidden_get = client.get("/api/v1/webrtc/control")
-        forbidden_post = client.post(
-            "/api/v1/webrtc/control/commands",
-            json=payload,
-        )
-    assert forbidden_get.status_code == 403
-    assert forbidden_post.status_code == 403
+def test_algorithm_and_session_routes_are_absent(tmp_path: Path) -> None:
+    client, recording, _webrtc = _client(tmp_path)
+    with client:
+        assert client.get("/api/v1/perception/hand-tracking/status").status_code == 404
+        assert client.post(
+            "/api/v1/recordings/session-commands",
+            json={"action": "new"},
+        ).status_code in {404, 405}
+        assert client.delete(
+            f"/api/v1/recordings/clips/{recording.recording_id}/{'2' * 32}"
+        ).status_code == 404
 
 
-def test_imu_status_api_is_loopback_only_and_exposes_no_sample_history() -> None:
-    app = create_app(
-        webrtc_runtime=ImuRuntime(),  # type: ignore[arg-type]
-        viewer_allowed_hosts=frozenset({"testclient"}),
-    )
-    with TestClient(app) as client:
-        response = client.get("/api/v1/webrtc/imu/status")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["channel_state"] == "receiving"
-    assert payload["samples_received"] == 2
-    assert payload["sensors"]["accelerometer"]["sample_count"] == 2
-    assert "history" not in response.text
-
-    with TestClient(
-        create_app(webrtc_runtime=ImuRuntime())  # type: ignore[arg-type]
-    ) as client:
-        forbidden = client.get("/api/v1/webrtc/imu/status")
-    assert forbidden.status_code == 403
-
-
-def test_stream_control_api_maps_safe_runtime_failures() -> None:
-    command = {"action": "stop"}
-    cases = (
-        (StreamControlUnavailableError("channel unavailable"), 503),
-        (StreamControlCommandTimeoutError("ack timed out"), 504),
-        (StreamControlCommandError("send failed"), 502),
-    )
-    for error, expected_status in cases:
-        app = create_app(
-            webrtc_runtime=ControlRuntime(error),  # type: ignore[arg-type]
-            viewer_allowed_hosts=frozenset({"testclient"}),
-        )
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/v1/webrtc/control/commands",
-                json=command,
-            )
-        assert response.status_code == expected_status
-        assert response.json()["detail"] == str(error)
-
-
-def test_stream_stop_is_rejected_until_active_recording_stops(tmp_path: Path) -> None:
-    media = tmp_path / "completed.mp4"
-    media.write_bytes(b"mp4-data")
-    control_runtime = ControlRuntime()
-    recording_runtime = RecordingApiRuntime(media)
-    recording_runtime.state = RecordingState.RECORDING
-    app = create_app(
-        webrtc_runtime=control_runtime,  # type: ignore[arg-type]
-        recording_runtime=recording_runtime,  # type: ignore[arg-type]
-        viewer_allowed_hosts=frozenset({"testclient"}),
-    )
-
-    with TestClient(app) as client:
+def test_stream_cannot_stop_during_recording(tmp_path: Path) -> None:
+    client, recording, webrtc = _client(tmp_path)
+    recording.state = RecordingState.RECORDING
+    with client:
         response = client.post(
             "/api/v1/webrtc/control/commands",
             json={"action": "stop"},
         )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "stop the active recording before stopping the video stream"
-    )
-    assert control_runtime.commands == []
-
-
-def test_recording_api_is_loopback_only_and_serves_only_registered_media(
-    tmp_path: Path,
-) -> None:
-    media = tmp_path / "completed.mp4"
-    media.write_bytes(b"mp4-data")
-    recording_runtime = RecordingApiRuntime(media)
-    app = create_app(
-        recording_runtime=recording_runtime,  # type: ignore[arg-type]
-        viewer_allowed_hosts=frozenset({"testclient"}),
-    )
-    with TestClient(app) as client:
-        status = client.get("/api/v1/recordings/status")
-        start = client.post(
-            "/api/v1/recordings/commands",
-            json={"action": "start"},
-        )
-        library = client.get("/api/v1/recordings/library")
-        media_response = client.get(
-            f"/api/v1/recordings/media/{recording_runtime.session_id}/"
-            f"{recording_runtime.clip_id}"
-        )
-        missing = client.get(
-            f"/api/v1/recordings/media/{recording_runtime.session_id}/{'d' * 32}"
-        )
-        delete_path = (
-            f"/api/v1/recordings/clips/{recording_runtime.session_id}/"
-            f"{recording_runtime.clip_id}"
-        )
-        rename_path = (
-            f"/api/v1/recordings/sessions/{recording_runtime.session_id}"
-        )
-        renamed = client.patch(
-            rename_path,
-            json={"display_name": "厨房采集"},
-        )
-        invalid_rename = client.patch(
-            rename_path,
-            json={"display_name": "   "},
-        )
-        missing_rename = client.patch(
-            f"/api/v1/recordings/sessions/{'d' * 32}",
-            json={"display_name": "不存在"},
-        )
-        deleted = client.delete(delete_path)
-        missing_delete = client.delete(delete_path)
-
-    assert status.status_code == 200
-    assert status.json()["detail"] == ""
-    assert status.json()["output"] == {
-        "width": 640,
-        "height": 480,
-        "fps": 30,
-        "container": "mp4",
-        "video_codec": "h264",
-    }
-    assert start.json()["state"] == "countdown"
-    assert start.json()["recording_starts_at_unix_ms"] == 4000
-    assert library.json()["sessions"][0]["started_at_unix_ms"] == 4000
-    assert library.json()["sessions"][0]["display_name"] is None
-    assert library.json()["sessions"][0]["clips"][0]["recorded_at_unix_ms"] == 4000
-    assert library.json()["sessions"][0]["clips"][0]["file_size_bytes"] == 8
-    assert media_response.status_code == 200
-    assert media_response.headers["content-type"] == "video/mp4"
-    assert media_response.content == b"mp4-data"
-    assert missing.status_code == 404
-    assert renamed.status_code == 200
-    assert renamed.json()["sessions"][0]["display_name"] == "厨房采集"
-    assert invalid_rename.status_code == 422
-    assert missing_rename.status_code == 404
-    assert deleted.status_code == 200
-    assert deleted.json() == {"schema_version": "1.0", "sessions": []}
-    assert missing_delete.status_code == 404
-
-    with TestClient(
-        create_app(recording_runtime=recording_runtime)  # type: ignore[arg-type]
-    ) as client:
-        assert client.get("/api/v1/recordings/status").status_code == 403
-        assert (
-            client.patch(
-                f"/api/v1/recordings/sessions/{recording_runtime.session_id}",
-                json={"display_name": "未授权"},
-            ).status_code
-            == 403
-        )
-        assert (
-            client.delete(
-                f"/api/v1/recordings/clips/{recording_runtime.session_id}/"
-                f"{recording_runtime.clip_id}"
-            ).status_code
-            == 403
-        )
-
-
-def test_session_finalize_and_delete_apis_are_strict_and_loopback_only(
-    tmp_path: Path,
-) -> None:
-    media = tmp_path / "completed.mp4"
-    media.write_bytes(b"mp4-data")
-    runtime = RecordingApiRuntime(media)
-    app = create_app(
-        recording_runtime=runtime,  # type: ignore[arg-type]
-        viewer_allowed_hosts=frozenset({"testclient"}),
-    )
-    with TestClient(app) as client:
-        finalized = client.post(
-            "/api/v1/recordings/session-commands",
-            json={"action": "finalize"},
-        )
-        invalid = client.post(
-            "/api/v1/recordings/session-commands",
-            json={"action": "finalize", "force": True},
-        )
-        deleted = client.delete(f"/api/v1/recordings/sessions/{runtime.session_id}")
-        missing = client.delete(f"/api/v1/recordings/sessions/{runtime.session_id}")
-
-    assert finalized.status_code == 200
-    assert finalized.json()["session_id"] is None
-    assert runtime.session_commands == ["finalize"]
-    assert invalid.status_code == 422
-    assert deleted.status_code == 200
-    assert deleted.json()["sessions"] == []
-    assert missing.status_code == 404
-
-    with TestClient(
-        create_app(recording_runtime=RecordingApiRuntime(media))  # type: ignore[arg-type]
-    ) as client:
-        assert (
-            client.post(
-                "/api/v1/recordings/session-commands",
-                json={"action": "new"},
-            ).status_code
-            == 403
-        )
-
-
-def test_cli_disables_high_frequency_preview_access_logs(monkeypatch, capsys) -> None:
-    captured: dict[str, object] = {}
-
-    def run(_application: object, **kwargs: object) -> None:
-        captured["app"] = _application
-        captured.update(kwargs)
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "egoglass-ingest-gateway",
-            "--pairing-token",
-            PAIRING_TOKEN,
-            "--hide-pairing-token",
-        ],
-    )
-    monkeypatch.setattr(app_module.uvicorn, "run", run)
-
-    app_module.main()
-
-    assert captured["access_log"] is False
-    assert PAIRING_TOKEN not in capsys.readouterr().out
-    assert captured["app"].state.discovery_service is not None
-
-
-def test_hand_tracking_status_is_loopback_only_and_legacy_replay_routes_are_removed(
-    tmp_path: Path,
-) -> None:
-    video = tmp_path / "replay.mp4"
-    video.write_bytes(b"mp4-data")
-    runtime = HandTrackingApiRuntime(video)
-    session_id = "a" * 32
-    clip_id = "b" * 32
-    run_id = "20260728T120000Z-abcd1234"
-    app = create_app(
-        perception_runtime=runtime,  # type: ignore[arg-type]
-        viewer_allowed_hosts=frozenset({"testclient"}),
-    )
-
-    with TestClient(app) as client:
-        status = client.get("/api/v1/perception/hand-tracking/status")
-        events = client.get(
-            "/api/v1/perception/hand-tracking/events",
-        )
-        replay = client.post(
-            "/api/v1/perception/hand-tracking/replays",
-            json={"session_id": session_id},
-        )
-        media = client.get(
-            f"/api/v1/perception/hand-tracking/replays/{session_id}/{run_id}/{clip_id}"
-        )
-
-    assert status.status_code == 200
-    assert status.json()["live_inferences"] == 2
-    assert events.status_code == 200
-    assert events.headers["content-type"].startswith("text/event-stream")
-    assert events.headers["cache-control"] == (
-        "no-store, no-cache, must-revalidate, max-age=0"
-    )
-    assert events.headers["x-accel-buffering"] == "no"
-    assert "event: status\ndata: " in events.text
-    assert '"live_inferences":2' in events.text
-    assert events.text.endswith(": heartbeat\n\n")
-    assert replay.status_code == 404
-    assert media.status_code == 404
-    assert runtime.closed is True
-
-    remote_app = create_app(perception_runtime=HandTrackingApiRuntime(video))  # type: ignore[arg-type]
-    with TestClient(remote_app) as client:
-        assert client.get("/api/v1/perception/hand-tracking/status").status_code == 403
-        assert client.get("/api/v1/perception/hand-tracking/events").status_code == 403
+        assert response.status_code == 409
+        assert webrtc.control_commands == []

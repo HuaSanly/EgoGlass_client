@@ -1,61 +1,43 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import os
 import re
 import shutil
-import sqlite3
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
-from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import ValidationError
+from schemas.recording import (
+    CaptureDeviceProvenance,
+    CaptureRecordingProvenance,
+    FrameMetadataMatchStatus,
+    ImuSensorType,
+    RecordingFrameRow,
+    RecordingImuRow,
+    RecordingLibrary,
+    RecordingOutput,
+    RecordingState,
+    RecordingStatus,
+)
 
 from .adapters.mp4_recorder import PyAvH264Mp4Recorder, RecordedVideoFrame
 from .adapters.webrtc import WebRtcVideoRecordingSource
-from .capture_session import (
-    CachedConnection,
-    CaptureSessionDatabase,
-    CaptureSessionWriter,
-    read_capture_quality,
-)
-from .recording_models import (
-    CaptureConfigProvenance,
-    CaptureQualityCheck,
-    CaptureQualityCounts,
-    CaptureQualityIssue,
-    CaptureSessionClip,
-    CaptureSessionLifecycle,
-    CaptureSessionManifest,
-    CaptureSessionProvenance,
-    CaptureSessionQuality,
-    CaptureSessionQualityReport,
-    CaptureSessionState,
-    CaptureSessionTimeOrigin,
-    CaptureVideoProfile,
-    RecordingClip,
-    RecordingLibrary,
-    RecordingOutput,
-    RecordingSession,
-    RecordingState,
-    RecordingStatus,
+from .capture_recording import (
+    CaptureRecordingError,
+    CaptureRecordingReader,
+    CaptureRecordingWriter,
 )
 from .webrtc_matcher import FrameMetadataMatch
 from .webrtc_models import ImuCapabilities, ImuSample, VideoFrameMetadata
 
 COUNTDOWN_SECONDS = 3.0
-DEFAULT_OUTPUT_WIDTH = 640
-DEFAULT_OUTPUT_HEIGHT = 480
 OUTPUT_FPS = 30
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
-_TERMINAL_CONNECTION_STATES = {"closed", "disconnected", "failed", "replaced"}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -68,15 +50,11 @@ class RecordingConflictError(RuntimeError):
 
 
 class RecordingFailureError(RuntimeError):
-    """Raised when a recording or collection session cannot be finalized."""
+    """Raised when a recording cannot be finalized without data loss."""
 
 
-class RecordingClipNotFoundError(RuntimeError):
-    """Raised when a completed recording clip does not exist."""
-
-
-class RecordingSessionNotFoundError(RuntimeError):
-    """Raised when a recording session does not exist."""
+class RecordingNotFoundError(RuntimeError):
+    """Raised when a completed recording does not exist or fails validation."""
 
 
 class RecordingWriter(Protocol):
@@ -95,6 +73,7 @@ class RecordingWriter(Protocol):
 
 RecordingSourceProvider = Callable[[], Awaitable[WebRtcVideoRecordingSource | None]]
 
+
 class RecordingWriterFactory(Protocol):
     def __call__(
         self,
@@ -108,7 +87,7 @@ class RecordingWriterFactory(Protocol):
 
 
 class RecordingRuntime:
-    """Own dataset-grade collection sessions, telemetry, and MP4 clips."""
+    """Own independent, atomically published capture recordings."""
 
     def __init__(
         self,
@@ -117,42 +96,47 @@ class RecordingRuntime:
         *,
         recorder_factory: RecordingWriterFactory = PyAvH264Mp4Recorder,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        unix_clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+        unix_clock_ns: Callable[[], int] = time.time_ns,
         monotonic_clock_ns: Callable[[], int] = time.perf_counter_ns,
-        session_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
+        recording_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
         telemetry_queue_size: int = 32_768,
     ) -> None:
+        if telemetry_queue_size < 1:
+            raise ValueError("telemetry_queue_size must be positive")
         self._root = root.expanduser().resolve()
+        self._root.mkdir(parents=True, exist_ok=True)
         self._source_provider = source_provider
         self._recorder_factory = recorder_factory
         self._sleep = sleep
-        self._unix_clock_ms = unix_clock_ms
+        self._unix_clock_ns = unix_clock_ns
         self._monotonic_clock_ns = monotonic_clock_ns
-        self._session_id_factory = session_id_factory
+        self._recording_id_factory = recording_id_factory
         self._telemetry_queue_size = telemetry_queue_size
         self._command_lock = asyncio.Lock()
-        self._countdown_task: asyncio.Task[None] | None = None
-        self._monitor_task: asyncio.Task[None] | None = None
-        self._recorder: RecordingWriter | None = None
-        self._partial_path: Path | None = None
         self._state = RecordingState.UNAVAILABLE
         self._detail = "Glass3 video is not ready"
-        self._output_width = DEFAULT_OUTPUT_WIDTH
-        self._output_height = DEFAULT_OUTPUT_HEIGHT
-        self._session_id: str | None = None
-        self._session_manifest: CaptureSessionManifest | None = None
-        self._session_writer: CaptureSessionWriter | None = None
-        self._webrtc_session_id: str | None = None
-        self._clip_camera_start_generation: int | None = None
-        self._clip_id: str | None = None
-        self._countdown_started_at_unix_ms: int | None = None
+        self._output = RecordingOutput()
+        self._recording_id: str | None = None
+        self._connection_session_id: str | None = None
+        self._camera_start_generation: int | None = None
+        self._device_session_id: str | None = None
+        self._countdown_started_at_unix_ns: int | None = None
+        self._countdown_started_at_monotonic_ns: int | None = None
         self._recording_starts_at_unix_ms: int | None = None
         self._recording_started_at_unix_ms: int | None = None
         self._recording_started_at_monotonic_ns: int | None = None
         self._recording_duration_ms = 0
-        self._connections: dict[str, CachedConnection] = {}
-        self._latest_capabilities: dict[str, tuple[ImuCapabilities, int]] = {}
-        self._recover_stale_sessions()
+        self._imu_sample_count = 0
+        self._telemetry_queue_overflow_count = 0
+        self._writer: CaptureRecordingWriter | None = None
+        self._recorder: RecordingWriter | None = None
+        self._countdown_task: asyncio.Task[None] | None = None
+        self._monitor_task: asyncio.Task[None] | None = None
+        self._telemetry_task: asyncio.Task[None] | None = None
+        self._telemetry_queue: asyncio.Queue[RecordingImuRow] | None = None
+        self._telemetry_error: BaseException | None = None
+        self._matches_by_pts: dict[int, FrameMetadataMatch] = {}
+        self._recover_partial_directories()
 
     @property
     def root(self) -> Path:
@@ -173,51 +157,58 @@ class RecordingRuntime:
             }:
                 raise RecordingConflictError("a recording command is already active")
             source = await self._compatible_source()
-            if self._session_id is None:
-                self._create_session_locked(source)
-            manifest = self._require_active_manifest()
-            now_ms = self._unix_clock_ms()
-            clip_id = uuid.uuid4().hex
-            manifest = manifest.model_copy(
-                update={
-                    "clips": [
-                        *manifest.clips,
-                        CaptureSessionClip(
-                            clip_id=clip_id,
-                            state="preparing",
-                            relative_media_path=f"media/{clip_id}.mp4",
-                            video_profile=CaptureVideoProfile(
-                                width=source.width,
-                                height=source.height,
-                                nominal_fps=OUTPUT_FPS,
-                            ),
-                        ),
-                    ]
-                }
+            recording_id = self._recording_id_factory()
+            if not _ID_PATTERN.fullmatch(recording_id):
+                raise RecordingFailureError("recording ID factory returned an invalid ID")
+            countdown_unix_ns = self._unix_clock_ns()
+            countdown_monotonic_ns = self._monotonic_clock_ns()
+            output = RecordingOutput(
+                width=source.width,
+                height=source.height,
+                fps=float(OUTPUT_FPS),
             )
-            self._write_capture_manifest(manifest)
-            self._session_manifest = manifest
-            self._webrtc_session_id = source.connection_session_id
-            self._clip_camera_start_generation = source.camera_start_generation
-            self._clip_id = clip_id
-            self._countdown_started_at_unix_ms = now_ms
-            self._recording_starts_at_unix_ms = now_ms + round(COUNTDOWN_SECONDS * 1000)
+            provenance = CaptureRecordingProvenance(
+                device=CaptureDeviceProvenance(device_id=self._device_session_id)
+            )
+            try:
+                writer = await asyncio.to_thread(
+                    CaptureRecordingWriter.create,
+                    self._root,
+                    recording_id=recording_id,
+                    video_profile=output,
+                    countdown_started_at_unix_ns=countdown_unix_ns,
+                    countdown_started_at_client_monotonic_ns=countdown_monotonic_ns,
+                    provenance=provenance,
+                )
+            except Exception as error:
+                raise RecordingFailureError("recording workspace could not be created") from error
+
+            self._recording_id = recording_id
+            self._connection_session_id = source.connection_session_id
+            self._camera_start_generation = source.camera_start_generation
+            self._countdown_started_at_unix_ns = countdown_unix_ns
+            self._countdown_started_at_monotonic_ns = countdown_monotonic_ns
+            self._recording_starts_at_unix_ms = (
+                countdown_unix_ns // 1_000_000 + round(COUNTDOWN_SECONDS * 1000)
+            )
             self._recording_started_at_unix_ms = None
             self._recording_started_at_monotonic_ns = None
             self._recording_duration_ms = 0
+            self._imu_sample_count = 0
+            self._telemetry_queue_overflow_count = 0
+            self._output = output
+            self._writer = writer
+            self._matches_by_pts.clear()
+            self._telemetry_error = None
+            self._telemetry_queue = asyncio.Queue(maxsize=self._telemetry_queue_size)
+            self._telemetry_task = asyncio.create_task(self._write_telemetry(writer))
             self._state = RecordingState.COUNTDOWN
-            self._detail = "recording starts after the server countdown"
-            self._record_event(
-                "recording_countdown_started",
-                clip_id=clip_id,
-                details={"countdown_seconds": COUNTDOWN_SECONDS},
-            )
+            self._detail = "recording starts after the countdown"
             self._countdown_task = asyncio.create_task(
                 self._complete_countdown(
-                    self._session_id,
+                    recording_id,
                     source.connection_session_id,
                     source.camera_start_generation,
-                    clip_id,
                 )
             )
             return self._status_locked()
@@ -225,198 +216,70 @@ class RecordingRuntime:
     async def stop(self) -> RecordingStatus:
         async with self._command_lock:
             if self._state is RecordingState.COUNTDOWN:
-                self._cancel_countdown_locked()
+                await self._cancel_countdown_locked()
                 return self._status_locked()
             if self._state is not RecordingState.RECORDING:
                 raise RecordingConflictError("there is no active recording to stop")
             self._state = RecordingState.FINALIZING
-            self._detail = "finalizing MP4"
+            self._detail = "finalizing recording"
             try:
-                await self._finalize_clip_locked()
+                await self._finalize_locked()
             except Exception as error:
-                self._fail_locked(error)
-                raise RecordingFailureError(self._detail or "recording failed") from error
-            return self._status_locked()
-
-    async def session_command(self, action: str) -> RecordingStatus:
-        async with self._command_lock:
-            if action == "new" and self._state in {
-                RecordingState.COUNTDOWN,
-                RecordingState.RECORDING,
-                RecordingState.FINALIZING,
-            }:
-                raise RecordingConflictError(
-                    "stop the active clip before starting a new collection session"
-                )
-            reason = "manual_new_session" if action == "new" else "client_shutdown"
-            try:
-                await self._finish_session_locked(reason, allow_active_clip=action == "finalize")
-            except Exception as error:
-                self._fail_locked(error)
-                raise RecordingFailureError("collection session finalization failed") from error
-            await self._refresh_availability_locked()
+                await self._fail_locked(error)
+                raise RecordingFailureError(self._detail) from error
             return self._status_locked()
 
     async def library(self) -> RecordingLibrary:
-        """Scan the recording library without blocking the media event loop."""
-
-        async with self._command_lock:
-            return await self._scan_library_in_worker()
-
-    async def _scan_library_in_worker(self) -> RecordingLibrary:
         return await asyncio.to_thread(self._scan_library)
 
-    def _scan_library(self) -> RecordingLibrary:
-        sessions: list[RecordingSession] = []
-        if not self._root.exists():
-            return RecordingLibrary(sessions=[])
-        for path in self._root.glob("*/session.json"):
-            if not _ID_PATTERN.fullmatch(path.parent.name):
-                continue
-            capture = self._read_capture_manifest(path)
-            if capture is not None:
-                sessions.append(self._capture_library_session(capture))
-                continue
-            legacy = self._read_legacy_manifest(path)
-            if legacy is None:
-                continue
-            complete_clips = [
-                clip
-                for clip in legacy.clips
-                if self._legacy_completed_path(legacy.session_id, clip.clip_id).is_file()
-                and self._legacy_completed_path(legacy.session_id, clip.clip_id).stat().st_size
-                == clip.file_size_bytes
-            ]
-            if complete_clips:
-                sessions.append(
-                    legacy.model_copy(
-                        update={
-                            "clips": sorted(
-                                complete_clips,
-                                key=lambda clip: clip.recorded_at_unix_ms,
-                                reverse=True,
-                            )
-                        }
-                    )
-                )
-        sessions.sort(key=lambda session: session.started_at_unix_ms, reverse=True)
-        return RecordingLibrary(sessions=sessions)
+    async def media_path(self, recording_id: str) -> Path | None:
+        reader = await asyncio.to_thread(self._reader_or_none, recording_id)
+        return None if reader is None else reader.video_path
 
-    async def media_path(self, session_id: str, clip_id: str) -> Path | None:
-        if not _ID_PATTERN.fullmatch(session_id) or not _ID_PATTERN.fullmatch(clip_id):
+    async def artifact_path(self, recording_id: str, artifact: str) -> Path | None:
+        if artifact not in {"imu.csv", "frames.csv"}:
             return None
-        manifest_path = self._session_directory(session_id) / "session.json"
-        capture = self._read_capture_manifest(manifest_path)
-        if capture is not None:
-            clip = next(
-                (
-                    item
-                    for item in capture.clips
-                    if item.clip_id == clip_id and item.state in {"complete", "incomplete"}
-                ),
-                None,
-            )
-            path = self._completed_path(session_id, clip_id)
-            if clip is None or not path.is_file() or clip.sha256 is None:
-                return None
-            return path if _sha256(path) == clip.sha256 else None
-        legacy = self._read_legacy_manifest(manifest_path)
-        if legacy is None:
-            return None
-        clip = next((item for item in legacy.clips if item.clip_id == clip_id), None)
-        path = self._legacy_completed_path(session_id, clip_id)
-        if clip is None or not path.is_file() or path.stat().st_size != clip.file_size_bytes:
-            return None
-        return path
+        reader = await asyncio.to_thread(self._reader_or_none, recording_id)
+        return None if reader is None else reader.directory / artifact
 
-    async def delete_clip(self, session_id: str, clip_id: str) -> RecordingLibrary:
+    async def reader(self, recording_id: str) -> CaptureRecordingReader:
+        reader = await asyncio.to_thread(self._reader_or_none, recording_id)
+        if reader is None:
+            raise RecordingNotFoundError("recording not found or failed validation")
+        return reader
+
+    async def delete(self, recording_id: str) -> RecordingLibrary:
         async with self._command_lock:
-            if not _ID_PATTERN.fullmatch(session_id) or not _ID_PATTERN.fullmatch(clip_id):
-                raise RecordingClipNotFoundError("recording clip not found")
-            if session_id == self._session_id:
-                raise RecordingConflictError("active collection session cannot be edited")
-            session_directory = self._session_directory(session_id)
-            manifest_path = session_directory / "session.json"
-            capture = self._read_capture_manifest(manifest_path)
-            if capture is not None:
-                clip = next(
-                    (item for item in capture.clips if item.clip_id == clip_id),
-                    None,
-                )
-                completed_path = self._completed_path(session_id, clip_id)
-                if clip is None or not completed_path.is_file():
-                    raise RecordingClipNotFoundError("recording clip not found")
-                updated = capture.model_copy(
-                    update={"clips": [item for item in capture.clips if item.clip_id != clip_id]}
-                )
-                await self._delete_clip_file_and_manifest(
-                    completed_path,
-                    updated,
-                    capture,
-                )
-                return await self._scan_library_in_worker()
-
-            legacy = self._read_legacy_manifest(manifest_path)
-            if legacy is None:
-                raise RecordingClipNotFoundError("recording clip not found")
-            clip = next((item for item in legacy.clips if item.clip_id == clip_id), None)
-            completed_path = self._legacy_completed_path(session_id, clip_id)
-            if clip is None or not completed_path.is_file():
-                raise RecordingClipNotFoundError("recording clip not found")
-            updated_legacy = legacy.model_copy(
-                update={"clips": [item for item in legacy.clips if item.clip_id != clip_id]}
-            )
-            await self._delete_legacy_clip(completed_path, updated_legacy, legacy)
-            return await self._scan_library_in_worker()
-
-    async def delete_session(self, session_id: str) -> RecordingLibrary:
-        async with self._command_lock:
-            if not _ID_PATTERN.fullmatch(session_id):
-                raise RecordingSessionNotFoundError("recording session not found")
-            if session_id == self._session_id:
-                raise RecordingConflictError("active collection session cannot be deleted")
-            session_directory = self._session_directory(session_id)
-            if not (session_directory / "session.json").is_file():
-                raise RecordingSessionNotFoundError("recording session not found")
-            deleting = self._root / f"{session_id}.deleting-{uuid.uuid4().hex}"
+            if not _ID_PATTERN.fullmatch(recording_id):
+                raise RecordingNotFoundError("recording not found")
+            if recording_id == self._recording_id:
+                raise RecordingConflictError("active recording cannot be deleted")
+            recording_directory = self._root / recording_id
+            reader = await asyncio.to_thread(self._reader_or_none, recording_id)
+            if reader is None or reader.directory != recording_directory:
+                raise RecordingNotFoundError("recording not found or failed validation")
+            tombstone = self._root / f".{recording_id}.deleting-{uuid.uuid4().hex}"
             try:
-                os.replace(session_directory, deleting)
-                await asyncio.to_thread(shutil.rmtree, deleting)
+                os.replace(recording_directory, tombstone)
+                await asyncio.to_thread(shutil.rmtree, tombstone)
             except Exception as error:
-                raise RecordingFailureError(
-                    "recording session deletion is incomplete; its tombstone is unpublished"
-                ) from error
-            return await self._scan_library_in_worker()
-
-    async def rename_session(self, session_id: str, display_name: str) -> RecordingLibrary:
-        async with self._command_lock:
-            if not _ID_PATTERN.fullmatch(session_id):
-                raise RecordingSessionNotFoundError("recording session not found")
-            manifest_path = self._session_directory(session_id) / "session.json"
-            capture = self._read_capture_manifest(manifest_path)
-            if capture is not None:
-                updated = capture.model_copy(
-                    update={
-                        "display_name": display_name,
-                        "display_name_source": "operator",
-                    }
-                )
-                self._write_capture_manifest(updated)
-                if session_id == self._session_id:
-                    self._session_manifest = updated
-                return await self._scan_library_in_worker()
-            legacy = self._read_legacy_manifest(manifest_path)
-            if legacy is None:
-                raise RecordingSessionNotFoundError("recording session not found")
-            self._write_legacy_manifest(legacy.model_copy(update={"display_name": display_name}))
-            return await self._scan_library_in_worker()
+                raise RecordingFailureError("recording deletion is incomplete") from error
+        return await self.library()
 
     async def close(self) -> None:
         async with self._command_lock:
-            try:
-                await self._finish_session_locked("client_shutdown", allow_active_clip=True)
-            except Exception:
-                LOGGER.exception("collection session could not be finalized during shutdown")
+            if self._state is RecordingState.COUNTDOWN:
+                await self._cancel_countdown_locked()
+            elif self._state is RecordingState.RECORDING:
+                self._state = RecordingState.FINALIZING
+                self._detail = "finalizing recording during shutdown"
+                try:
+                    await self._finalize_locked()
+                except Exception as error:
+                    await self._fail_locked(error)
+                    LOGGER.exception("recording could not be finalized during shutdown")
+            elif self._writer is not None:
+                await self._close_incomplete_writer()
 
     async def on_connection_started(
         self,
@@ -424,23 +287,8 @@ class RecordingRuntime:
         device_session_id: str,
         observed_at_client_monotonic_ns: int,
     ) -> None:
-        connection = CachedConnection(
-            connection_session_id=connection_session_id,
-            device_session_id=device_session_id,
-            state="negotiating",
-            observed_at_client_monotonic_ns=observed_at_client_monotonic_ns,
-        )
-        had_connection = bool(self._connections)
-        self._connections[connection_session_id] = connection
-        writer = self._session_writer
-        if writer is not None:
-            writer.enqueue("begin_connection", connection, observed_at_client_monotonic_ns)
-            if had_connection:
-                self._record_event(
-                    "stream_reconnected",
-                    elapsed_realtime_ns=None,
-                    details={"connection_session_id": connection_session_id},
-                )
+        del connection_session_id, observed_at_client_monotonic_ns
+        self._device_session_id = device_session_id
 
     async def on_connection_state(
         self,
@@ -448,30 +296,7 @@ class RecordingRuntime:
         state: str,
         observed_at_client_monotonic_ns: int,
     ) -> None:
-        previous = self._connections.get(connection_session_id)
-        if previous is not None:
-            self._connections[connection_session_id] = CachedConnection(
-                connection_session_id=previous.connection_session_id,
-                device_session_id=previous.device_session_id,
-                state=state,
-                observed_at_client_monotonic_ns=observed_at_client_monotonic_ns,
-            )
-        writer = self._session_writer
-        if writer is not None and state in _TERMINAL_CONNECTION_STATES:
-            writer.enqueue(
-                "end_connection",
-                connection_session_id,
-                observed_at_client_monotonic_ns,
-                state,
-            )
-            self._record_event(
-                "stream_disconnected",
-                elapsed_realtime_ns=None,
-                details={
-                    "connection_session_id": connection_session_id,
-                    "state": state,
-                },
-            )
+        del connection_session_id, state, observed_at_client_monotonic_ns
 
     async def on_imu_capabilities(
         self,
@@ -479,18 +304,7 @@ class RecordingRuntime:
         capabilities: ImuCapabilities,
         received_at_client_monotonic_ns: int,
     ) -> None:
-        self._latest_capabilities[connection_session_id] = (
-            capabilities,
-            received_at_client_monotonic_ns,
-        )
-        writer = self._session_writer
-        if writer is not None:
-            writer.enqueue(
-                "record_capabilities",
-                connection_session_id,
-                capabilities,
-                received_at_client_monotonic_ns,
-            )
+        del connection_session_id, capabilities, received_at_client_monotonic_ns
 
     async def on_imu_sample(
         self,
@@ -498,23 +312,50 @@ class RecordingRuntime:
         sample: ImuSample,
         received_at_client_monotonic_ns: int,
     ) -> None:
-        writer = self._session_writer
-        if writer is not None:
-            writer.enqueue(
-                "record_imu_sample",
-                connection_session_id,
-                sample,
-                received_at_client_monotonic_ns,
-            )
+        queue = self._telemetry_queue
+        origin_ns = self._countdown_started_at_monotonic_ns
+        if (
+            queue is None
+            or origin_ns is None
+            or self._writer is None
+            or self._state not in {RecordingState.COUNTDOWN, RecordingState.RECORDING}
+            or connection_session_id != self._connection_session_id
+        ):
+            return
+        row = RecordingImuRow(
+            sample_index=self._imu_sample_count,
+            recording_time_ns=max(0, received_at_client_monotonic_ns - origin_ns),
+            connection_session_id=connection_session_id,
+            sensor_type=ImuSensorType(sample.sensor_type.value),
+            sequence_number=sample.sequence_number,
+            sensor_event_monotonic_ns=sample.sensor_event_monotonic_ns,
+            received_at_elapsed_realtime_ns=sample.received_at_elapsed_realtime_ns,
+            received_at_client_monotonic_ns=received_at_client_monotonic_ns,
+            accuracy=sample.accuracy,
+            x=sample.values[0],
+            y=sample.values[1],
+            z=sample.values[2],
+            inside_video_span=False,
+        )
+        try:
+            queue.put_nowait(row)
+        except asyncio.QueueFull:
+            self._telemetry_queue_overflow_count += 1
+        else:
+            self._imu_sample_count += 1
 
     async def on_frame_metadata_match(
         self,
         connection_session_id: str,
         match: FrameMetadataMatch,
     ) -> None:
-        writer = self._session_writer
-        if writer is not None:
-            writer.enqueue("record_frame_match", connection_session_id, match)
+        if (
+            self._writer is not None
+            and connection_session_id == self._connection_session_id
+            and self._state
+            in {RecordingState.COUNTDOWN, RecordingState.RECORDING, RecordingState.FINALIZING}
+        ):
+            self._matches_by_pts[match.decoded_frame_pts] = match
 
     async def on_video_frame_metadata(
         self,
@@ -524,327 +365,238 @@ class RecordingRuntime:
         camera_start_generation: int,
         ingest_status: str,
     ) -> None:
-        writer = self._session_writer
-        if writer is not None:
-            writer.enqueue(
-                "record_video_frame_metadata",
-                connection_session_id,
-                metadata,
-                received_at_client_monotonic_ns,
-                camera_start_generation,
-                ingest_status,
-            )
-
-    def _create_session_locked(self, source: WebRtcVideoRecordingSource) -> None:
-        session_id = self._session_id_factory()
-        if not _ID_PATTERN.fullmatch(session_id):
-            raise RuntimeError("capture session identifier is invalid")
-        started_at_unix_ns = self._unix_clock_ms() * 1_000_000
-        session_directory = self._session_directory(session_id)
-        for relative in ("media", "telemetry", "annotations", "derived"):
-            (session_directory / relative).mkdir(parents=True, exist_ok=True)
-        display_name = datetime.fromtimestamp(started_at_unix_ns / 1_000_000_000).strftime(
-            "%Y-%m-%d %H-%M-%S"
-        )
-        manifest = CaptureSessionManifest(
-            session_id=session_id,
-            display_name=display_name,
-            display_name_source="timestamp_default",
-            lifecycle=CaptureSessionLifecycle(
-                state=CaptureSessionState.ACTIVE,
-                started_at_unix_ns=started_at_unix_ns,
-            ),
-            session_time_origin=CaptureSessionTimeOrigin(),
-            provenance=CaptureSessionProvenance(
-                capture_config=CaptureConfigProvenance(
-                    capture_config_id=None,
-                    source="glasses_negotiated",
-                    width=source.width,
-                    height=source.height,
-                    nominal_fps=OUTPUT_FPS,
-                )
-            ),
-            clips=[],
-        )
-        self._write_capture_manifest(manifest)
-        database = CaptureSessionDatabase(session_id, self._telemetry_path(session_id))
-        writer = CaptureSessionWriter(
-            database,
-            max_queue_size=self._telemetry_queue_size,
-        )
-        self._session_id = session_id
-        self._session_manifest = manifest
-        self._session_writer = writer
-        for connection in self._connections.values():
-            if connection.state not in _TERMINAL_CONNECTION_STATES:
-                writer.enqueue(
-                    "begin_connection",
-                    connection,
-                    self._monotonic_clock_ns(),
-                )
-        for connection_id, (capabilities, received_at_ns) in self._latest_capabilities.items():
-            writer.enqueue(
-                "record_capabilities",
-                connection_id,
-                capabilities,
-                received_at_ns,
-            )
-        self._record_event(
-            "session_started_automatically",
-            details={"start_reason": "first_recording_request"},
+        del (
+            connection_session_id,
+            metadata,
+            received_at_client_monotonic_ns,
+            camera_start_generation,
+            ingest_status,
         )
 
     async def _complete_countdown(
         self,
-        session_id: str,
-        webrtc_session_id: str,
+        recording_id: str,
+        connection_session_id: str,
         camera_start_generation: int,
-        clip_id: str,
     ) -> None:
         try:
             await self._sleep(COUNTDOWN_SECONDS)
             async with self._command_lock:
                 if (
                     self._state is not RecordingState.COUNTDOWN
-                    or self._session_id != session_id
-                    or self._webrtc_session_id != webrtc_session_id
-                    or self._clip_id != clip_id
+                    or self._recording_id != recording_id
                 ):
                     return
                 source = await self._compatible_source()
                 if (
-                    source.connection_session_id != webrtc_session_id
+                    source.connection_session_id != connection_session_id
                     or source.camera_start_generation != camera_start_generation
                 ):
                     raise RecordingUnavailableError(
-                        "Glass3 WebRTC session changed during the countdown"
+                        "Glass3 stream changed during the countdown"
                     )
-                manifest = self._require_active_manifest()
-                clip = next(item for item in manifest.clips if item.clip_id == clip_id)
-                expected_dimensions = (
-                    clip.video_profile.width,
-                    clip.video_profile.height,
-                )
-                if (source.width, source.height) != expected_dimensions:
-                    raise RecordingUnavailableError(
-                        "Glass3 video dimensions changed during the countdown"
-                    )
-                track = source.source.subscribe(buffered=True)
-                partial_path = self._partial_file_path(session_id, clip_id)
+                writer = self._require_writer()
                 recorder = self._recorder_factory(
-                    partial_path,
-                    track,
+                    writer.video_path,
+                    source.source.subscribe(buffered=True),
                     width=source.width,
                     height=source.height,
                     fps=OUTPUT_FPS,
                 )
-                self._partial_path = partial_path
                 self._recorder = recorder
                 try:
                     await recorder.start()
                 except Exception:
                     with suppress(Exception):
                         await recorder.stop()
+                    self._recorder = None
                     raise
-                self._recording_started_at_unix_ms = self._unix_clock_ms()
+                self._recording_started_at_unix_ms = self._unix_clock_ns() // 1_000_000
                 self._recording_started_at_monotonic_ns = self._monotonic_clock_ns()
                 self._state = RecordingState.RECORDING
                 self._detail = ""
                 self._countdown_task = None
-                self._update_capture_clip(clip_id, state="recording")
-                self._record_event("clip_recording_started", clip_id=clip_id)
                 self._monitor_task = asyncio.create_task(self._monitor_recorder(recorder))
         except asyncio.CancelledError:
             return
         except Exception as error:
             LOGGER.exception("recording countdown failed")
             async with self._command_lock:
-                if self._session_id == session_id and self._clip_id == clip_id:
-                    self._countdown_task = None
-                    self._update_capture_clip(clip_id, state="incomplete")
-                    self._fail_locked(error)
+                if self._recording_id == recording_id:
+                    await self._fail_locked(error)
 
     async def _monitor_recorder(self, recorder: RecordingWriter) -> None:
-        failure: Exception | None = None
+        failure: BaseException | None = None
         try:
             await recorder.wait()
         except asyncio.CancelledError:
             return
-        except Exception as error:
-            LOGGER.exception("recording writer failed")
+        except BaseException as error:
             failure = error
         async with self._command_lock:
             if self._recorder is not recorder:
                 return
             self._state = RecordingState.FINALIZING
-            self._detail = "source ended; finalizing MP4"
+            self._detail = "video source ended; finalizing recording"
             try:
                 if failure is not None:
-                    await self._discard_recorder_locked()
                     raise failure
-                await self._finalize_clip_locked()
-            except Exception as error:
-                self._fail_locked(error)
+                await self._finalize_locked()
+            except BaseException as error:
+                await self._fail_locked(error)
 
-    async def _finalize_clip_locked(self) -> None:
+    async def _finalize_locked(self) -> None:
         recorder, self._recorder = self._recorder, None
-        partial_path, self._partial_path = self._partial_path, None
         monitor, self._monitor_task = self._monitor_task, None
         if monitor is not None and monitor is not asyncio.current_task():
             monitor.cancel()
-        if recorder is None or partial_path is None:
-            raise RuntimeError("recording finalization has no active recorder")
-        try:
-            await recorder.stop()
-        except Exception:
-            partial_path.unlink(missing_ok=True)
-            raise
-        if recorder.frames_received <= 0:
-            partial_path.unlink(missing_ok=True)
-            raise RuntimeError("recorder received no video frames")
+        if recorder is None:
+            raise CaptureRecordingError("recording has no active MP4 writer")
+        await recorder.stop()
         frame_records = tuple(recorder.frame_records)
-        if len(frame_records) != recorder.frames_received:
-            partial_path.unlink(missing_ok=True)
-            raise RuntimeError("recorder did not preserve exact MP4 timing for every frame")
-        if not partial_path.is_file() or partial_path.stat().st_size <= 0:
-            raise RuntimeError("recorder produced no playable MP4 data")
-        if self._session_id is None or self._clip_id is None:
-            raise RuntimeError("recording identifiers are missing")
-        if self._webrtc_session_id is None:
-            raise RuntimeError("recording WebRTC connection identifier is missing")
-        if self._clip_camera_start_generation is None:
-            raise RuntimeError("recording camera start generation is missing")
-        if self._recording_started_at_monotonic_ns is None:
-            raise RuntimeError("recording start timestamp is missing")
-        ended_at_ms = self._unix_clock_ms()
-        duration_ms = max(
-            0,
-            (self._monotonic_clock_ns() - self._recording_started_at_monotonic_ns) // 1_000_000,
-        )
-        completed_path = self._completed_path(self._session_id, self._clip_id)
-        os.replace(partial_path, completed_path)
+        if recorder.frames_received < 1 or len(frame_records) != recorder.frames_received:
+            raise CaptureRecordingError("MP4 writer did not preserve every frame timestamp")
+        await self._drain_telemetry()
         writer = self._require_writer()
-        writer.enqueue(
-            "record_clip_frames",
-            self._clip_id,
-            self._webrtc_session_id,
-            self._clip_camera_start_generation,
-            frame_records,
-            recorder.frames_received,
+        rows = self._frame_rows(frame_records)
+        for row in rows:
+            await asyncio.to_thread(writer.append_frame, row)
+        residual_ns = _timestamp_mapping_residual(rows)
+        reader = await asyncio.to_thread(
+            writer.finalize,
+            ended_at_unix_ns=self._unix_clock_ns(),
+            telemetry_queue_overflow_count=self._telemetry_queue_overflow_count,
+            timestamp_mapping_residual_ns=residual_ns,
         )
-        self._record_event(
-            "clip_recording_stopped",
-            clip_id=self._clip_id,
-            details={"ended_at_unix_ms": ended_at_ms},
-        )
-        try:
-            await writer.flush()
-            sha256 = await asyncio.to_thread(_sha256, completed_path)
-            self._update_capture_clip(
-                self._clip_id,
-                state="incomplete",
-                frame_count=recorder.frames_received,
-                sha256=sha256,
-            )
-        except Exception:
-            completed_path.unlink(missing_ok=True)
-            self._update_capture_clip(self._clip_id, state="incomplete")
-            raise
-        self._recording_duration_ms = duration_ms
+        self._recording_duration_ms = reader.manifest.duration_ns // 1_000_000
+        self._clear_active()
         self._state = RecordingState.READY
         self._detail = "recording finalized"
 
-    async def _finish_session_locked(self, reason: str, *, allow_active_clip: bool) -> None:
-        if self._session_id is None:
-            return
-        if self._state is RecordingState.COUNTDOWN:
-            if not allow_active_clip:
-                raise RecordingConflictError("recording countdown is active")
-            self._cancel_countdown_locked()
-        elif self._state is RecordingState.RECORDING:
-            if not allow_active_clip:
-                raise RecordingConflictError("recording clip is active")
-            self._state = RecordingState.FINALIZING
-            self._detail = "finalizing MP4 before collection shutdown"
-            await self._finalize_clip_locked()
-        manifest = self._require_active_manifest()
-        finalizing = manifest.model_copy(
-            update={
-                "lifecycle": manifest.lifecycle.model_copy(
-                    update={"state": CaptureSessionState.FINALIZING}
-                )
-            }
-        )
-        self._write_capture_manifest(finalizing)
-        self._session_manifest = finalizing
-        event_type = "manual_new_session" if reason == "manual_new_session" else "client_shutdown"
-        self._record_event(event_type, details={"end_reason": reason})
-        writer, self._session_writer = self._require_writer(), None
-        result = await writer.finalize()
-        clips = [self._finalize_capture_clip(clip) for clip in finalizing.clips]
-        complete = result.quality.telemetry_queue_overflow_count == 0 and all(
-            clip.state != "incomplete" for clip in clips
-        )
-        state = CaptureSessionState.COMPLETE if complete else CaptureSessionState.INCOMPLETE
-        ended_at_unix_ns = self._unix_clock_ms() * 1_000_000
-        completed_manifest = finalizing.model_copy(
-            update={
-                "lifecycle": finalizing.lifecycle.model_copy(
-                    update={
-                        "state": state,
-                        "ended_at_unix_ns": ended_at_unix_ns,
-                        "end_reason": reason,
-                    }
-                ),
-                "session_time_origin": CaptureSessionTimeOrigin(),
-                "clips": clips,
-            }
-        )
-        report = self._quality_report(
-            completed_manifest,
-            result.quality,
-            recoverable=state is CaptureSessionState.INCOMPLETE,
-            recovered=False,
-        )
-        self._write_quality_report(completed_manifest.session_id, report)
-        self._write_capture_manifest(completed_manifest)
-        self._session_id = None
-        self._session_manifest = None
-        self._webrtc_session_id = None
-        self._clip_camera_start_generation = None
-        self._clip_id = None
-        self._countdown_started_at_unix_ms = None
-        self._recording_starts_at_unix_ms = None
-        self._recording_started_at_unix_ms = None
-        self._recording_started_at_monotonic_ns = None
+    async def _cancel_countdown_locked(self) -> None:
+        task, self._countdown_task = self._countdown_task, None
+        if task is not None:
+            task.cancel()
+        await self._drain_telemetry()
+        await self._close_incomplete_writer()
+        self._clear_active()
         self._state = RecordingState.READY
-        self._detail = "collection session finalized"
+        self._detail = "countdown cancelled"
 
-    def _cancel_countdown_locked(self) -> None:
-        if self._countdown_task is not None:
-            self._countdown_task.cancel()
-            self._countdown_task = None
-        if self._clip_id is not None:
-            self._update_capture_clip(self._clip_id, state="cancelled")
-        self._clip_id = None
-        self._webrtc_session_id = None
-        self._clip_camera_start_generation = None
-        self._countdown_started_at_unix_ms = None
-        self._recording_starts_at_unix_ms = None
-        self._state = RecordingState.READY
-        self._detail = "countdown cancelled; session IMU capture remains active"
-
-    async def _discard_recorder_locked(self) -> None:
+    async def _fail_locked(self, error: BaseException) -> None:
+        LOGGER.error("recording failed: %s", error)
         recorder, self._recorder = self._recorder, None
-        partial_path, self._partial_path = self._partial_path, None
-        monitor, self._monitor_task = self._monitor_task, None
-        if monitor is not None and monitor is not asyncio.current_task():
-            monitor.cancel()
         if recorder is not None:
             with suppress(Exception):
                 await recorder.stop()
-        if partial_path is not None:
-            partial_path.unlink(missing_ok=True)
+        with suppress(Exception):
+            await self._drain_telemetry()
+        with suppress(Exception):
+            await self._close_incomplete_writer()
+        self._state = RecordingState.ERROR
+        self._detail = str(error)[:256] or type(error).__name__
+
+    async def _write_telemetry(self, writer: CaptureRecordingWriter) -> None:
+        queue = self._telemetry_queue
+        assert queue is not None
+        while True:
+            row = await queue.get()
+            try:
+                await asyncio.to_thread(writer.append_imu, row)
+            except BaseException as error:
+                self._telemetry_error = error
+            finally:
+                queue.task_done()
+
+    async def _drain_telemetry(self) -> None:
+        queue = self._telemetry_queue
+        task, self._telemetry_task = self._telemetry_task, None
+        if queue is not None:
+            await queue.join()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._telemetry_queue = None
+        if self._telemetry_error is not None:
+            raise CaptureRecordingError("IMU CSV writer failed") from self._telemetry_error
+
+    async def _close_incomplete_writer(self) -> None:
+        writer, self._writer = self._writer, None
+        if writer is not None:
+            await asyncio.to_thread(writer.close_incomplete)
+
+    def _frame_rows(
+        self,
+        records: Sequence[RecordedVideoFrame],
+    ) -> tuple[RecordingFrameRow, ...]:
+        origin_ns = self._countdown_started_at_monotonic_ns
+        connection_session_id = self._connection_session_id
+        if origin_ns is None or connection_session_id is None:
+            raise CaptureRecordingError("recording time origin is missing")
+        rows: list[RecordingFrameRow] = []
+        previous_recording_time = -1
+        for record in records:
+            recording_time_ns = max(
+                previous_recording_time + 1,
+                record.received_at_client_perf_counter_ns - origin_ns,
+            )
+            previous_recording_time = recording_time_ns
+            match = (
+                self._matches_by_pts.get(record.source_frame_pts)
+                if record.source_frame_pts is not None
+                else None
+            )
+            if (
+                match is not None
+                and match.metadata.camera_start_generation
+                != self._camera_start_generation
+            ):
+                match = None
+            if match is None:
+                rows.append(
+                    RecordingFrameRow(
+                        frame_index=record.frame_index,
+                        recording_time_ns=recording_time_ns,
+                        mp4_pts=record.mp4_pts,
+                        mp4_time_base_num=record.mp4_time_base_num,
+                        mp4_time_base_den=record.mp4_time_base_den,
+                        connection_session_id=connection_session_id,
+                        received_at_client_monotonic_ns=(
+                            record.received_at_client_perf_counter_ns
+                        ),
+                        metadata_match_status=FrameMetadataMatchStatus.UNMATCHED,
+                    )
+                )
+                continue
+            metadata = match.metadata
+            rows.append(
+                RecordingFrameRow(
+                    frame_index=record.frame_index,
+                    recording_time_ns=recording_time_ns,
+                    mp4_pts=record.mp4_pts,
+                    mp4_time_base_num=record.mp4_time_base_num,
+                    mp4_time_base_den=record.mp4_time_base_den,
+                    connection_session_id=connection_session_id,
+                    frame_id=metadata.frame_id,
+                    camera_start_generation=metadata.camera_start_generation,
+                    captured_at_rokid_sdk_ms=metadata.captured_at_rokid_sdk_ms,
+                    received_at_elapsed_realtime_ns=(
+                        metadata.received_at_elapsed_realtime_ns
+                    ),
+                    video_at_monotonic_ns=metadata.video_at_monotonic_ns,
+                    rtp_timestamp_90khz=metadata.rtp_timestamp_90khz,
+                    received_at_client_monotonic_ns=(
+                        record.received_at_client_perf_counter_ns
+                    ),
+                    metadata_match_status=(
+                        FrameMetadataMatchStatus.EXACT
+                        if match.timestamp_match_error_90khz == 0
+                        else FrameMetadataMatchStatus.WITHIN_TOLERANCE
+                    ),
+                    timestamp_match_error_90khz=match.timestamp_match_error_90khz,
+                )
+            )
+        return tuple(rows)
 
     async def _compatible_source(self) -> WebRtcVideoRecordingSource:
         source = await self._source_provider()
@@ -853,18 +605,21 @@ class RecordingRuntime:
         if (
             min(source.width, source.height) <= 0
             or max(source.width, source.height) > 8192
-            or source.width % 2 != 0
-            or source.height % 2 != 0
+            or source.width % 2
+            or source.height % 2
         ):
             raise RecordingUnavailableError(
                 f"Glass3 video dimensions are invalid: {source.width}x{source.height}"
             )
         if not _ID_PATTERN.fullmatch(source.connection_session_id):
-            raise RecordingUnavailableError("Glass3 session identifier is invalid")
+            raise RecordingUnavailableError("Glass3 connection identifier is invalid")
         if source.camera_start_generation < 1:
-            raise RecordingUnavailableError("Glass3 camera start generation is invalid")
-        self._output_width = source.width
-        self._output_height = source.height
+            raise RecordingUnavailableError("Glass3 camera generation is invalid")
+        self._output = RecordingOutput(
+            width=source.width,
+            height=source.height,
+            fps=float(OUTPUT_FPS),
+        )
         return source
 
     async def _refresh_availability_locked(self) -> None:
@@ -873,12 +628,10 @@ class RecordingRuntime:
         except RecordingUnavailableError as error:
             self._state = RecordingState.UNAVAILABLE
             self._detail = str(error)
-            return
-        self._state = RecordingState.READY
-        if self._session_id is not None:
-            self._detail = "collection session active; IMU persistence continues"
         else:
-            self._detail = ""
+            self._state = RecordingState.READY
+            if self._detail != "recording finalized":
+                self._detail = ""
 
     def _status_locked(self) -> RecordingStatus:
         duration_ms = self._recording_duration_ms
@@ -888,533 +641,92 @@ class RecordingRuntime:
         }:
             duration_ms = max(
                 0,
-                (self._monotonic_clock_ns() - self._recording_started_at_monotonic_ns) // 1_000_000,
+                (self._monotonic_clock_ns() - self._recording_started_at_monotonic_ns)
+                // 1_000_000,
             )
         return RecordingStatus(
             state=self._state,
             detail=self._detail,
-            session_id=self._session_id,
-            session_state=(
-                self._session_manifest.lifecycle.state
-                if self._session_manifest is not None
-                else None
+            recording_id=self._recording_id,
+            countdown_started_at_unix_ms=(
+                None
+                if self._countdown_started_at_unix_ns is None
+                else self._countdown_started_at_unix_ns // 1_000_000
             ),
-            clip_id=self._clip_id,
-            countdown_started_at_unix_ms=self._countdown_started_at_unix_ms,
             recording_starts_at_unix_ms=self._recording_starts_at_unix_ms,
             recording_started_at_unix_ms=self._recording_started_at_unix_ms,
             recording_duration_ms=duration_ms,
-            output=RecordingOutput(
-                width=self._output_width,
-                height=self._output_height,
-                fps=OUTPUT_FPS,
-            ),
+            frame_count=(self._recorder.frames_received if self._recorder is not None else 0),
+            imu_sample_count=self._imu_sample_count,
+            telemetry_queue_overflow_count=self._telemetry_queue_overflow_count,
+            output=self._output,
         )
 
-    def _record_event(
-        self,
-        event_type: str,
-        *,
-        clip_id: str | None = None,
-        elapsed_realtime_ns: int | None = None,
-        details: dict[str, object] | None = None,
-    ) -> None:
-        writer = self._session_writer
-        if writer is not None:
-            writer.enqueue(
-                "record_event",
-                uuid.uuid4().hex,
-                event_type,
-                self._monotonic_clock_ns(),
-                elapsed_realtime_ns,
-                clip_id,
-                details or {},
-            )
-
-    def _update_capture_clip(self, clip_id: str, **updates: object) -> None:
-        manifest = self._require_active_manifest()
-        found = False
-        clips: list[CaptureSessionClip] = []
-        for clip in manifest.clips:
-            if clip.clip_id == clip_id:
-                clips.append(clip.model_copy(update=updates))
-                found = True
-            else:
-                clips.append(clip)
-        if not found:
-            raise RuntimeError("capture clip is missing from session manifest")
-        updated = manifest.model_copy(update={"clips": clips})
-        self._write_capture_manifest(updated)
-        self._session_manifest = updated
-
-    @staticmethod
-    def _finalize_capture_clip(
-        clip: CaptureSessionClip,
-    ) -> CaptureSessionClip:
-        return CaptureSessionClip.model_validate(
-            {
-                **clip.model_dump(mode="python"),
-                "state": (
-                    "complete"
-                    if clip.frame_count is not None
-                    and clip.frame_count > 0
-                    and clip.sha256 is not None
-                    else "incomplete"
-                ),
-            }
-        )
-
-    def _capture_library_session(self, manifest: CaptureSessionManifest) -> RecordingSession:
-        clips: list[RecordingClip] = []
-        for clip in manifest.clips:
-            path = self._completed_path(manifest.session_id, clip.clip_id)
-            if (
-                clip.state not in {"complete", "incomplete"}
-                or clip.sha256 is None
-                or not path.is_file()
-            ):
+    def _scan_library(self) -> RecordingLibrary:
+        recordings = []
+        for directory in self._root.iterdir():
+            if not directory.is_dir() or not _ID_PATTERN.fullmatch(directory.name):
                 continue
-            if _sha256(path) != clip.sha256:
-                continue
-            started_ns = clip.started_at_session_time_ns or 0
-            ended_ns = clip.ended_at_session_time_ns
-            duration_ms = (
-                round((ended_ns - started_ns) / 1_000_000)
-                if ended_ns is not None and ended_ns >= started_ns
-                else round((clip.frame_count or 0) * 1000 / OUTPUT_FPS)
-            )
-            recorded_at_ms = manifest.lifecycle.started_at_unix_ns // 1_000_000
-            recorded_at_ms += started_ns // 1_000_000
-            clips.append(
-                RecordingClip(
-                    clip_id=clip.clip_id,
-                    recorded_at_unix_ms=recorded_at_ms,
-                    ended_at_unix_ms=recorded_at_ms + duration_ms,
-                    duration_ms=duration_ms,
-                    width=clip.video_profile.width,
-                    height=clip.video_profile.height,
-                    fps=30,
-                    file_size_bytes=path.stat().st_size,
-                    frame_count=clip.frame_count or 0,
-                    media_url=(f"/api/v1/recordings/media/{manifest.session_id}/{clip.clip_id}"),
-                )
-            )
-        quality = read_capture_quality(self._telemetry_path(manifest.session_id))
-        return RecordingSession(
-            session_id=manifest.session_id,
-            started_at_unix_ms=manifest.lifecycle.started_at_unix_ns // 1_000_000,
-            display_name=manifest.display_name,
-            state=manifest.lifecycle.state,
-            ended_at_unix_ms=(
-                None
-                if manifest.lifecycle.ended_at_unix_ns is None
-                else manifest.lifecycle.ended_at_unix_ns // 1_000_000
-            ),
-            recoverable=manifest.lifecycle.state is CaptureSessionState.INCOMPLETE,
-            telemetry_database="telemetry/telemetry.sqlite",
-            quality=quality,
-            clips=sorted(clips, key=lambda item: item.recorded_at_unix_ms, reverse=True),
-        )
-
-    def _quality_report(
-        self,
-        manifest: CaptureSessionManifest,
-        quality: CaptureSessionQuality,
-        *,
-        recoverable: bool,
-        recovered: bool,
-    ) -> CaptureSessionQualityReport:
-        complete_clips = sum(clip.state == "complete" for clip in manifest.clips)
-        incomplete_clips = sum(clip.state == "incomplete" for clip in manifest.clips)
-        missing_imu = quality.accelerometer_sample_count == 0 or quality.gyroscope_sample_count == 0
-        provenance = manifest.provenance
-        missing_provenance = any(
-            value is None
-            for value in (
-                provenance.device.device_id,
-                provenance.device.firmware_version,
-                provenance.software.glasses_app_version,
-                provenance.source_revisions.superproject_commit,
-                provenance.source_revisions.glasses_commit,
-                provenance.source_revisions.client_commit,
-            )
-        )
-        failed = (
-            manifest.lifecycle.state is CaptureSessionState.INCOMPLETE
-            or missing_imu
-            or quality.telemetry_queue_overflow_count > 0
-            or incomplete_clips > 0
-            or missing_provenance
-        )
-        status = (
-            "incomplete"
-            if manifest.lifecycle.state is CaptureSessionState.INCOMPLETE
-            else ("fail" if failed else "pass")
-        )
-        issues: list[CaptureQualityIssue] = [
-            CaptureQualityIssue(
-                issue_id="perception_processing_required",
-                severity="info",
-                message="Perception processing is required before multimodal training export",
-                recoverable=True,
-                evidence="capture preserved source clocks and left alignment pending",
-            )
-        ]
-        if missing_imu:
-            issues.append(
-                CaptureQualityIssue(
-                    issue_id="missing_imu_stream",
-                    severity="error",
-                    message="Both accelerometer and gyroscope samples are required",
-                    recoverable=False,
-                    evidence=(
-                        f"accelerometer={quality.accelerometer_sample_count}, "
-                        f"gyroscope={quality.gyroscope_sample_count}"
-                    ),
-                )
-            )
-        if quality.telemetry_queue_overflow_count:
-            issues.append(
-                CaptureQualityIssue(
-                    issue_id="telemetry_queue_overflow",
-                    severity="error",
-                    message="Telemetry records were dropped before SQLite persistence",
-                    recoverable=False,
-                    evidence=f"dropped={quality.telemetry_queue_overflow_count}",
-                )
-            )
-        if missing_provenance:
-            issues.append(
-                CaptureQualityIssue(
-                    issue_id="capture_provenance_incomplete",
-                    severity="error",
-                    message="Required device and source revision provenance is missing",
-                    recoverable=True,
-                    evidence=(
-                        "device_id, firmware_version, glasses_app_version, "
-                        "glasses_commit, and client_commit are required"
-                    ),
-                )
-            )
-        if recovered:
-            issues.append(
-                CaptureQualityIssue(
-                    issue_id="unclean_shutdown_recovered",
-                    severity="error",
-                    message="The session was active when the previous process stopped",
-                    recoverable=True,
-                    evidence="startup recovery replayed SQLite WAL and preserved artifacts",
-                )
-            )
-        coverage = quality.metadata_match_coverage
-        checks = [
-            CaptureQualityCheck(
-                check_id="perception_alignment",
-                status="not_evaluated",
-                metric_value=None,
-                threshold=None,
-                unit=None,
-                evidence="deferred to the versioned perception pipeline",
-            ),
-            CaptureQualityCheck(
-                check_id="capture_provenance",
-                status="fail" if missing_provenance else "pass",
-                metric_value=0.0 if missing_provenance else 1.0,
-                threshold=1.0,
-                unit="boolean",
-                evidence=("required device, firmware, application, and source revisions"),
-            ),
-            CaptureQualityCheck(
-                check_id="video_metadata_coverage",
-                status=(
-                    "not_evaluated"
-                    if coverage is None
-                    else ("pass" if coverage >= 0.99 else "warn")
-                ),
-                metric_value=coverage,
-                threshold=0.99,
-                unit="ratio",
-                evidence="matched MP4 frames divided by all MP4 frames",
-            ),
-        ]
-        return CaptureSessionQualityReport(
-            session_id=manifest.session_id,
-            generated_at_unix_ns=self._unix_clock_ms() * 1_000_000,
-            status=status,
-            training_eligibility="ineligible",
-            recoverable=recoverable,
-            finalization="unclean" if status == "incomplete" else "clean",
-            counts=CaptureQualityCounts(
-                clip_count=len(manifest.clips),
-                complete_clip_count=complete_clips,
-                incomplete_clip_count=incomplete_clips,
-                video_metadata_count=quality.video_metadata_count,
-                unmatched_video_metadata_count=quality.unmatched_video_metadata_count,
-                video_frame_count=quality.recorded_video_frame_count,
-                video_frames_with_metadata=(quality.recorded_video_frame_metadata_match_count),
-                accelerometer_sample_count=quality.accelerometer_sample_count,
-                gyroscope_sample_count=quality.gyroscope_sample_count,
-                unaligned_imu_sample_count=quality.unaligned_imu_sample_count,
-                imu_sequence_gap_count=quality.imu_sequence_gap_count,
-                imu_duplicate_count=quality.imu_duplicate_sample_count,
-                imu_out_of_order_count=quality.imu_out_of_order_sample_count,
-                clock_mapping_segment_count=quality.timestamp_mapping_segment_count,
-                rejected_clock_mapping_segment_count=(quality.rejected_clock_mapping_segment_count),
-            ),
-            checks=checks,
-            issues=issues,
-        )
-
-    def _recover_stale_sessions(self) -> None:
-        if not self._root.exists():
-            return
-        for manifest_path in self._root.glob("*/session.json"):
-            if not _ID_PATTERN.fullmatch(manifest_path.parent.name):
-                continue
-            manifest = self._read_capture_manifest(manifest_path)
-            if manifest is None or manifest.lifecycle.state not in {
-                CaptureSessionState.ACTIVE,
-                CaptureSessionState.FINALIZING,
-            }:
-                continue
-            session_id = manifest.session_id
-            database_path = self._telemetry_path(session_id)
-            quality = CaptureSessionQuality()
-            if database_path.is_file():
-                try:
-                    database = CaptureSessionDatabase(session_id, database_path)
-                    result = database.finalize_capture(0)
-                    database.checkpoint_and_close()
-                    quality = result.quality
-                    clips = [self._finalize_capture_clip(clip) for clip in manifest.clips]
-                except (OSError, sqlite3.Error, ValueError):
-                    LOGGER.exception("capture session recovery failed for %s", session_id)
-                    clips = manifest.clips
-            else:
-                clips = manifest.clips
-            clips = [
-                clip.model_copy(update={"state": "incomplete"})
-                if clip.state in {"preparing", "recording"}
-                else clip
-                for clip in clips
-            ]
-            recovered = manifest.model_copy(
-                update={
-                    "lifecycle": manifest.lifecycle.model_copy(
-                        update={
-                            "state": CaptureSessionState.INCOMPLETE,
-                            "ended_at_unix_ns": self._unix_clock_ms() * 1_000_000,
-                            "end_reason": "recovery_finalization",
-                        }
-                    ),
-                    "session_time_origin": CaptureSessionTimeOrigin(),
-                    "clips": clips,
-                }
-            )
-            self._write_quality_report(
-                session_id,
-                self._quality_report(
-                    recovered,
-                    quality,
-                    recoverable=database_path.is_file(),
-                    recovered=True,
-                ),
-            )
-            self._write_capture_manifest(recovered)
-
-    async def _delete_clip_file_and_manifest(
-        self,
-        completed_path: Path,
-        updated: CaptureSessionManifest,
-        original: CaptureSessionManifest,
-    ) -> None:
-        deleting_path = completed_path.with_suffix(".deleting")
-        quality_path = completed_path.parents[1] / "quality.json"
-        original_quality = quality_path.read_bytes() if quality_path.is_file() else None
-        manifest_updated = False
-        database: CaptureSessionDatabase | None = None
-        database_committed = False
-        try:
-            os.replace(completed_path, deleting_path)
-            database = CaptureSessionDatabase(
-                original.session_id,
-                self._telemetry_path(original.session_id),
-            )
-            quality = database.begin_clip_delete(completed_path.stem)
-            report = self._quality_report(
-                updated,
-                quality,
-                recoverable=updated.lifecycle.state is CaptureSessionState.INCOMPLETE,
-                recovered=updated.lifecycle.end_reason == "recovery_finalization",
-            )
-            self._write_capture_manifest(updated)
-            self._write_quality_report(updated.session_id, report)
-            manifest_updated = True
-            database.commit_clip_delete()
-            database_committed = True
-            database.checkpoint_and_close()
-            database = None
             try:
-                deleting_path.unlink()
-            except OSError:
-                LOGGER.warning("deleted clip tombstone remains at %s", deleting_path)
-        except Exception as error:
-            if database is not None:
-                if not database_committed:
-                    with suppress(Exception):
-                        database.rollback_clip_delete()
-                with suppress(Exception):
-                    database.checkpoint_and_close()
-            if manifest_updated and not database_committed:
-                with suppress(Exception):
-                    self._write_capture_manifest(original)
-                if original_quality is None:
-                    with suppress(OSError):
-                        quality_path.unlink(missing_ok=True)
-                else:
-                    with suppress(OSError):
-                        quality_path.write_bytes(original_quality)
-            if deleting_path.is_file() and not database_committed:
-                with suppress(OSError):
-                    os.replace(deleting_path, completed_path)
-            raise RecordingFailureError("recording clip could not be deleted") from error
+                recordings.append(CaptureRecordingReader.open(directory).summary())
+            except CaptureRecordingError:
+                LOGGER.warning("skipping invalid recording %s", directory.name)
+        recordings.sort(key=lambda item: item.recorded_at_unix_ns, reverse=True)
+        return RecordingLibrary(recordings=recordings)
 
-    async def _delete_legacy_clip(
-        self,
-        completed_path: Path,
-        updated: RecordingSession,
-        original: RecordingSession,
-    ) -> None:
-        session_directory = completed_path.parent
-        deleting_path = completed_path.with_suffix(".deleting")
-        manifest_updated = False
+    def _reader_or_none(self, recording_id: str) -> CaptureRecordingReader | None:
+        if not _ID_PATTERN.fullmatch(recording_id):
+            return None
+        directory = self._root / recording_id
         try:
-            os.replace(completed_path, deleting_path)
-            self._write_legacy_manifest(updated)
-            manifest_updated = True
-            deleting_path.unlink()
-        except Exception as error:
-            if manifest_updated:
-                with suppress(Exception):
-                    self._write_legacy_manifest(original)
-            if deleting_path.is_file():
-                with suppress(OSError):
-                    os.replace(deleting_path, completed_path)
-            raise RecordingFailureError("recording clip could not be deleted") from error
-        if not updated.clips:
-            with suppress(OSError):
-                (session_directory / "session.json").unlink(missing_ok=True)
-            with suppress(OSError):
-                session_directory.rmdir()
+            return CaptureRecordingReader.open(directory)
+        except (CaptureRecordingError, FileNotFoundError, NotADirectoryError):
+            return None
 
-    def _write_capture_manifest(self, manifest: CaptureSessionManifest) -> None:
-        self._write_json_atomic(
-            self._session_directory(manifest.session_id) / "session.json",
-            manifest.model_dump(mode="json"),
-        )
+    def _require_writer(self) -> CaptureRecordingWriter:
+        if self._writer is None:
+            raise CaptureRecordingError("recording storage writer is missing")
+        return self._writer
 
-    def _write_quality_report(
-        self,
-        session_id: str,
-        report: CaptureSessionQualityReport,
-    ) -> None:
-        self._write_json_atomic(
-            self._session_directory(session_id) / "quality.json",
-            report.model_dump(mode="json"),
-        )
+    def _clear_active(self) -> None:
+        self._writer = None
+        self._recording_id = None
+        self._connection_session_id = None
+        self._camera_start_generation = None
+        self._countdown_started_at_unix_ns = None
+        self._countdown_started_at_monotonic_ns = None
+        self._recording_starts_at_unix_ms = None
+        self._recording_started_at_unix_ms = None
+        self._recording_started_at_monotonic_ns = None
+        self._telemetry_queue = None
+        self._telemetry_task = None
+        self._matches_by_pts.clear()
 
-    def _write_legacy_manifest(self, session: RecordingSession) -> None:
-        self._write_json_atomic(
-            self._session_directory(session.session_id) / "session.json",
-            session.model_dump(mode="json"),
-        )
-
-    @staticmethod
-    def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = path.with_suffix(path.suffix + ".tmp")
-        try:
-            temporary_path.write_text(
-                json.dumps(payload, indent=2) + "\n",
-                encoding="utf-8",
+    def _recover_partial_directories(self) -> None:
+        for directory in self._root.glob(".recording-*.partial"):
+            recording_id = directory.name.removeprefix(".recording-").removesuffix(
+                ".partial"
             )
-            os.replace(temporary_path, path)
-        except Exception:
-            with suppress(OSError):
-                temporary_path.unlink(missing_ok=True)
-            raise
-
-    def _read_capture_manifest(self, path: Path) -> CaptureSessionManifest | None:
-        try:
-            resolved = path.resolve()
-            resolved.relative_to(self._root)
-            payload = json.loads(resolved.read_text(encoding="utf-8"))
-            if payload.get("contract_id") != "capture-session-v1":
-                return None
-            return CaptureSessionManifest.model_validate(payload)
-        except (OSError, ValueError, json.JSONDecodeError, ValidationError):
-            return None
-
-    def _read_legacy_manifest(self, path: Path) -> RecordingSession | None:
-        try:
-            resolved = path.resolve()
-            resolved.relative_to(self._root)
-            payload = json.loads(resolved.read_text(encoding="utf-8"))
-            if payload.get("contract_id") == "capture-session-v1":
-                return None
-            return RecordingSession.model_validate(payload)
-        except (OSError, ValueError, json.JSONDecodeError, ValidationError):
-            return None
-
-    def _require_active_manifest(self) -> CaptureSessionManifest:
-        if self._session_manifest is None or self._session_id is None:
-            raise RuntimeError("active collection session is missing")
-        return self._session_manifest
-
-    def _require_writer(self) -> CaptureSessionWriter:
-        if self._session_writer is None:
-            raise RuntimeError("active collection telemetry writer is missing")
-        return self._session_writer
-
-    def _session_directory(self, session_id: str) -> Path:
-        if not _ID_PATTERN.fullmatch(session_id):
-            raise ValueError("invalid recording session identifier")
-        path = (self._root / session_id).resolve()
-        try:
-            path.relative_to(self._root)
-        except ValueError as error:
-            raise ValueError("recording session path escapes the recording root") from error
-        return path
-
-    def _telemetry_path(self, session_id: str) -> Path:
-        return self._session_directory(session_id) / "telemetry" / "telemetry.sqlite"
-
-    def _partial_file_path(self, session_id: str, clip_id: str) -> Path:
-        return self._session_directory(session_id) / "media" / f"{clip_id}.part.mp4"
-
-    def _completed_path(self, session_id: str, clip_id: str) -> Path:
-        if not _ID_PATTERN.fullmatch(clip_id):
-            raise ValueError("invalid recording clip identifier")
-        return self._session_directory(session_id) / "media" / f"{clip_id}.mp4"
-
-    def _legacy_completed_path(self, session_id: str, clip_id: str) -> Path:
-        if not _ID_PATTERN.fullmatch(clip_id):
-            raise ValueError("invalid recording clip identifier")
-        return self._session_directory(session_id) / f"{clip_id}.mp4"
-
-    def _fail_locked(self, error: Exception) -> None:
-        if self._partial_path is not None:
-            with suppress(OSError):
-                self._partial_path.unlink(missing_ok=True)
-        self._partial_path = None
-        self._recorder = None
-        self._state = RecordingState.ERROR
-        self._detail = f"recording failed: {type(error).__name__}"
+            if not _ID_PATTERN.fullmatch(recording_id):
+                continue
+            try:
+                CaptureRecordingWriter.recover(self._root, recording_id).close_incomplete()
+            except Exception:
+                LOGGER.warning("invalid partial recording retained at %s", directory)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _timestamp_mapping_residual(rows: Sequence[RecordingFrameRow]) -> int | None:
+    matched = [row for row in rows if row.video_at_monotonic_ns is not None]
+    if len(matched) < 2:
+        return None
+    first = matched[0]
+    assert first.video_at_monotonic_ns is not None
+    residuals = [
+        abs(
+            (row.recording_time_ns - first.recording_time_ns)
+            - (row.video_at_monotonic_ns - first.video_at_monotonic_ns)
+        )
+        for row in matched[1:]
+        if row.video_at_monotonic_ns is not None
+    ]
+    return max(residuals, default=0)

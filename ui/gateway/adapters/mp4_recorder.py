@@ -103,9 +103,9 @@ class PyAvH264Mp4Recorder:
             except asyncio.CancelledError:
                 pass
             finally:
-                self._close_container()
+                await self._close_container()
         else:
-            self._close_container()
+            await self._close_container()
 
     async def _consume(self) -> None:
         try:
@@ -208,16 +208,23 @@ class PyAvH264Mp4Recorder:
             source_delta * _ENCODER_TIME_BASE.denominator
         )
 
-    def _close_container(self) -> None:
+    async def _close_container(self) -> None:
         container, self._container = self._container, None
         stream, self._stream = self._stream, None
         if container is None:
             return
+        await asyncio.to_thread(self._finalize_container, container, stream)
+        await asyncio.to_thread(self._load_muxed_frame_timing)
+
+    @staticmethod
+    def _finalize_container(
+        container: av.container.OutputContainer,
+        stream: av.video.stream.VideoStream | None,
+    ) -> None:
         if stream is not None:
             for packet in stream.encode(None):
                 container.mux(packet)
         container.close()
-        self._load_muxed_frame_timing()
 
     def _load_muxed_frame_timing(self) -> None:
         muxed_frames: list[tuple[int, int, int]] = []

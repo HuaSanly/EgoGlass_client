@@ -591,10 +591,9 @@ def test_control_timeout_and_send_failure_leave_safe_error_status() -> None:
     asyncio.run(scenario())
 
 
-def test_one_decoded_video_frame_is_fanned_out_without_pixel_copy() -> None:
+def test_one_decoded_video_frame_is_forwarded_to_display_without_pixel_copy() -> None:
     peers: list[FakePeer] = []
     display_sink = FakePerceptionSink()
-    perception_sink = FakePerceptionSink()
 
     def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
         peer = FakePeer(callbacks)
@@ -606,7 +605,6 @@ def test_one_decoded_video_frame_is_fanned_out_without_pixel_copy() -> None:
             TOKEN,
             factory,
             perf_clock=lambda: 123_000_000,
-            perception_live_frame_sink=perception_sink,
             display_frame_sink=display_sink,
         )
         await runtime.accept_offer(offer(), TOKEN)
@@ -622,11 +620,11 @@ def test_one_decoded_video_frame_is_fanned_out_without_pixel_copy() -> None:
         )
         await runtime.close()
 
-        assert len(display_sink.frames) == len(perception_sink.frames) == 1
-        for submitted in (display_sink.frames[0], perception_sink.frames[0]):
-            assert submitted["decoded_frame"] is source_frame
-            assert submitted["frame_index"] == 0
-            assert submitted["received_at_client_monotonic_ns"] == 123_000_000
-            assert submitted["session_id"] == submitted["connection_session_id"]
+        assert len(display_sink.frames) == 1
+        submitted = display_sink.frames[0]
+        assert submitted["decoded_frame"] is source_frame
+        assert submitted["frame_index"] == 0
+        assert submitted["received_at_client_monotonic_ns"] == 123_000_000
+        assert submitted["connection_session_id"]
 
     asyncio.run(scenario())

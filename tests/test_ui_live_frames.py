@@ -7,7 +7,6 @@ from fractions import Fraction
 import numpy as np
 from av import VideoFrame
 
-from ui.gateway.app import create_app
 from ui.gateway.live_frames import LiveFrame, LiveFrameBuffer, LiveFramePacer
 
 
@@ -20,7 +19,6 @@ def _live_frame(index: int, *, stream: str = "connection") -> LiveFrame:
     image = np.full((2, 3, 3), index, dtype=np.uint8)
     image.setflags(write=False)
     return LiveFrame(
-        session_id="session",
         connection_session_id=stream,
         frame_index=index,
         received_at_client_monotonic_ns=index * 33_333_333,
@@ -55,7 +53,6 @@ def test_live_frame_pacer_estimates_cadence_from_bursty_pts_span() -> None:
         frame = _live_frame(index)
         pacer.enqueue(
             LiveFrame(
-                session_id=frame.session_id,
                 connection_session_id=frame.connection_session_id,
                 frame_index=frame.frame_index,
                 received_at_client_monotonic_ns=frame.received_at_client_monotonic_ns,
@@ -156,7 +153,6 @@ def test_live_frame_buffer_publishes_read_only_contiguous_rgb() -> None:
             decoded.pts = 9_000
             decoded.time_base = Fraction(1, 90_000)
             await runtime.submit_gateway_frame(
-                session_id="session",
                 connection_session_id="connection",
                 frame_index=7,
                 received_at_client_monotonic_ns=100,
@@ -179,8 +175,6 @@ def test_live_frame_buffer_publishes_read_only_contiguous_rgb() -> None:
             await runtime.close()
 
     asyncio.run(run())
-
-
 def test_live_frame_buffer_overwrites_pending_work_without_blocking_submitter() -> None:
     release = threading.Event()
 
@@ -192,7 +186,6 @@ def test_live_frame_buffer_overwrites_pending_work_without_blocking_submitter() 
         runtime = LiveFrameBuffer(converter=convert)
         try:
             await runtime.submit_gateway_frame(
-                session_id="session",
                 connection_session_id="connection",
                 frame_index=0,
                 received_at_client_monotonic_ns=1,
@@ -201,7 +194,6 @@ def test_live_frame_buffer_overwrites_pending_work_without_blocking_submitter() 
             await asyncio.sleep(0.01)
             for frame_index in range(1, 5):
                 await runtime.submit_gateway_frame(
-                    session_id="session",
                     connection_session_id="connection",
                     frame_index=frame_index,
                     received_at_client_monotonic_ns=frame_index + 1,
@@ -222,78 +214,3 @@ def test_live_frame_buffer_overwrites_pending_work_without_blocking_submitter() 
             await runtime.close()
 
     asyncio.run(run())
-
-
-def test_live_frame_buffer_forwards_the_single_converted_rgb_frame_to_perception() -> None:
-    class RgbSink:
-        def __init__(self) -> None:
-            self.frames: list[dict[str, object]] = []
-
-        async def submit_rgb_frame(self, **frame: object) -> None:
-            self.frames.append(frame)
-
-    async def run() -> None:
-        sink = RgbSink()
-        runtime = LiveFrameBuffer(rgb_frame_sink=sink)
-        try:
-            await runtime.submit_gateway_frame(
-                session_id="session",
-                connection_session_id="connection",
-                frame_index=8,
-                received_at_client_monotonic_ns=100,
-                decoded_frame=_frame(37),
-            )
-            for _ in range(100):
-                if sink.frames:
-                    break
-                await asyncio.sleep(0.001)
-
-            latest = runtime.latest()
-            assert latest is not None
-            assert len(sink.frames) == 1
-            assert sink.frames[0]["image_rgb"] is latest.image_rgb
-            assert sink.frames[0]["frame_index"] == 8
-            assert not latest.image_rgb.flags.writeable
-            assert runtime.status().rgb_frames_forwarded == 1
-            assert runtime.status().rgb_sink_failures == 0
-        finally:
-            await runtime.close()
-
-    asyncio.run(run())
-
-
-def test_unified_app_routes_perception_through_canonical_rgb_buffer() -> None:
-    class WebRtcWiring:
-        def __init__(self) -> None:
-            self.perception_sink: object = "unset"
-            self.display_sink: object | None = None
-
-        def set_capture_telemetry_sink(self, _sink: object) -> None:
-            return None
-
-        def set_perception_live_frame_sink(self, sink: object | None) -> None:
-            self.perception_sink = sink
-
-        def set_display_frame_sink(self, sink: object) -> None:
-            self.display_sink = sink
-
-    class PerceptionSink:
-        async def submit_rgb_frame(self, **_frame: object) -> None:
-            return None
-
-    webrtc = WebRtcWiring()
-    perception = PerceptionSink()
-    frame_buffer = LiveFrameBuffer()
-    try:
-        create_app(
-            webrtc_runtime=webrtc,  # type: ignore[arg-type]
-            recording_runtime=object(),  # type: ignore[arg-type]
-            perception_runtime=perception,  # type: ignore[arg-type]
-            live_frame_buffer=frame_buffer,
-        )
-
-        assert webrtc.perception_sink is None
-        assert webrtc.display_sink is frame_buffer
-        assert frame_buffer._rgb_frame_sink is perception
-    finally:
-        asyncio.run(frame_buffer.close())

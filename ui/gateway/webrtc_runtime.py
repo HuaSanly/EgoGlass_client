@@ -123,7 +123,6 @@ class DecodedFrameSink(Protocol):
     async def submit_gateway_frame(
         self,
         *,
-        session_id: str,
         connection_session_id: str,
         frame_index: int,
         received_at_client_monotonic_ns: int,
@@ -137,7 +136,7 @@ class ImuSampleSink(Protocol):
     async def submit_imu_sample(
         self,
         *,
-        session_id: str,
+        connection_session_id: str,
         sample: ImuSample,
         received_at_client_monotonic_ns: int,
     ) -> None: ...
@@ -172,7 +171,6 @@ class WebRtcSessionRuntime:
         max_pending_metadata: int = 256,
         control_command_timeout_seconds: float = 3.0,
         capture_telemetry_sink: CaptureTelemetrySink | None = None,
-        perception_live_frame_sink: DecodedFrameSink | None = None,
         display_frame_sink: DecodedFrameSink | None = None,
         display_imu_sink: ImuSampleSink | None = None,
     ) -> None:
@@ -186,7 +184,6 @@ class WebRtcSessionRuntime:
             raise ValueError("control_command_timeout_seconds must be positive")
         self._control_command_timeout_seconds = control_command_timeout_seconds
         self._capture_telemetry_sink = capture_telemetry_sink
-        self._perception_live_frame_sink = perception_live_frame_sink
         self._display_frame_sink = display_frame_sink
         self._display_imu_sink = display_imu_sink
         self._session_lock = asyncio.Lock()
@@ -203,18 +200,13 @@ class WebRtcSessionRuntime:
     def set_capture_telemetry_sink(self, sink: CaptureTelemetrySink) -> None:
         self._capture_telemetry_sink = sink
 
-    def set_perception_live_frame_sink(self, sink: DecodedFrameSink | None) -> None:
-        """Attach an enqueue-only perception consumer for decoded source frames."""
-
-        self._perception_live_frame_sink = sink
-
     def set_display_frame_sink(self, sink: DecodedFrameSink) -> None:
         """Attach the enqueue-only native UI consumer to the decoded frame fan-out."""
 
         self._display_frame_sink = sink
 
     def set_display_imu_sink(self, sink: ImuSampleSink) -> None:
-        """Attach the bounded native pose-preview consumer."""
+        """Attach the bounded native raw-telemetry consumer."""
 
         self._display_imu_sink = sink
 
@@ -245,7 +237,7 @@ class WebRtcSessionRuntime:
             matcher = self._matcher
             return WebRtcStatus(
                 phase=self._phase,
-                session_id=self._session_id,
+                connection_session_id=self._session_id,
                 device_session_id=self._device_session_id,
                 connection_state=self._connection_state,
                 frames_received=self._frames_received,
@@ -327,7 +319,7 @@ class WebRtcSessionRuntime:
                     ),
                 )
             return ImuTelemetryStatus(
-                session_id=self._session_id,
+                connection_session_id=self._session_id,
                 device_session_id=self._device_session_id,
                 channel_state=self._imu_channel_state,
                 messages_received=self._imu_messages_received,
@@ -611,22 +603,17 @@ class WebRtcSessionRuntime:
                     match,
                 )
             if frame.video_frame is not None:
-                for sink_name, sink in (
-                    ("native display", self._display_frame_sink),
-                    ("perception", self._perception_live_frame_sink),
-                ):
-                    if sink is None:
-                        continue
+                sink = self._display_frame_sink
+                if sink is not None:
                     try:
                         await sink.submit_gateway_frame(
-                            session_id=session_id,
                             connection_session_id=session_id,
                             frame_index=frame_index,
                             received_at_client_monotonic_ns=now_ns,
                             decoded_frame=frame.video_frame,
                         )
                     except Exception:
-                        LOGGER.exception("%s frame sink rejected decoded frame", sink_name)
+                        LOGGER.exception("native display frame sink rejected decoded frame")
 
     async def _on_metadata(self, generation: int, payload: str | bytes) -> None:
         if generation != self._generation:
@@ -865,7 +852,7 @@ class WebRtcSessionRuntime:
             if self._display_imu_sink is not None:
                 try:
                     await self._display_imu_sink.submit_imu_sample(
-                        session_id=session_id,
+                        connection_session_id=session_id,
                         sample=message,
                         received_at_client_monotonic_ns=received_at_ns,
                     )

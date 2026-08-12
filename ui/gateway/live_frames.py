@@ -9,12 +9,9 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Protocol
 
 import numpy as np
 from av import VideoFrame
-
-from schemas.frame import FramePacket
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +20,6 @@ LOGGER = logging.getLogger(__name__)
 class LiveFrame:
     """One immutable RGB frame ready for the native UI."""
 
-    session_id: str
     connection_session_id: str
     frame_index: int
     received_at_client_monotonic_ns: int
@@ -39,19 +35,6 @@ class LiveFrame:
     def height(self) -> int:
         return int(self.image_rgb.shape[0])
 
-    def to_frame_packet(self) -> FramePacket:
-        """Expose the decoded frame through the algorithm-facing public schema."""
-
-        return FramePacket(
-            session_id=self.session_id,
-            stream_id=self.connection_session_id,
-            frame_index=self.frame_index,
-            captured_at_ns=None,
-            received_at_ns=self.received_at_client_monotonic_ns,
-            pts_ns=self.video_pts_ns,
-            image_rgb=self.image_rgb,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class LiveFrameStatus:
@@ -61,8 +44,6 @@ class LiveFrameStatus:
     frames_converted: int
     pending_frames_overwritten: int
     conversion_failures: int
-    rgb_frames_forwarded: int
-    rgb_sink_failures: int
     presentation_queue_depth: int
     presentation_frames_dropped: int
     presentation_starvations: int
@@ -85,7 +66,6 @@ class LiveFrameStatus:
 
 @dataclass(frozen=True, slots=True)
 class _PendingFrame:
-    session_id: str
     connection_session_id: str
     frame_index: int
     received_at_client_monotonic_ns: int
@@ -128,7 +108,7 @@ class LiveFramePacer:
         self._default_interval_ns = default_interval_ns
         self._queue: deque[LiveFrame] = deque()
         self._source_pts_ns: deque[int] = deque(maxlen=31)
-        self._stream_key: tuple[str, str] | None = None
+        self._stream_key: str | None = None
         self._last_enqueued_pts_ns: int | None = None
         self._presented: LiveFrame | None = None
         self._next_due_ns: int | None = None
@@ -139,7 +119,7 @@ class LiveFramePacer:
         self._presented_at_ns: deque[int] = deque(maxlen=240)
 
     def enqueue(self, frame: LiveFrame) -> None:
-        stream_key = (frame.session_id, frame.connection_session_id)
+        stream_key = frame.connection_session_id
         if stream_key != self._stream_key:
             self._reset_stream(stream_key)
         if frame.video_pts_ns is not None:
@@ -229,7 +209,7 @@ class LiveFramePacer:
         estimated_ns = round(span_ns / (len(self._source_pts_ns) - 1))
         return min(100_000_000, max(16_666_667, estimated_ns))
 
-    def _reset_stream(self, stream_key: tuple[str, str]) -> None:
+    def _reset_stream(self, stream_key: str) -> None:
         self._queue.clear()
         self._source_pts_ns.clear()
         self._stream_key = stream_key
@@ -237,20 +217,6 @@ class LiveFramePacer:
         self._presented = None
         self._next_due_ns = None
         self._starved = False
-
-
-class LiveRgbFrameSink(Protocol):
-    """A consumer of the one canonical RGB conversion produced for each live frame."""
-
-    async def submit_rgb_frame(
-        self,
-        *,
-        session_id: str,
-        connection_session_id: str,
-        frame_index: int,
-        received_at_client_monotonic_ns: int,
-        image_rgb: np.ndarray,
-    ) -> None: ...
 
 
 class LiveFrameBuffer:
@@ -261,11 +227,9 @@ class LiveFrameBuffer:
         *,
         perf_clock: Callable[[], int] = time.perf_counter_ns,
         converter: Callable[[VideoFrame], np.ndarray] | None = None,
-        rgb_frame_sink: LiveRgbFrameSink | None = None,
     ) -> None:
         self._perf_clock = perf_clock
         self._converter = converter or _to_rgb24
-        self._rgb_frame_sink = rgb_frame_sink
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-frame")
         self._pending_lock = asyncio.Lock()
         self._state_lock = threading.Lock()
@@ -278,29 +242,20 @@ class LiveFrameBuffer:
         self._frames_converted = 0
         self._pending_frames_overwritten = 0
         self._conversion_failures = 0
-        self._rgb_frames_forwarded = 0
-        self._rgb_sink_failures = 0
         self._latest_conversion_ms: float | None = None
         self._last_error: str | None = None
         self._published_at_ns: deque[int] = deque(maxlen=240)
         self._display_polled_at_ns: deque[int] = deque(maxlen=240)
 
-    def set_rgb_frame_sink(self, sink: LiveRgbFrameSink | None) -> None:
-        """Route immutable RGB frames downstream after display conversion completes."""
-
-        self._rgb_frame_sink = sink
-
     async def submit_gateway_frame(
         self,
         *,
-        session_id: str,
         connection_session_id: str,
         frame_index: int,
         received_at_client_monotonic_ns: int,
         decoded_frame: VideoFrame,
     ) -> None:
         pending = _PendingFrame(
-            session_id=session_id,
             connection_session_id=connection_session_id,
             frame_index=frame_index,
             received_at_client_monotonic_ns=received_at_client_monotonic_ns,
@@ -351,8 +306,6 @@ class LiveFrameBuffer:
                 frames_converted=self._frames_converted,
                 pending_frames_overwritten=self._pending_frames_overwritten,
                 conversion_failures=self._conversion_failures,
-                rgb_frames_forwarded=self._rgb_frames_forwarded,
-                rgb_sink_failures=self._rgb_sink_failures,
                 presentation_queue_depth=presentation.queue_depth,
                 presentation_frames_dropped=presentation.frames_dropped,
                 presentation_starvations=presentation.starvations,
@@ -414,7 +367,6 @@ class LiveFrameBuffer:
                 continue
             converted_at_ns = self._perf_clock()
             live_frame = LiveFrame(
-                session_id=pending.session_id,
                 connection_session_id=pending.connection_session_id,
                 frame_index=pending.frame_index,
                 received_at_client_monotonic_ns=pending.received_at_client_monotonic_ns,
@@ -432,26 +384,6 @@ class LiveFrameBuffer:
                 )
                 self._published_at_ns.append(converted_at_ns)
                 self._last_error = None
-            sink = self._rgb_frame_sink
-            if sink is not None:
-                try:
-                    await sink.submit_rgb_frame(
-                        session_id=live_frame.session_id,
-                        connection_session_id=live_frame.connection_session_id,
-                        frame_index=live_frame.frame_index,
-                        received_at_client_monotonic_ns=(
-                            live_frame.received_at_client_monotonic_ns
-                        ),
-                        image_rgb=live_frame.image_rgb,
-                    )
-                except Exception as error:
-                    LOGGER.exception("RGB frame sink rejected canonical live frame")
-                    with self._state_lock:
-                        self._rgb_sink_failures += 1
-                        self._last_error = str(error)
-                else:
-                    with self._state_lock:
-                        self._rgb_frames_forwarded += 1
 
 
 def _to_rgb24(frame: VideoFrame) -> np.ndarray:

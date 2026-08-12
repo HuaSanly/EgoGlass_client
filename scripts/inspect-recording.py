@@ -5,21 +5,28 @@ import json
 import sys
 from pathlib import Path
 
+from ui.gateway.capture_recording import CaptureRecordingReader, CaptureRecordingReadError
 from ui.gateway.recording_inspection import inspect_recording
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Validate one completed EgoGlass H.264 MP4 recording"
+        description="Validate one completed EgoGlass recording directory"
     )
     parser.add_argument("path", type=Path)
     args = parser.parse_args()
     try:
-        result = inspect_recording(args.path)
-    except (OSError, ValueError) as error:
+        reader = CaptureRecordingReader.open(args.path, verify_hashes=True)
+        video = inspect_recording(reader.video_path)
+    except (CaptureRecordingReadError, OSError, ValueError) as error:
         print(f"recording validation failed: {error}", file=sys.stderr)
         return 1
-    print(json.dumps(result.as_dict(), indent=2))
+    result = {
+        "recording": reader.summary().model_dump(mode="json"),
+        "quality": reader.quality.model_dump(mode="json"),
+        "video": video.as_dict(),
+    }
+    print(json.dumps(result, indent=2))
     return 0
 
 
