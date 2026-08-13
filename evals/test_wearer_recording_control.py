@@ -4,7 +4,11 @@ import asyncio
 
 from schemas.recording import RecordingState, RecordingStatus
 from ui.gateway.recording_control import RecordingControlCoordinator
-from ui.gateway.webrtc_models import StreamControlState, StreamControlStatus
+from ui.gateway.webrtc_models import (
+    RecordingControlState,
+    StreamControlState,
+    StreamControlStatus,
+)
 
 
 class _Recording:
@@ -65,5 +69,47 @@ def test_ten_wearer_commands_do_not_duplicate_runtime_transitions() -> None:
             for _ in range(10)
             for state in (RecordingState.COUNTDOWN, RecordingState.READY)
         ]
+
+    asyncio.run(scenario())
+
+
+def test_idle_hud_recovers_after_late_recording_source() -> None:
+    async def scenario() -> None:
+        recording = _Recording()
+        recording.state = RecordingState.UNAVAILABLE
+        webrtc = _WebRtc()
+        source_ready = asyncio.Event()
+        heartbeat_blocked = asyncio.Event()
+        sleep_calls = 0
+
+        async def connect_source(_delay: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 1:
+                recording.state = RecordingState.READY
+                webrtc.source = type("Source", (), {"width": 640, "height": 480})()
+                source_ready.set()
+                return
+            await heartbeat_blocked.wait()
+
+        coordinator = RecordingControlCoordinator(  # type: ignore[arg-type]
+            recording,
+            webrtc,
+            sleep=connect_source,
+        )
+        await coordinator.channel_ready()
+        await source_ready.wait()
+        for _ in range(10):
+            if webrtc.statuses[-1].state is RecordingControlState.READY:
+                break
+            await asyncio.sleep(0)
+
+        states = [status.state for status in webrtc.statuses]
+        assert states[0] is RecordingControlState.UNAVAILABLE
+        assert states[-1] is RecordingControlState.READY
+        assert sleep_calls <= 2
+
+        await coordinator.channel_closed()
+        await coordinator.close()
 
     asyncio.run(scenario())

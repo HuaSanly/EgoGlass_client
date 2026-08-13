@@ -157,6 +157,45 @@ def test_status_wire_shape_has_only_approved_fields() -> None:
     asyncio.run(scenario())
 
 
+def test_open_channel_converges_from_unavailable_to_ready_when_source_arrives() -> None:
+    async def scenario() -> None:
+        recording = _Recording(RecordingState.UNAVAILABLE)
+        webrtc = _WebRtc(source_ready=False)
+        heartbeat_advanced = asyncio.Event()
+        heartbeat_blocked = asyncio.Event()
+        sleep_calls = 0
+
+        async def source_arrives(_delay: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 1:
+                recording.state = RecordingState.READY
+                webrtc.source_ready = True
+                heartbeat_advanced.set()
+                return
+            await heartbeat_blocked.wait()
+
+        coordinator = RecordingControlCoordinator(  # type: ignore[arg-type]
+            recording,
+            webrtc,
+            sleep=source_arrives,
+        )
+        await coordinator.channel_ready()
+        await heartbeat_advanced.wait()
+        for _ in range(10):
+            if webrtc.statuses[-1].state is RecordingControlState.READY:
+                break
+            await asyncio.sleep(0)
+
+        assert webrtc.statuses[0].state is RecordingControlState.UNAVAILABLE
+        assert webrtc.statuses[-1].state is RecordingControlState.READY
+
+        await coordinator.channel_closed()
+        await coordinator.close()
+
+    asyncio.run(scenario())
+
+
 def test_finalizing_keeps_active_id_and_library_refreshes_once() -> None:
     async def scenario() -> None:
         recording = _Recording(RecordingState.RECORDING)

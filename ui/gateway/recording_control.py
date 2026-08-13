@@ -51,6 +51,7 @@ class RecordingControlCoordinator:
         self._completed_commands: OrderedDict[str, RecordingControlStatus] = OrderedDict()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._channel_open = False
         self._completion_refresh_pending = False
         webrtc.set_recording_control_callbacks(
             on_ready=self.channel_ready,
@@ -98,15 +99,20 @@ class RecordingControlCoordinator:
             LOGGER.exception("Glass3 wearer recording command failed")
 
     async def channel_ready(self) -> None:
+        self._channel_open = True
+        LOGGER.info("recording-control-v1 channel is ready")
         status = await self._recording.status()
         await self._publish(status, None)
-        self._sync_heartbeat(status)
+        self._ensure_heartbeat()
 
     async def channel_closed(self) -> None:
+        self._channel_open = False
+        LOGGER.info("recording-control-v1 channel is closed")
         self._cancel_heartbeat()
 
     async def close(self) -> None:
         self._closed = True
+        self._channel_open = False
         task, self._heartbeat_task = self._heartbeat_task, None
         if task is not None:
             task.cancel()
@@ -256,11 +262,14 @@ class RecordingControlCoordinator:
             RecordingState.RECORDING,
             RecordingState.FINALIZING,
         }
-        if active and self._heartbeat_task is None and not self._closed:
+        if active:
             self._completion_refresh_pending = True
+        if self._channel_open:
+            self._ensure_heartbeat()
+
+    def _ensure_heartbeat(self) -> None:
+        if self._heartbeat_task is None and not self._closed and self._channel_open:
             self._heartbeat_task = asyncio.create_task(self._heartbeat())
-        elif not active:
-            self._cancel_heartbeat()
 
     def _cancel_heartbeat(self) -> None:
         task, self._heartbeat_task = self._heartbeat_task, None
@@ -269,23 +278,17 @@ class RecordingControlCoordinator:
 
     async def _heartbeat(self) -> None:
         try:
-            while not self._closed:
+            while not self._closed and self._channel_open:
                 async with self._lock:
                     status = await self._recording.status()
                     await self._publish(status, None)
-                    if status.state not in {
-                        RecordingState.COUNTDOWN,
-                        RecordingState.RECORDING,
-                        RecordingState.FINALIZING,
-                    }:
-                        if (
-                            status.state is RecordingState.READY
-                            and self._completion_refresh_pending
-                        ):
-                            if self._on_recording_completed is not None:
-                                await self._on_recording_completed()
-                            self._completion_refresh_pending = False
-                        return
+                    if (
+                        status.state is RecordingState.READY
+                        and self._completion_refresh_pending
+                    ):
+                        if self._on_recording_completed is not None:
+                            await self._on_recording_completed()
+                        self._completion_refresh_pending = False
                 await self._sleep(STATUS_HEARTBEAT_SECONDS)
         except asyncio.CancelledError:
             return
