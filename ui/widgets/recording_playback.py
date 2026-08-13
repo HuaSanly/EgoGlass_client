@@ -20,7 +20,7 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from schemas.recording import RecordingFrameRow
+from schemas.recording import CameraFrameRow
 from ui.gateway.capture_recording import CaptureRecordingReader
 from ui.widgets.video_canvas import VideoCanvas
 
@@ -29,7 +29,8 @@ from ui.widgets.video_canvas import VideoCanvas
 class RecordingPlaybackFrame:
     recording_id: str
     frame_index: int
-    recording_time_ns: int
+    device_monotonic_ns: int
+    elapsed_ns: int
     image_rgb: np.ndarray
 
     @property
@@ -43,7 +44,7 @@ class RecordingPlaybackFrame:
 
 @dataclass(frozen=True, slots=True)
 class ImuCursorSample:
-    recording_time_ns: int
+    device_monotonic_ns: int
     accelerometer: tuple[float, float, float] | None
     gyroscope: tuple[float, float, float] | None
 
@@ -55,11 +56,20 @@ class RecordingReplaySource:
         self.reader = (
             source
             if isinstance(source, CaptureRecordingReader)
-            else CaptureRecordingReader.open(source, verify_hashes=False)
+            else CaptureRecordingReader.open(source)
         )
-        self.frames = tuple(self.reader.iter_frames())
-        self.imu = tuple(self.reader.iter_imu_samples())
-        self._imu_times = tuple(row.recording_time_ns for row in self.imu)
+        self.frames = tuple(self.reader.iter_camera_frames())
+        self.imu = tuple(
+            sorted(
+                self.reader.iter_imu_samples(),
+                key=lambda row: (row.timestamp_ns, row.sensor_type.value, row.sequence),
+            )
+        )
+        self._imu_times = tuple(row.timestamp_ns for row in self.imu)
+        self._video_index_by_pts = {
+            entry.pts: entry.frame_idx for entry in self.reader.video_index
+        }
+        self._first_camera_ns = self.frames[0].device_monotonic_ns
         self._container: av.InputContainer | None = None
         self._stream: av.video.stream.VideoStream | None = None
         self._decoder = None
@@ -68,11 +78,11 @@ class RecordingReplaySource:
 
     @property
     def recording_id(self) -> str:
-        return self.reader.manifest.recording_id
+        return self.reader.recording_id
 
     @property
     def duration_ns(self) -> int:
-        return int(self.reader.manifest.duration_ns or 0)
+        return self.frames[-1].device_monotonic_ns - self._first_camera_ns
 
     @property
     def frame_count(self) -> int:
@@ -95,9 +105,9 @@ class RecordingReplaySource:
     def seek_frame(self, frame_index: int) -> RecordingPlaybackFrame:
         if not 0 <= frame_index < len(self.frames):
             raise IndexError("recording frame index is out of range")
-        target = self.frames[frame_index]
         assert self._container is not None and self._stream is not None
-        self._container.seek(target.mp4_pts, stream=self._stream, backward=True)
+        video_index = self.reader.video_index[frame_index]
+        self._container.seek(video_index.pts, stream=self._stream, backward=True)
         self._decoder = self._container.decode(self._stream)
         self._cursor = frame_index
         frame = self.next_frame()
@@ -105,8 +115,8 @@ class RecordingReplaySource:
             raise ValueError("decoder did not return the indexed recording frame")
         return frame
 
-    def imu_cursor(self, recording_time_ns: int) -> ImuCursorSample:
-        cursor = bisect_right(self._imu_times, recording_time_ns)
+    def imu_cursor(self, device_monotonic_ns: int) -> ImuCursorSample:
+        cursor = bisect_right(self._imu_times, device_monotonic_ns)
         accelerometer = None
         gyroscope = None
         for row in reversed(self.imu[:cursor]):
@@ -118,7 +128,7 @@ class RecordingReplaySource:
                 gyroscope = values
             if accelerometer is not None and gyroscope is not None:
                 break
-        return ImuCursorSample(recording_time_ns, accelerometer, gyroscope)
+        return ImuCursorSample(device_monotonic_ns, accelerometer, gyroscope)
 
     def close(self) -> None:
         if self._container is not None:
@@ -137,25 +147,20 @@ class RecordingReplaySource:
     def _find_reference(self, frame: av.VideoFrame) -> int | None:
         if frame.pts is None:
             return None
-        for index in range(max(0, self._cursor - 1), len(self.frames)):
-            reference = self.frames[index]
-            if reference.mp4_pts == frame.pts:
-                return index
-            if reference.mp4_pts > frame.pts:
-                return None
-        return None
+        return self._video_index_by_pts.get(frame.pts)
 
     def _frame(
         self,
         decoded: av.VideoFrame,
-        reference: RecordingFrameRow,
+        reference: CameraFrameRow,
     ) -> RecordingPlaybackFrame:
         image_rgb = np.ascontiguousarray(decoded.to_ndarray(format="rgb24"))
         image_rgb.setflags(write=False)
         return RecordingPlaybackFrame(
             recording_id=self.recording_id,
-            frame_index=reference.frame_index,
-            recording_time_ns=reference.recording_time_ns,
+            frame_index=reference.frame_idx,
+            device_monotonic_ns=reference.device_monotonic_ns,
+            elapsed_ns=reference.device_monotonic_ns - self._first_camera_ns,
             image_rgb=image_rgb,
         )
 
@@ -192,8 +197,8 @@ class RecordingPlaybackWidget(QWidget):
         titles.addWidget(self.context_label)
         header.addLayout(titles)
         header.addStretch(1)
-        self.hash_badge = InfoBadge.info("未校验", self)
-        header.addWidget(self.hash_badge)
+        self.protocol_badge = InfoBadge.info("未校验", self)
+        header.addWidget(self.protocol_badge)
         root.addLayout(header)
 
         content = QHBoxLayout()
@@ -224,7 +229,7 @@ class RecordingPlaybackWidget(QWidget):
         self.gyroscope_value = BodyLabel("X --   Y --   Z --", card)
         layout.addWidget(self.gyroscope_value)
         self.cursor_detail = CaptionLabel(
-            "游标按 frames.csv 的 recording_time_ns 定位 imu.csv。",
+            "游标按 camera.csv 的设备单调时间定位 imu.csv。",
             card,
         )
         self.cursor_detail.setWordWrap(True)
@@ -256,9 +261,7 @@ class RecordingPlaybackWidget(QWidget):
         return card
 
     def open_recording(self, recording_directory: Path) -> None:
-        self.open_reader(
-            CaptureRecordingReader.open(recording_directory, verify_hashes=False)
-        )
+        self.open_reader(CaptureRecordingReader.open(recording_directory))
 
     def open_reader(self, reader: CaptureRecordingReader) -> None:
         self.unload()
@@ -267,18 +270,18 @@ class RecordingPlaybackWidget(QWidget):
         self.context_label.setText(
             f"录制 {self._source.recording_id}  ·  {self._source.frame_count:,} 帧"
         )
-        self.hash_badge.setText(
-            "哈希已校验" if self._source.reader.hashes_verified else "索引已校验"
-        )
+        self.protocol_badge.setText("协议通过")
         self.seek_frame(0)
 
     def show_loading(self, recording_id: str) -> None:
         self.unload()
         self.context_label.setText(f"正在载入录制 {recording_id[:12]}…")
+        self.protocol_badge.setText("校验中")
 
     def show_error(self, detail: str) -> None:
         self.unload()
         self.context_label.setText(f"录制载入失败：{detail}")
+        self.protocol_badge.setText("协议失败")
 
     def unload(self) -> None:
         self._timer.stop()
@@ -304,7 +307,7 @@ class RecordingPlaybackWidget(QWidget):
         self._playing = not self._playing
         self.play_button.setIcon(FluentIcon.PAUSE if self._playing else FluentIcon.PLAY)
         if self._playing:
-            interval_ms = max(1, round(1000 / self._source.reader.manifest.video_profile.fps))
+            interval_ms = max(1, round(1000 / self._source.reader.fps))
             self._timer.start(interval_ms)
         else:
             self._timer.stop()
@@ -331,12 +334,12 @@ class RecordingPlaybackWidget(QWidget):
         self.canvas.set_frame(frame)
         if not self._seeking:
             self.position_slider.setValue(frame.frame_index)
-        cursor = self._source.imu_cursor(frame.recording_time_ns)
-        self.cursor_badge.setText(_clock_ns(cursor.recording_time_ns))
+        cursor = self._source.imu_cursor(frame.device_monotonic_ns)
+        self.cursor_badge.setText(_clock_ns(frame.elapsed_ns))
         self.accelerometer_value.setText(_vector_text(cursor.accelerometer))
         self.gyroscope_value.setText(_vector_text(cursor.gyroscope))
         self.time_label.setText(
-            f"{_clock_ns(frame.recording_time_ns)} / {_clock_ns(self._source.duration_ns)}"
+            f"{_clock_ns(frame.elapsed_ns)} / {_clock_ns(self._source.duration_ns)}"
         )
 
     def _begin_seek(self) -> None:

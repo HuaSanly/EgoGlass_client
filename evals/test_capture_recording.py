@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 from fractions import Fraction
 from pathlib import Path
@@ -9,71 +8,47 @@ from pathlib import Path
 import av
 from aiortc import MediaStreamError
 
-from schemas.recording import (
-    FrameMetadataMatchStatus,
-    ImuSensorType,
-    RecordingFrameRow,
-    RecordingImuRow,
+from schemas.recording import RecordingOutput
+from tests.recording_support import (
+    append_covering_imu,
+    create_recording,
+    staged_camera_frames,
+    write_h264_video,
 )
 from ui.gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
 from ui.gateway.capture_recording import CaptureRecordingReader, CaptureRecordingWriter
 
 
-def test_recording_artifacts_are_traceable_and_time_aligned(tmp_path: Path) -> None:
+def test_thirty_second_recording_satisfies_minimal_protocol(tmp_path: Path) -> None:
     recording_id = "c" * 32
     writer = CaptureRecordingWriter.create(
         tmp_path,
         recording_id=recording_id,
-        countdown_started_at_unix_ns=1_000,
-        countdown_started_at_client_monotonic_ns=10_000,
+        video_profile=RecordingOutput(width=32, height=24, fps=10),
     )
-    writer.video_path.write_bytes(b"eval-video")
-    for index, frame_time in enumerate((1_000_000, 2_000_000, 3_000_000)):
-        writer.append_frame(
-            RecordingFrameRow(
-                frame_index=index,
-                recording_time_ns=frame_time,
-                mp4_pts=index * 3_000,
-                mp4_time_base_num=1,
-                mp4_time_base_den=90_000,
-                connection_session_id="eval-connection",
-                received_at_client_monotonic_ns=10_000 + frame_time,
-                metadata_match_status=FrameMetadataMatchStatus.UNMATCHED,
-            )
-        )
-    for index, sample_time in enumerate((100_000, 1_500_000, 2_500_000, 3_500_000)):
-        writer.append_imu(
-            RecordingImuRow(
-                sample_index=index,
-                recording_time_ns=sample_time,
-                connection_session_id="eval-connection",
-                sensor_type=(
-                    ImuSensorType.ACCELEROMETER if index % 2 == 0 else ImuSensorType.GYROSCOPE
-                ),
-                sequence_number=index // 2,
-                sensor_event_monotonic_ns=20_000 + sample_time,
-                received_at_elapsed_realtime_ns=21_000 + sample_time,
-                received_at_client_monotonic_ns=22_000 + sample_time,
-                accuracy=3,
-                x=0.1,
-                y=0.2,
-                z=0.3,
-                inside_video_span=False,
-            )
-        )
-    reader = writer.finalize(ended_at_unix_ns=4_000_000)
+    video_index = write_h264_video(
+        writer.video_path,
+        width=32,
+        height=24,
+        frame_count=300,
+        fps=10,
+    )
+    frames = staged_camera_frames(video_index)
+    append_covering_imu(writer, frames)
+    reader = writer.finalize(frames)
 
     reopened = CaptureRecordingReader.open(reader.directory)
-    imu_rows = tuple(reopened.iter_imu_samples())
-    manifest_payload = json.loads((reader.directory / "manifest.json").read_text(encoding="utf-8"))
+    summary = reopened.summary()
 
-    assert reopened.hashes_verified
-    assert [row.recording_time_ns for row in imu_rows] == [100_000, 1_500_000, 2_500_000]
-    assert [row.inside_video_span for row in imu_rows] == [False, True, True]
-    assert manifest_payload["recording_id"] == recording_id
-    assert manifest_payload["frame_count"] == 3
-    assert manifest_payload["imu_sample_count"] == 3
-    assert set(manifest_payload["artifacts"]) == {"video", "imu", "frames", "quality"}
+    assert summary.protocol_validated
+    assert summary.frame_count == 300
+    assert summary.duration_ns == 29_900_000_000
+    assert {path.name for path in reader.directory.iterdir()} == {
+        "video.mp4",
+        "camera.csv",
+        "imu.csv",
+        "calibration.yaml",
+    }
 
 
 def test_mp4_finalize_keeps_the_capture_loop_responsive(tmp_path: Path) -> None:
@@ -119,3 +94,24 @@ def test_mp4_finalize_keeps_the_capture_loop_responsive(tmp_path: Path) -> None:
         await stopping
 
     asyncio.run(scenario())
+
+
+def test_ten_consecutive_recordings_never_share_files(tmp_path: Path) -> None:
+    recording_ids = tuple(f"{index:032x}" for index in range(10))
+
+    for recording_id in recording_ids:
+        create_recording(
+            tmp_path,
+            recording_id=recording_id,
+            frame_count=1,
+        )
+
+    directories = tuple(tmp_path / recording_id for recording_id in recording_ids)
+    assert all(directory.is_dir() for directory in directories)
+    assert len({path.resolve() for path in directories}) == 10
+    assert all(
+        {artifact.name for artifact in directory.iterdir()}
+        == {"video.mp4", "camera.csv", "imu.csv", "calibration.yaml"}
+        for directory in directories
+    )
+    assert not tuple(tmp_path.glob(".recording-*.partial"))

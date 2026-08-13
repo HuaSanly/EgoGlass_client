@@ -16,14 +16,14 @@ def main() -> int:
     parser.add_argument("path", type=Path)
     args = parser.parse_args()
     try:
-        reader = CaptureRecordingReader.open(args.path, verify_hashes=True)
+        reader = CaptureRecordingReader.open(args.path)
         video = inspect_recording(reader.video_path)
     except (CaptureRecordingReadError, OSError, ValueError) as error:
         print(f"recording validation failed: {error}", file=sys.stderr)
         return 1
     result = {
         "recording": reader.summary().model_dump(mode="json"),
-        "quality": reader.quality.model_dump(mode="json"),
+        "calibration": reader.calibration.model_dump(mode="json"),
         "video": video.as_dict(),
     }
     print(json.dumps(result, indent=2))

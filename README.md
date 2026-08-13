@@ -8,7 +8,7 @@ SLAM/VIO, annotation, dataset, or offline-processing runtime.
 ## Layout
 
 ```text
-src/schemas/                 # Recording manifest, CSV, quality, and API contracts
+src/schemas/                 # Camera, IMU, calibration, status, and library contracts
 ui/application/              # Native client lifecycle
 ui/gateway/                  # Discovery, WebRTC ingress, recording, and HTTP API
 ui/views/                    # Recording console and recording library
@@ -51,24 +51,22 @@ One Start-to-Stop operation creates one `recording_id`:
 
 ```text
 local-data/recordings/<recording_id>/
-  manifest.json
   video.mp4
+  camera.csv
   imu.csv
-  frames.csv
-  quality.json
-  annotations/
-  derived/
+  calibration.yaml
 ```
 
 The writer first uses `.recording-<recording_id>.partial/`. It validates the
-MP4, both CSV files, counts, and SHA256 values before atomically publishing the
-final directory. IMU rows start at countdown start; `inside_video_span` marks
-the samples between the first and last saved video frames. Stopping a recording
-closes its time window, so later IMU samples cannot enter the completed files.
+H.264 stream, both CSV files, frame counts, monotonic clocks, IMU coverage, and
+calibration resolution before atomically publishing the final directory. IMU
+rows start at countdown start and stop at the final encoded frame. RTP, MP4 PTS,
+client receive clocks, and other matching evidence never enter the published
+four-file contract.
 
 The library can replay `video.mp4` with an IMU cursor driven by the shared
-`recording_time_ns`. Playback is an integrity check only and does not run any
-algorithm.
+Android monotonic clock in `camera.csv.device_monotonic_ns` and
+`imu.csv.timestamp_ns`. MP4 PTS are indexed in memory for playback only.
 
 Inspect a completed recording independently:
 
@@ -77,9 +75,11 @@ conda run -n egoglass python scripts\inspect-recording.py `
   local-data\recordings\<recording-id>
 ```
 
-The command fails on an invalid layout, CSV row, count, hash, or MP4 stream.
+The command fails on an invalid layout, CSV row, frame count, calibration, IMU
+coverage, or MP4 stream.
 
-See [native UI](docs/native-ui.md) and [ingest gateway](docs/ingest-gateway.md).
+See the [recording protocol](docs/data-recording-protocol.md),
+[native UI](docs/native-ui.md), and [ingest gateway](docs/ingest-gateway.md).
 
 ## Verification
 

@@ -1,93 +1,93 @@
 from __future__ import annotations
 
 import csv
-import hashlib
-import json
 import math
 import os
 import re
-import time
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 from uuid import uuid4
 
+import av
+import yaml
 from pydantic import ValidationError
 
 from schemas.recording import (
-    CaptureRecordingManifest,
-    CaptureRecordingProvenance,
-    CaptureRecordingQualityReport,
-    CaptureRecordingState,
-    FrameMetadataMatchStatus,
+    CalibrationSnapshot,
+    CameraFrameRow,
     ImuSensorType,
-    RecordingArtifacts,
-    RecordingFileInfo,
-    RecordingFrameRow,
     RecordingImuRow,
     RecordingOutput,
-    RecordingQualityCheck,
-    RecordingQualityCounts,
     RecordingSummary,
-    RecordingTimeOrigin,
 )
 
-FRAME_CSV_COLUMNS = (
-    "frame_index",
-    "recording_time_ns",
-    "mp4_pts",
-    "mp4_time_base_num",
-    "mp4_time_base_den",
-    "connection_session_id",
+CAMERA_CSV_COLUMNS = (
+    "frame_idx",
     "frame_id",
-    "camera_start_generation",
-    "captured_at_rokid_sdk_ms",
-    "received_at_elapsed_realtime_ns",
-    "video_at_monotonic_ns",
-    "rtp_timestamp_90khz",
-    "received_at_client_monotonic_ns",
-    "metadata_match_status",
-    "timestamp_match_error_90khz",
+    "rokid_timestamp_ns",
+    "device_monotonic_ns",
 )
-
 IMU_CSV_COLUMNS = (
-    "sample_index",
-    "recording_time_ns",
-    "connection_session_id",
     "sensor_type",
-    "sequence_number",
-    "sensor_event_monotonic_ns",
-    "received_at_elapsed_realtime_ns",
-    "received_at_client_monotonic_ns",
-    "accuracy",
+    "sequence",
+    "timestamp_ns",
     "x",
     "y",
     "z",
-    "inside_video_span",
 )
-
-_REQUIRED_TOP_LEVEL_ENTRIES = {
-    "manifest.json",
-    "video.mp4",
-    "imu.csv",
-    "frames.csv",
-    "quality.json",
-    "annotations",
-    "derived",
-}
-_INTEGER_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
+_STAGED_IMU_COLUMNS = (*IMU_CSV_COLUMNS, "received_at_client_monotonic_ns")
+_REQUIRED_ENTRIES = {"video.mp4", "camera.csv", "imu.csv", "calibration.yaml"}
+_RECORDING_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_INTEGER_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)\Z")
 
 
 class CaptureRecordingError(RuntimeError):
-    """Base error for recording storage failures."""
+    """Base error for minimal recording protocol failures."""
 
 
 class CaptureRecordingReadError(CaptureRecordingError):
-    """Raised when a recording fails its persisted-data contract."""
+    """Raised when a published recording violates the protocol."""
+
+
+@dataclass(frozen=True, slots=True)
+class StagedImuSample:
+    row: RecordingImuRow
+    received_at_client_monotonic_ns: int
+
+    def __post_init__(self) -> None:
+        if self.received_at_client_monotonic_ns < 0:
+            raise ValueError("client receive timestamp cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class StagedCameraFrame:
+    row: CameraFrameRow
+    mp4_pts: int
+    mp4_time_base_num: int
+    mp4_time_base_den: int
+    received_at_client_monotonic_ns: int
+
+    def __post_init__(self) -> None:
+        if self.mp4_pts < 0:
+            raise ValueError("MP4 PTS cannot be negative")
+        if self.mp4_time_base_num <= 0 or self.mp4_time_base_den <= 0:
+            raise ValueError("MP4 time base must be positive")
+        if self.received_at_client_monotonic_ns < 0:
+            raise ValueError("client receive timestamp cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class VideoIndexEntry:
+    frame_idx: int
+    pts: int
+    time_base_num: int
+    time_base_den: int
 
 
 class CaptureRecordingWriter:
-    """Write one recording into a private directory and publish it atomically."""
+    """Stage raw capture data and atomically publish the strict four-file unit."""
 
     def __init__(
         self,
@@ -95,40 +95,36 @@ class CaptureRecordingWriter:
         recording_id: str,
         *,
         video_profile: RecordingOutput,
-        time_origin: RecordingTimeOrigin,
-        provenance: CaptureRecordingProvenance | None = None,
     ) -> None:
-        self.recordings_root = Path(recordings_root)
+        if not _RECORDING_ID_PATTERN.fullmatch(recording_id):
+            raise ValueError("recording_id must be 32 lowercase hexadecimal characters")
+        self.recordings_root = Path(recordings_root).resolve()
         self.recording_id = recording_id
         self.partial_directory = self.recordings_root / f".recording-{recording_id}.partial"
         self.final_directory = self.recordings_root / recording_id
         self.video_path = self.partial_directory / "video.mp4"
+        self.camera_path = self.partial_directory / "camera.csv"
         self.imu_path = self.partial_directory / "imu.csv"
-        self.frames_path = self.partial_directory / "frames.csv"
-        self._manifest_path = self.partial_directory / "manifest.json"
-        self._quality_path = self.partial_directory / "quality.json"
+        self.calibration_path = self.partial_directory / "calibration.yaml"
+        self._staged_imu_path = self.partial_directory / ".imu-staging.csv"
         self._video_profile = video_profile
-        self._time_origin = time_origin
-        self._provenance = provenance or CaptureRecordingProvenance()
-        self._frames: list[RecordingFrameRow] = []
-        self._imu_rows: list[RecordingImuRow] = []
-        self._frames_file: TextIO | None = None
-        self._imu_file: TextIO | None = None
-        self._frames_writer: csv.DictWriter[str] | None = None
-        self._imu_writer: csv.DictWriter[str] | None = None
+        self._calibration = CalibrationSnapshot.placeholder(
+            video_profile.width,
+            video_profile.height,
+        )
+        self._staged_imu_file: TextIO | None = None
+        self._staged_imu_writer: csv.DictWriter[str] | None = None
+        self._last_imu_sequence: dict[ImuSensorType, int] = {}
+        self._last_imu_timestamp: dict[ImuSensorType, int] = {}
         self._closed = False
 
-        # Validation happens before any path is created.
-        self._draft_manifest(CaptureRecordingState.RECORDING)
         self.recordings_root.mkdir(parents=True, exist_ok=True)
         if self.partial_directory.exists() or self.final_directory.exists():
             raise FileExistsError(f"recording already exists: {recording_id}")
         self.partial_directory.mkdir()
-        (self.partial_directory / "annotations").mkdir()
-        (self.partial_directory / "derived").mkdir()
         self.video_path.touch(exist_ok=False)
-        self._open_csv_files(mode="w")
-        self._write_draft_files()
+        _atomic_write_yaml(self.calibration_path, self._calibration.model_dump(mode="python"))
+        self._open_staging_file()
 
     @classmethod
     def create(
@@ -137,245 +133,98 @@ class CaptureRecordingWriter:
         *,
         recording_id: str | None = None,
         video_profile: RecordingOutput | None = None,
-        countdown_started_at_unix_ns: int | None = None,
-        countdown_started_at_client_monotonic_ns: int | None = None,
-        provenance: CaptureRecordingProvenance | None = None,
     ) -> CaptureRecordingWriter:
-        unix_ns = (
-            time.time_ns() if countdown_started_at_unix_ns is None else countdown_started_at_unix_ns
-        )
-        monotonic_ns = (
-            time.perf_counter_ns()
-            if countdown_started_at_client_monotonic_ns is None
-            else countdown_started_at_client_monotonic_ns
-        )
         return cls(
             recordings_root,
             recording_id or uuid4().hex,
             video_profile=video_profile or RecordingOutput(),
-            time_origin=RecordingTimeOrigin(
-                countdown_started_at_unix_ns=unix_ns,
-                countdown_started_at_client_monotonic_ns=monotonic_ns,
-            ),
-            provenance=provenance,
         )
 
-    @classmethod
-    def recover(cls, recordings_root: Path, recording_id: str) -> CaptureRecordingWriter:
-        root = Path(recordings_root)
-        partial_directory = root / f".recording-{recording_id}.partial"
-        manifest = _read_manifest(partial_directory / "manifest.json")
-        if manifest.recording_id != recording_id:
-            raise CaptureRecordingReadError(
-                "partial directory recording ID does not match manifest"
-            )
-        if manifest.state is CaptureRecordingState.COMPLETE:
-            raise CaptureRecordingReadError(
-                "completed manifest cannot remain in a partial directory"
-            )
-        _validate_layout(partial_directory)
-        frames = _read_frame_csv(partial_directory / "frames.csv")
-        imu_rows = _read_imu_csv(partial_directory / "imu.csv")
-
-        writer = cls.__new__(cls)
-        writer.recordings_root = root
-        writer.recording_id = recording_id
-        writer.partial_directory = partial_directory
-        writer.final_directory = root / recording_id
-        writer.video_path = partial_directory / "video.mp4"
-        writer.imu_path = partial_directory / "imu.csv"
-        writer.frames_path = partial_directory / "frames.csv"
-        writer._manifest_path = partial_directory / "manifest.json"
-        writer._quality_path = partial_directory / "quality.json"
-        writer._video_profile = manifest.video_profile
-        writer._time_origin = manifest.time_origin
-        writer._provenance = manifest.provenance
-        writer._frames = list(frames)
-        writer._imu_rows = list(imu_rows)
-        writer._frames_file = None
-        writer._imu_file = None
-        writer._frames_writer = None
-        writer._imu_writer = None
-        writer._closed = False
-        writer._open_csv_files(mode="a")
-        return writer
-
-    def append_frame(self, row: RecordingFrameRow) -> None:
+    def append_imu(self, sample: StagedImuSample) -> None:
         self._require_open()
-        expected_index = len(self._frames)
-        if row.frame_index != expected_index:
-            raise ValueError(f"frame_index must be contiguous; expected {expected_index}")
-        if self._frames:
-            previous = self._frames[-1]
-            if row.recording_time_ns <= previous.recording_time_ns:
-                raise ValueError("frame recording_time_ns must be strictly increasing")
-            if not _mp4_time_is_after(row, previous):
-                raise ValueError("frame MP4 presentation time must be strictly increasing")
-        assert self._frames_writer is not None and self._frames_file is not None
-        self._frames_writer.writerow(_frame_to_csv(row))
-        self._frames_file.flush()
-        self._frames.append(row)
+        row = sample.row
+        previous_sequence = self._last_imu_sequence.get(row.sensor_type)
+        previous_timestamp = self._last_imu_timestamp.get(row.sensor_type)
+        if previous_sequence is not None and row.sequence <= previous_sequence:
+            raise ValueError(f"{row.sensor_type} sequence must be strictly increasing")
+        if previous_timestamp is not None and row.timestamp_ns <= previous_timestamp:
+            raise ValueError(f"{row.sensor_type} timestamp must be strictly increasing")
+        assert self._staged_imu_writer is not None and self._staged_imu_file is not None
+        values = row.model_dump(mode="json")
+        values["received_at_client_monotonic_ns"] = sample.received_at_client_monotonic_ns
+        self._staged_imu_writer.writerow(values)
+        self._staged_imu_file.flush()
+        self._last_imu_sequence[row.sensor_type] = row.sequence
+        self._last_imu_timestamp[row.sensor_type] = row.timestamp_ns
 
-    def append_imu(self, row: RecordingImuRow) -> None:
+    def finalize(self, camera_frames: Sequence[StagedCameraFrame]) -> CaptureRecordingReader:
         self._require_open()
-        expected_index = len(self._imu_rows)
-        if row.sample_index != expected_index:
-            raise ValueError(f"sample_index must be contiguous; expected {expected_index}")
-        if self._imu_rows and row.recording_time_ns < self._imu_rows[-1].recording_time_ns:
-            raise ValueError("IMU recording_time_ns must be monotonic")
-        assert self._imu_writer is not None and self._imu_file is not None
-        self._imu_writer.writerow(_imu_to_csv(row))
-        self._imu_file.flush()
-        self._imu_rows.append(row)
-
-    def finalize(
-        self,
-        *,
-        ended_at_unix_ns: int | None = None,
-        telemetry_queue_overflow_count: int = 0,
-        timestamp_mapping_residual_ns: int | None = None,
-    ) -> CaptureRecordingReader:
-        self._require_open()
-        if telemetry_queue_overflow_count < 0:
-            raise ValueError("telemetry queue overflow count cannot be negative")
-        if not self._frames:
-            raise CaptureRecordingError("cannot finalize a recording without video frames")
-        self._close_csv_files()
-        self._normalize_imu_video_span()
-        self._frames = list(_read_frame_csv(self.frames_path))
-        self._imu_rows = list(_read_imu_csv(self.imu_path))
+        self._close_staging_file()
+        if not camera_frames:
+            raise CaptureRecordingError("cannot publish a recording without camera frames")
         if self.video_path.stat().st_size < 1:
-            raise CaptureRecordingError("cannot finalize an empty video.mp4")
+            raise CaptureRecordingError("cannot publish an empty video.mp4")
 
-        quality = _build_quality_report(
-            recording_id=self.recording_id,
-            frames=self._frames,
-            imu_rows=self._imu_rows,
-            telemetry_queue_overflow_count=telemetry_queue_overflow_count,
-            timestamp_mapping_residual_ns=timestamp_mapping_residual_ns,
+        staged_imu = _read_staged_imu(self._staged_imu_path)
+        final_imu = tuple(
+            sample.row
+            for sample in staged_imu
+            if sample.received_at_client_monotonic_ns
+            <= camera_frames[-1].received_at_client_monotonic_ns
         )
-        _atomic_write_json(self._quality_path, quality.model_dump(mode="json"))
-        artifacts = RecordingArtifacts(
-            video=_file_info(self.video_path),
-            imu=_file_info(self.imu_path),
-            frames=_file_info(self.frames_path),
-            quality=_file_info(self._quality_path),
+        _atomic_write_csv(
+            self.camera_path,
+            CAMERA_CSV_COLUMNS,
+            (frame.row.model_dump(mode="json") for frame in camera_frames),
         )
-        end_ns = time.time_ns() if ended_at_unix_ns is None else ended_at_unix_ns
-        first_frame_time = self._frames[0].recording_time_ns
-        last_frame_time = self._frames[-1].recording_time_ns
-        time_origin = self._time_origin.model_copy(
-            update={
-                "first_video_frame_recording_time_ns": first_frame_time,
-                "last_video_frame_recording_time_ns": last_frame_time,
-            }
+        _atomic_write_csv(
+            self.imu_path,
+            IMU_CSV_COLUMNS,
+            (row.model_dump(mode="json") for row in final_imu),
         )
-        manifest = CaptureRecordingManifest(
-            recording_id=self.recording_id,
-            state=CaptureRecordingState.COMPLETE,
-            started_at_unix_ns=time_origin.countdown_started_at_unix_ns,
-            ended_at_unix_ns=end_ns,
-            duration_ns=last_frame_time,
-            video_profile=self._video_profile,
-            frame_count=len(self._frames),
-            imu_sample_count=len(self._imu_rows),
-            time_origin=time_origin,
-            provenance=self._provenance,
-            artifacts=artifacts,
+        reader = _validate_recording(
+            self.partial_directory,
+            allow_partial_name=True,
+            allow_staging_file=True,
         )
-        _atomic_write_json(self._manifest_path, manifest.model_dump(mode="json"))
-        _validate_recording(self.partial_directory, verify_hashes=True, allow_partial_name=True)
+        self._staged_imu_path.unlink()
+        reader = _validate_recording(
+            self.partial_directory,
+            allow_partial_name=True,
+        )
         if self.final_directory.exists():
             raise FileExistsError(f"completed recording already exists: {self.recording_id}")
         os.replace(self.partial_directory, self.final_directory)
         self._closed = True
-        return CaptureRecordingReader.open(self.final_directory)
+        return reader._with_directory(self.final_directory)
 
     def close_incomplete(self) -> None:
         if self._closed:
             return
-        self._close_csv_files()
-        manifest = self._draft_manifest(CaptureRecordingState.INCOMPLETE)
-        _atomic_write_json(self._manifest_path, manifest.model_dump(mode="json"))
+        self._close_staging_file()
         self._closed = True
 
-    def _normalize_imu_video_span(self) -> None:
-        first_frame_time = self._frames[0].recording_time_ns
-        last_frame_time = self._frames[-1].recording_time_ns
-        retained = [row for row in self._imu_rows if row.recording_time_ns <= last_frame_time]
-        normalized = [
-            row.model_copy(
-                update={
-                    "sample_index": index,
-                    "inside_video_span": first_frame_time <= row.recording_time_ns,
-                }
-            )
-            for index, row in enumerate(retained)
-        ]
-        temp_path = self.imu_path.with_suffix(".csv.tmp")
-        with temp_path.open("w", encoding="utf-8", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=IMU_CSV_COLUMNS, lineterminator="\n")
-            writer.writeheader()
-            writer.writerows(_imu_to_csv(row) for row in normalized)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp_path, self.imu_path)
-        self._imu_rows = normalized
-
-    def _draft_manifest(self, state: CaptureRecordingState) -> CaptureRecordingManifest:
-        return CaptureRecordingManifest(
-            recording_id=self.recording_id,
-            state=state,
-            started_at_unix_ns=self._time_origin.countdown_started_at_unix_ns,
-            video_profile=self._video_profile,
-            frame_count=len(self._frames),
-            imu_sample_count=len(self._imu_rows),
-            time_origin=self._time_origin,
-            provenance=self._provenance,
+    def _open_staging_file(self) -> None:
+        self._staged_imu_file = self._staged_imu_path.open(
+            "w",
+            encoding="utf-8",
+            newline="",
         )
-
-    def _write_draft_files(self) -> None:
-        manifest = self._draft_manifest(CaptureRecordingState.RECORDING)
-        quality = _build_quality_report(
-            recording_id=self.recording_id,
-            frames=(),
-            imu_rows=(),
-            telemetry_queue_overflow_count=0,
-            timestamp_mapping_residual_ns=None,
-            incomplete=True,
-        )
-        _atomic_write_json(self._manifest_path, manifest.model_dump(mode="json"))
-        _atomic_write_json(self._quality_path, quality.model_dump(mode="json"))
-
-    def _open_csv_files(self, *, mode: str) -> None:
-        self._frames_file = self.frames_path.open(mode, encoding="utf-8", newline="")
-        self._imu_file = self.imu_path.open(mode, encoding="utf-8", newline="")
-        self._frames_writer = csv.DictWriter(
-            self._frames_file,
-            fieldnames=FRAME_CSV_COLUMNS,
+        self._staged_imu_writer = csv.DictWriter(
+            self._staged_imu_file,
+            fieldnames=_STAGED_IMU_COLUMNS,
             lineterminator="\n",
         )
-        self._imu_writer = csv.DictWriter(
-            self._imu_file,
-            fieldnames=IMU_CSV_COLUMNS,
-            lineterminator="\n",
-        )
-        if mode == "w":
-            self._frames_writer.writeheader()
-            self._imu_writer.writeheader()
-            self._frames_file.flush()
-            self._imu_file.flush()
+        self._staged_imu_writer.writeheader()
+        self._staged_imu_file.flush()
 
-    def _close_csv_files(self) -> None:
-        for stream in (self._frames_file, self._imu_file):
-            if stream is not None:
-                stream.flush()
-                os.fsync(stream.fileno())
-                stream.close()
-        self._frames_file = None
-        self._imu_file = None
-        self._frames_writer = None
-        self._imu_writer = None
+    def _close_staging_file(self) -> None:
+        if self._staged_imu_file is not None:
+            self._staged_imu_file.flush()
+            os.fsync(self._staged_imu_file.fileno())
+            self._staged_imu_file.close()
+        self._staged_imu_file = None
+        self._staged_imu_writer = None
 
     def _require_open(self) -> None:
         if self._closed:
@@ -383,199 +232,309 @@ class CaptureRecordingWriter:
 
 
 class CaptureRecordingReader:
-    """Strictly validate and expose one finalized recording."""
+    """Strictly validate and expose one minimal protocol recording."""
 
     def __init__(
         self,
         directory: Path,
-        manifest: CaptureRecordingManifest,
-        quality: CaptureRecordingQualityReport,
-        frames: Sequence[RecordingFrameRow],
+        camera_frames: Sequence[CameraFrameRow],
         imu_rows: Sequence[RecordingImuRow],
+        calibration: CalibrationSnapshot,
+        video_index: Sequence[VideoIndexEntry],
         *,
-        hashes_verified: bool,
+        fps: float,
     ) -> None:
         self.directory = directory
-        self.manifest = manifest
-        self.quality = quality
-        self._frames = tuple(frames)
+        self.recording_id = _recording_id_from_directory(directory)
+        self._camera_frames = tuple(camera_frames)
         self._imu_rows = tuple(imu_rows)
-        self.hashes_verified = hashes_verified
+        self.calibration = calibration
+        self.video_index = tuple(video_index)
+        self.fps = fps
 
     @classmethod
-    def open(
-        cls,
-        recording_directory: Path,
-        *,
-        verify_hashes: bool = True,
-    ) -> CaptureRecordingReader:
-        return _validate_recording(Path(recording_directory), verify_hashes=verify_hashes)
+    def open(cls, recording_directory: Path) -> CaptureRecordingReader:
+        return _validate_recording(Path(recording_directory))
 
-    def iter_frames(self) -> Iterator[RecordingFrameRow]:
-        return iter(self._frames)
+    @property
+    def video_path(self) -> Path:
+        return self.directory / "video.mp4"
+
+    def iter_camera_frames(self) -> Iterator[CameraFrameRow]:
+        return iter(self._camera_frames)
 
     def iter_imu_samples(self) -> Iterator[RecordingImuRow]:
         return iter(self._imu_rows)
 
-    @property
-    def video_path(self) -> Path:
-        return self.directory / self.manifest.storage.video_path
-
     def summary(self) -> RecordingSummary:
-        assert self.manifest.ended_at_unix_ns is not None
-        assert self.manifest.duration_ns is not None
-        assert self.manifest.artifacts.video.size_bytes is not None
+        stat = self.video_path.stat()
+        duration_ns = (
+            self._camera_frames[-1].device_monotonic_ns
+            - self._camera_frames[0].device_monotonic_ns
+        )
         return RecordingSummary(
-            recording_id=self.manifest.recording_id,
-            recorded_at_unix_ns=self.manifest.started_at_unix_ns,
-            ended_at_unix_ns=self.manifest.ended_at_unix_ns,
-            duration_ns=self.manifest.duration_ns,
-            width=self.manifest.video_profile.width,
-            height=self.manifest.video_profile.height,
-            fps=self.manifest.video_profile.fps,
-            file_size_bytes=self.manifest.artifacts.video.size_bytes,
-            frame_count=self.manifest.frame_count,
-            imu_sample_count=self.manifest.imu_sample_count,
-            hashes_verified=self.hashes_verified,
+            recording_id=self.recording_id,
+            recorded_at_unix_ns=stat.st_ctime_ns,
+            ended_at_unix_ns=stat.st_mtime_ns,
+            duration_ns=duration_ns,
+            width=self.calibration.camera.resolution[0],
+            height=self.calibration.camera.resolution[1],
+            fps=self.fps,
+            file_size_bytes=stat.st_size,
+            frame_count=len(self._camera_frames),
+            imu_sample_count=len(self._imu_rows),
+            camera_frame_gap_count=_camera_frame_gaps(self._camera_frames),
+            imu_sequence_gap_count=_imu_sequence_gaps(self._imu_rows),
+        )
+
+    def _with_directory(self, directory: Path) -> CaptureRecordingReader:
+        return CaptureRecordingReader(
+            directory,
+            self._camera_frames,
+            self._imu_rows,
+            self.calibration,
+            self.video_index,
+            fps=self.fps,
         )
 
 
-def discover_recordings(
-    recordings_root: Path,
-    *,
-    verify_hashes: bool = False,
-) -> tuple[CaptureRecordingReader, ...]:
+def discover_recordings(recordings_root: Path) -> tuple[CaptureRecordingReader, ...]:
     root = Path(recordings_root)
     if not root.exists():
         return ()
     readers: list[CaptureRecordingReader] = []
-    for candidate in sorted(root.iterdir(), reverse=True):
-        if not candidate.is_dir() or candidate.name.startswith(".recording-"):
+    for candidate in root.iterdir():
+        if not candidate.is_dir() or not _RECORDING_ID_PATTERN.fullmatch(candidate.name):
             continue
         try:
-            readers.append(CaptureRecordingReader.open(candidate, verify_hashes=verify_hashes))
+            readers.append(CaptureRecordingReader.open(candidate))
         except CaptureRecordingReadError:
             continue
+    readers.sort(key=lambda reader: reader.summary().recorded_at_unix_ns, reverse=True)
     return tuple(readers)
+
+
+def recover_completed_recordings(recordings_root: Path) -> tuple[str, ...]:
+    root = Path(recordings_root).resolve()
+    recovered: list[str] = []
+    for partial in root.glob(".recording-*.partial"):
+        recording_id = _recording_id_from_directory(partial)
+        final = root / recording_id
+        if final.exists():
+            continue
+        try:
+            staging_path = partial / ".imu-staging.csv"
+            _validate_recording(
+                partial,
+                allow_partial_name=True,
+                allow_staging_file=staging_path.is_file(),
+            )
+        except CaptureRecordingReadError:
+            continue
+        if staging_path.is_file():
+            staging_path.unlink()
+            _validate_recording(partial, allow_partial_name=True)
+        os.replace(partial, final)
+        recovered.append(recording_id)
+    return tuple(recovered)
 
 
 def _validate_recording(
     directory: Path,
     *,
-    verify_hashes: bool,
     allow_partial_name: bool = False,
+    allow_staging_file: bool = False,
 ) -> CaptureRecordingReader:
-    _validate_layout(directory)
-    manifest = _read_manifest(directory / "manifest.json")
-    if manifest.state is not CaptureRecordingState.COMPLETE:
-        raise CaptureRecordingReadError("recording manifest is not complete")
+    _validate_layout(directory, allow_staging_file=allow_staging_file)
+    recording_id = _recording_id_from_directory(directory)
     expected_name = (
-        f".recording-{manifest.recording_id}.partial"
-        if allow_partial_name
-        else manifest.recording_id
+        f".recording-{recording_id}.partial" if allow_partial_name else recording_id
     )
     if directory.name != expected_name:
-        raise CaptureRecordingReadError("recording directory name does not match manifest")
-    quality = _read_quality(directory / "quality.json")
-    if quality.recording_id != manifest.recording_id:
-        raise CaptureRecordingReadError("quality report recording ID does not match manifest")
-    frames = _read_frame_csv(directory / "frames.csv")
+        raise CaptureRecordingReadError("recording directory name does not match recording ID")
+    camera_frames = _read_camera_csv(directory / "camera.csv")
     imu_rows = _read_imu_csv(directory / "imu.csv")
-    if len(frames) != manifest.frame_count:
-        raise CaptureRecordingReadError("frames.csv row count does not match manifest")
-    if len(imu_rows) != manifest.imu_sample_count:
-        raise CaptureRecordingReadError("imu.csv row count does not match manifest")
-    if quality.counts.video_frame_count != len(frames):
-        raise CaptureRecordingReadError("quality video frame count does not match frames.csv")
-    if quality.counts.imu_sample_count != len(imu_rows):
-        raise CaptureRecordingReadError("quality IMU count does not match imu.csv")
-    if manifest.time_origin.first_video_frame_recording_time_ns != frames[0].recording_time_ns:
-        raise CaptureRecordingReadError("manifest first video frame time does not match frames.csv")
-    if manifest.time_origin.last_video_frame_recording_time_ns != frames[-1].recording_time_ns:
-        raise CaptureRecordingReadError("manifest last video frame time does not match frames.csv")
-    first_time = frames[0].recording_time_ns
-    last_time = frames[-1].recording_time_ns
-    for row in imu_rows:
-        expected_inside = first_time <= row.recording_time_ns <= last_time
-        if row.inside_video_span != expected_inside:
-            raise CaptureRecordingReadError(
-                "IMU inside_video_span does not match video frame range"
-            )
-        if row.recording_time_ns > last_time:
-            raise CaptureRecordingReadError("imu.csv extends beyond the last video frame")
-    if verify_hashes:
-        _verify_artifacts(directory, manifest)
+    calibration = _read_calibration(directory / "calibration.yaml")
+    video_index, fps = _inspect_video(
+        directory / "video.mp4",
+        calibration.camera.resolution,
+    )
+    if len(video_index) != len(camera_frames):
+        raise CaptureRecordingReadError(
+            "decoded video frame count does not match camera.csv"
+        )
+    if not imu_rows:
+        raise CaptureRecordingReadError("imu.csv must contain raw sensor samples")
+    first_camera_ns = camera_frames[0].device_monotonic_ns
+    last_camera_ns = camera_frames[-1].device_monotonic_ns
+    imu_timestamps = [row.timestamp_ns for row in imu_rows]
+    if min(imu_timestamps) > first_camera_ns or max(imu_timestamps) < last_camera_ns:
+        raise CaptureRecordingReadError("IMU timestamps do not cover the camera time range")
     return CaptureRecordingReader(
         directory,
-        manifest,
-        quality,
-        frames,
+        camera_frames,
         imu_rows,
-        hashes_verified=verify_hashes,
+        calibration,
+        video_index,
+        fps=fps,
     )
 
 
-def _validate_layout(directory: Path) -> None:
+def _validate_layout(directory: Path, *, allow_staging_file: bool = False) -> None:
     if not directory.is_dir():
         raise CaptureRecordingReadError(f"recording directory does not exist: {directory}")
     entries = {entry.name for entry in directory.iterdir()}
-    if entries != _REQUIRED_TOP_LEVEL_ENTRIES:
-        missing = sorted(_REQUIRED_TOP_LEVEL_ENTRIES - entries)
-        unexpected = sorted(entries - _REQUIRED_TOP_LEVEL_ENTRIES)
+    allowed_entries = (
+        _REQUIRED_ENTRIES | {".imu-staging.csv"}
+        if allow_staging_file
+        else _REQUIRED_ENTRIES
+    )
+    if entries != allowed_entries:
         raise CaptureRecordingReadError(
-            f"recording layout mismatch; missing={missing}, unexpected={unexpected}"
+            "recording layout mismatch; "
+            f"missing={sorted(allowed_entries - entries)}, "
+            f"unexpected={sorted(entries - allowed_entries)}"
         )
-    for name in ("manifest.json", "video.mp4", "imu.csv", "frames.csv", "quality.json"):
-        if not (directory / name).is_file():
-            raise CaptureRecordingReadError(f"recording entry must be a file: {name}")
-    for name in ("annotations", "derived"):
-        if not (directory / name).is_dir():
-            raise CaptureRecordingReadError(f"recording entry must be a directory: {name}")
+    if not all((directory / name).is_file() for name in _REQUIRED_ENTRIES):
+        raise CaptureRecordingReadError("every recording entry must be a regular file")
 
 
-def _read_manifest(path: Path) -> CaptureRecordingManifest:
-    try:
-        return CaptureRecordingManifest.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValidationError, ValueError) as error:
-        raise CaptureRecordingReadError(f"invalid manifest.json: {error}") from error
+def _recording_id_from_directory(directory: Path) -> str:
+    name = directory.name
+    recording_id = (
+        name.removeprefix(".recording-").removesuffix(".partial")
+        if name.startswith(".recording-") and name.endswith(".partial")
+        else name
+    )
+    if not _RECORDING_ID_PATTERN.fullmatch(recording_id):
+        raise CaptureRecordingReadError("recording directory has an invalid ID")
+    return recording_id
 
 
-def _read_quality(path: Path) -> CaptureRecordingQualityReport:
-    try:
-        return CaptureRecordingQualityReport.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValidationError, ValueError) as error:
-        raise CaptureRecordingReadError(f"invalid quality.json: {error}") from error
-
-
-def _read_frame_csv(path: Path) -> tuple[RecordingFrameRow, ...]:
-    rows = _read_csv(path, FRAME_CSV_COLUMNS, _parse_frame_row)
-    previous: RecordingFrameRow | None = None
+def _read_camera_csv(path: Path) -> tuple[CameraFrameRow, ...]:
+    rows = _read_csv(
+        path,
+        CAMERA_CSV_COLUMNS,
+        lambda row: CameraFrameRow(
+            frame_idx=_int_value(row, "frame_idx"),
+            frame_id=_int_value(row, "frame_id"),
+            rokid_timestamp_ns=_int_value(row, "rokid_timestamp_ns"),
+            device_monotonic_ns=_int_value(row, "device_monotonic_ns"),
+        ),
+    )
+    if not rows:
+        raise CaptureRecordingReadError("camera.csv must contain at least one frame")
+    previous: CameraFrameRow | None = None
     for index, row in enumerate(rows):
-        if row.frame_index != index:
-            raise CaptureRecordingReadError(
-                "frames.csv contains duplicate or non-contiguous frames"
-            )
-        if previous is not None:
-            if row.recording_time_ns <= previous.recording_time_ns:
-                raise CaptureRecordingReadError(
-                    "frames.csv recording time is not strictly monotonic"
-                )
-            if not _mp4_time_is_after(row, previous):
-                raise CaptureRecordingReadError("frames.csv MP4 time is not strictly monotonic")
+        if row.frame_idx != index:
+            raise CaptureRecordingReadError("camera frame_idx must be contiguous from zero")
+        if previous is not None and (
+            row.frame_id <= previous.frame_id
+            or row.rokid_timestamp_ns <= previous.rokid_timestamp_ns
+            or row.device_monotonic_ns <= previous.device_monotonic_ns
+        ):
+            raise CaptureRecordingReadError("camera frame IDs and timestamps must increase")
         previous = row
     return rows
 
 
 def _read_imu_csv(path: Path) -> tuple[RecordingImuRow, ...]:
-    rows = _read_csv(path, IMU_CSV_COLUMNS, _parse_imu_row)
-    previous: RecordingImuRow | None = None
-    for index, row in enumerate(rows):
-        if row.sample_index != index:
-            raise CaptureRecordingReadError("imu.csv contains duplicate or non-contiguous samples")
-        if previous is not None and row.recording_time_ns < previous.recording_time_ns:
-            raise CaptureRecordingReadError("imu.csv recording time is not monotonic")
-        previous = row
+    rows = _read_csv(
+        path,
+        IMU_CSV_COLUMNS,
+        lambda row: RecordingImuRow(
+            sensor_type=ImuSensorType(_text_value(row, "sensor_type")),
+            sequence=_int_value(row, "sequence"),
+            timestamp_ns=_int_value(row, "timestamp_ns"),
+            x=_float_value(row, "x"),
+            y=_float_value(row, "y"),
+            z=_float_value(row, "z"),
+        ),
+    )
+    last_sequence: dict[ImuSensorType, int] = {}
+    last_timestamp: dict[ImuSensorType, int] = {}
+    for row in rows:
+        if row.sensor_type in last_sequence and row.sequence <= last_sequence[row.sensor_type]:
+            raise CaptureRecordingReadError("IMU sequence must increase per sensor")
+        if (
+            row.sensor_type in last_timestamp
+            and row.timestamp_ns <= last_timestamp[row.sensor_type]
+        ):
+            raise CaptureRecordingReadError("IMU timestamp must increase per sensor")
+        last_sequence[row.sensor_type] = row.sequence
+        last_timestamp[row.sensor_type] = row.timestamp_ns
+    if set(last_sequence) != {ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE}:
+        raise CaptureRecordingReadError("imu.csv must contain accelerometer and gyroscope data")
     return rows
+
+
+def _read_staged_imu(path: Path) -> tuple[StagedImuSample, ...]:
+    return _read_csv(
+        path,
+        _STAGED_IMU_COLUMNS,
+        lambda row: StagedImuSample(
+            row=RecordingImuRow(
+                sensor_type=ImuSensorType(_text_value(row, "sensor_type")),
+                sequence=_int_value(row, "sequence"),
+                timestamp_ns=_int_value(row, "timestamp_ns"),
+                x=_float_value(row, "x"),
+                y=_float_value(row, "y"),
+                z=_float_value(row, "z"),
+            ),
+            received_at_client_monotonic_ns=_int_value(
+                row,
+                "received_at_client_monotonic_ns",
+            ),
+        ),
+    )
+
+
+def _read_calibration(path: Path) -> CalibrationSnapshot:
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return CalibrationSnapshot.model_validate(payload)
+    except (OSError, UnicodeError, ValueError, ValidationError, yaml.YAMLError) as error:
+        raise CaptureRecordingReadError(f"invalid calibration.yaml: {error}") from error
+
+
+def _inspect_video(
+    path: Path,
+    resolution: tuple[int, int],
+) -> tuple[tuple[VideoIndexEntry, ...], float]:
+    try:
+        with av.open(str(path), mode="r") as container:
+            if len(container.streams.video) != 1:
+                raise CaptureRecordingReadError("video.mp4 must contain exactly one video stream")
+            stream = container.streams.video[0]
+            if stream.codec_context.name != "h264":
+                raise CaptureRecordingReadError("video.mp4 must use H.264")
+            if (stream.width, stream.height) != resolution:
+                raise CaptureRecordingReadError(
+                    "video dimensions do not match calibration resolution"
+                )
+            entries: list[VideoIndexEntry] = []
+            for index, frame in enumerate(container.decode(stream)):
+                if frame.pts is None or frame.time_base is None:
+                    raise CaptureRecordingReadError("decoded video frame is missing PTS")
+                if (frame.width, frame.height) != resolution:
+                    raise CaptureRecordingReadError("video resolution changes within recording")
+                entries.append(
+                    VideoIndexEntry(
+                        frame_idx=index,
+                        pts=frame.pts,
+                        time_base_num=frame.time_base.numerator,
+                        time_base_den=frame.time_base.denominator,
+                    )
+                )
+            if not entries:
+                raise CaptureRecordingReadError("video.mp4 contains no decodable frames")
+            rate = stream.average_rate or stream.guessed_rate
+            fps = float(rate) if rate is not None and float(rate) > 0 else 30.0
+            return tuple(entries), fps
+    except CaptureRecordingReadError:
+        raise
+    except (OSError, ValueError, av.error.FFmpegError) as error:
+        raise CaptureRecordingReadError(f"invalid video.mp4: {error}") from error
 
 
 def _read_csv(path: Path, columns: tuple[str, ...], parser):
@@ -584,7 +543,7 @@ def _read_csv(path: Path, columns: tuple[str, ...], parser):
             reader = csv.DictReader(stream)
             if tuple(reader.fieldnames or ()) != columns:
                 raise CaptureRecordingReadError(
-                    f"{path.name} columns do not match the required schema"
+                    f"{path.name} columns do not match the protocol"
                 )
             parsed = []
             for line_number, row in enumerate(reader, start=2):
@@ -603,57 +562,10 @@ def _read_csv(path: Path, columns: tuple[str, ...], parser):
         raise CaptureRecordingReadError(f"cannot read {path.name}: {error}") from error
 
 
-def _parse_frame_row(row: dict[str | None, str | None]) -> RecordingFrameRow:
-    return RecordingFrameRow(
-        frame_index=_int_value(row, "frame_index"),
-        recording_time_ns=_int_value(row, "recording_time_ns"),
-        mp4_pts=_int_value(row, "mp4_pts"),
-        mp4_time_base_num=_int_value(row, "mp4_time_base_num"),
-        mp4_time_base_den=_int_value(row, "mp4_time_base_den"),
-        connection_session_id=_text_value(row, "connection_session_id"),
-        frame_id=_int_value(row, "frame_id", optional=True),
-        camera_start_generation=_int_value(row, "camera_start_generation", optional=True),
-        captured_at_rokid_sdk_ms=_int_value(row, "captured_at_rokid_sdk_ms", optional=True),
-        received_at_elapsed_realtime_ns=_int_value(
-            row, "received_at_elapsed_realtime_ns", optional=True
-        ),
-        video_at_monotonic_ns=_int_value(row, "video_at_monotonic_ns", optional=True),
-        rtp_timestamp_90khz=_int_value(row, "rtp_timestamp_90khz", optional=True),
-        received_at_client_monotonic_ns=_int_value(row, "received_at_client_monotonic_ns"),
-        metadata_match_status=FrameMetadataMatchStatus(_text_value(row, "metadata_match_status")),
-        timestamp_match_error_90khz=_int_value(row, "timestamp_match_error_90khz", optional=True),
-    )
-
-
-def _parse_imu_row(row: dict[str | None, str | None]) -> RecordingImuRow:
-    return RecordingImuRow(
-        sample_index=_int_value(row, "sample_index"),
-        recording_time_ns=_int_value(row, "recording_time_ns"),
-        connection_session_id=_text_value(row, "connection_session_id"),
-        sensor_type=ImuSensorType(_text_value(row, "sensor_type")),
-        sequence_number=_int_value(row, "sequence_number"),
-        sensor_event_monotonic_ns=_int_value(row, "sensor_event_monotonic_ns"),
-        received_at_elapsed_realtime_ns=_int_value(row, "received_at_elapsed_realtime_ns"),
-        received_at_client_monotonic_ns=_int_value(row, "received_at_client_monotonic_ns"),
-        accuracy=_int_value(row, "accuracy"),
-        x=_float_value(row, "x"),
-        y=_float_value(row, "y"),
-        z=_float_value(row, "z"),
-        inside_video_span=_bool_value(row, "inside_video_span"),
-    )
-
-
-def _int_value(
-    row: dict[str | None, str | None],
-    field: str,
-    *,
-    optional: bool = False,
-) -> int | None:
+def _int_value(row: dict[str | None, str | None], field: str) -> int:
     value = row[field]
-    if optional and value == "":
-        return None
     if value is None or not _INTEGER_PATTERN.fullmatch(value):
-        raise ValueError(f"{field} is not a canonical integer")
+        raise ValueError(f"{field} is not a canonical non-negative integer")
     return int(value)
 
 
@@ -674,151 +586,43 @@ def _text_value(row: dict[str | None, str | None], field: str) -> str:
     return value
 
 
-def _bool_value(row: dict[str | None, str | None], field: str) -> bool:
-    value = row[field]
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    raise ValueError(f"{field} must be true or false")
-
-
-def _frame_to_csv(row: RecordingFrameRow) -> dict[str, str | int]:
-    values = row.model_dump(mode="json")
-    return {key: "" if value is None else value for key, value in values.items()}
-
-
-def _imu_to_csv(row: RecordingImuRow) -> dict[str, str | int | float]:
-    values = row.model_dump(mode="json")
-    values["inside_video_span"] = "true" if row.inside_video_span else "false"
-    return values
-
-
-def _mp4_time_is_after(current: RecordingFrameRow, previous: RecordingFrameRow) -> bool:
-    current_numerator = current.mp4_pts * current.mp4_time_base_num
-    previous_numerator = previous.mp4_pts * previous.mp4_time_base_num
-    return (
-        current_numerator * previous.mp4_time_base_den
-        > previous_numerator * current.mp4_time_base_den
-    )
-
-
-def _build_quality_report(
-    *,
-    recording_id: str,
-    frames: Sequence[RecordingFrameRow],
-    imu_rows: Sequence[RecordingImuRow],
-    telemetry_queue_overflow_count: int,
-    timestamp_mapping_residual_ns: int | None,
-    incomplete: bool = False,
-) -> CaptureRecordingQualityReport:
-    gaps, duplicates, out_of_order = _imu_sequence_quality(imu_rows)
-    matched = sum(
-        row.metadata_match_status is not FrameMetadataMatchStatus.UNMATCHED for row in frames
-    )
-    coverage = None if not frames else matched / len(frames)
-    has_warning = any((gaps, duplicates, out_of_order, telemetry_queue_overflow_count)) or (
-        coverage is not None and coverage < 1.0
-    )
-    checks = [
-        RecordingQualityCheck(
-            check_id="frame_metadata_coverage",
-            status=(
-                "not_evaluated" if coverage is None else ("pass" if coverage == 1.0 else "warn")
-            ),
-            metric_value=coverage,
-            threshold=1.0,
-            unit="ratio",
-            evidence=f"{matched}/{len(frames)} encoded frames have matched Rokid metadata",
-        ),
-        RecordingQualityCheck(
-            check_id="imu_sequence_integrity",
-            status="pass" if gaps + duplicates + out_of_order == 0 else "warn",
-            metric_value=float(gaps + duplicates + out_of_order),
-            threshold=0.0,
-            unit="samples",
-            evidence=(f"gaps={gaps}, duplicates={duplicates}, out_of_order={out_of_order}"),
-        ),
-    ]
-    counts = RecordingQualityCounts(
-        video_frame_count=len(frames),
-        matched_video_frame_count=matched,
-        imu_sample_count=len(imu_rows),
-        imu_inside_video_span_count=sum(row.inside_video_span for row in imu_rows),
-        accelerometer_sample_count=sum(
-            row.sensor_type is ImuSensorType.ACCELEROMETER for row in imu_rows
-        ),
-        gyroscope_sample_count=sum(row.sensor_type is ImuSensorType.GYROSCOPE for row in imu_rows),
-        imu_sequence_gap_count=gaps,
-        imu_duplicate_sample_count=duplicates,
-        imu_out_of_order_sample_count=out_of_order,
-        telemetry_queue_overflow_count=telemetry_queue_overflow_count,
-    )
-    return CaptureRecordingQualityReport(
-        recording_id=recording_id,
-        generated_at_unix_ns=time.time_ns(),
-        status="incomplete" if incomplete else ("warn" if has_warning else "pass"),
-        counts=counts,
-        frame_metadata_coverage=coverage,
-        timestamp_mapping_residual_ns=timestamp_mapping_residual_ns,
-        checks=checks,
-    )
-
-
-def _imu_sequence_quality(rows: Sequence[RecordingImuRow]) -> tuple[int, int, int]:
-    last_sequence: dict[tuple[str, ImuSensorType], int] = {}
-    seen: dict[tuple[str, ImuSensorType], set[int]] = {}
-    gaps = duplicates = out_of_order = 0
-    for row in rows:
-        key = (row.connection_session_id, row.sensor_type)
-        prior = last_sequence.get(key)
-        key_seen = seen.setdefault(key, set())
-        if row.sequence_number in key_seen:
-            duplicates += 1
-        elif prior is not None and row.sequence_number < prior:
-            out_of_order += 1
-        elif prior is not None and row.sequence_number > prior + 1:
-            gaps += row.sequence_number - prior - 1
-        key_seen.add(row.sequence_number)
-        last_sequence[key] = max(row.sequence_number, prior if prior is not None else -1)
-    return gaps, duplicates, out_of_order
-
-
-def _file_info(path: Path) -> RecordingFileInfo:
-    return RecordingFileInfo(
-        path=path.name,
-        size_bytes=path.stat().st_size,
-        sha256=_sha256(path),
-    )
-
-
-def _verify_artifacts(directory: Path, manifest: CaptureRecordingManifest) -> None:
-    for artifact in (
-        manifest.artifacts.video,
-        manifest.artifacts.imu,
-        manifest.artifacts.frames,
-        manifest.artifacts.quality,
-    ):
-        path = directory / artifact.path
-        if artifact.size_bytes != path.stat().st_size:
-            raise CaptureRecordingReadError(f"artifact size mismatch: {artifact.path}")
-        if artifact.sha256 != _sha256(path):
-            raise CaptureRecordingReadError(f"artifact SHA256 mismatch: {artifact.path}")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _atomic_write_json(path: Path, payload: object) -> None:
+def _atomic_write_csv(
+    path: Path,
+    columns: tuple[str, ...],
+    rows,
+) -> None:
     temp_path = path.with_suffix(path.suffix + ".tmp")
-    with temp_path.open("w", encoding="utf-8", newline="\n") as stream:
-        json.dump(payload, stream, ensure_ascii=True, indent=2, sort_keys=True)
-        stream.write("\n")
+    with temp_path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temp_path, path)
+
+
+def _atomic_write_yaml(path: Path, payload: object) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with temp_path.open("w", encoding="utf-8", newline="\n") as stream:
+        yaml.safe_dump(payload, stream, sort_keys=False, allow_unicode=False)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temp_path, path)
+
+
+def _camera_frame_gaps(rows: Sequence[CameraFrameRow]) -> int:
+    return sum(
+        max(0, current.frame_id - previous.frame_id - 1)
+        for previous, current in zip(rows, rows[1:], strict=False)
+    )
+
+
+def _imu_sequence_gaps(rows: Sequence[RecordingImuRow]) -> int:
+    last: dict[ImuSensorType, int] = {}
+    gaps = 0
+    for row in rows:
+        previous = last.get(row.sensor_type)
+        if previous is not None:
+            gaps += max(0, row.sequence - previous - 1)
+        last[row.sensor_type] = row.sequence
+    return gaps

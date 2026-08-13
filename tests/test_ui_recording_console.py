@@ -3,20 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import av
-import numpy as np
 from PyQt6.QtCore import QPoint, QRect
 from PyQt6.QtWidgets import QApplication
 
 from schemas.recording import (
-    FrameMetadataMatchStatus,
     ImuSensorType,
-    RecordingFrameRow,
     RecordingImuRow,
     RecordingLibrary,
     RecordingOutput,
 )
-from ui.gateway.capture_recording import CaptureRecordingReader, CaptureRecordingWriter
+from tests.recording_support import staged_camera_frames, write_h264_video
+from ui.gateway.capture_recording import (
+    CaptureRecordingReader,
+    CaptureRecordingWriter,
+    StagedImuSample,
+)
 from ui.gateway.webrtc_models import StreamControlAction
 from ui.views.home import HomeView
 from ui.views.recording_library import (
@@ -183,10 +184,10 @@ def test_recording_replay_uses_frame_time_for_imu_cursor(tmp_path: Path) -> None
         first = source.seek_frame(0)
         second = source.next_frame()
         assert second is not None
-        assert first.recording_time_ns == 100_000_000
-        assert second.recording_time_ns == 200_000_000
-        first_cursor = source.imu_cursor(first.recording_time_ns)
-        second_cursor = source.imu_cursor(second.recording_time_ns)
+        assert first.device_monotonic_ns == 100_000_000
+        assert second.device_monotonic_ns == 200_000_000
+        first_cursor = source.imu_cursor(first.device_monotonic_ns)
+        second_cursor = source.imu_cursor(second.device_monotonic_ns)
         assert first_cursor.accelerometer == (0.0, 1.0, 2.0)
         assert first_cursor.gyroscope is None
         assert second_cursor.gyroscope == (3.0, 4.0, 5.0)
@@ -207,6 +208,7 @@ def test_recording_library_flows_cards_and_playback_without_overlap(
         view.set_library(runtime._snapshot.library)
         assert tuple(view.cards) == (summary.recording_id,)
         card = view.cards[summary.recording_id]
+        assert card.protocol_badge.text() == "协议通过"
         for width, height in ((1280, 800), (1440, 900), (1920, 1080)):
             view.resize(width, height)
             view.show()
@@ -237,67 +239,31 @@ def _recording_fixture(root: Path) -> Path:
         root,
         recording_id="a" * 32,
         video_profile=RecordingOutput(width=32, height=24, fps=10.0),
-        countdown_started_at_unix_ns=1_000_000_000,
-        countdown_started_at_client_monotonic_ns=2_000_000_000,
     )
-    with av.open(str(writer.video_path), mode="w") as container:
-        stream = container.add_stream("mpeg4", rate=10)
-        stream.width = 32
-        stream.height = 24
-        stream.pix_fmt = "yuv420p"
-        for index in range(2):
-            pixels = np.full((24, 32, 3), index * 64, dtype=np.uint8)
-            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
-            frame.pts = index
-            for packet in stream.encode(frame):
-                container.mux(packet)
-        for packet in stream.encode():
-            container.mux(packet)
-
-    with av.open(str(writer.video_path), mode="r") as container:
-        indexed_video = tuple(
-            (frame.pts, frame.time_base)
-            for frame in container.decode(container.streams.video[0])
-        )
-    assert len(indexed_video) == 2
-    for frame_index, (recording_time_ns, indexed) in enumerate(
-        zip((100_000_000, 200_000_000), indexed_video, strict=True)
-    ):
-        pts, time_base = indexed
-        assert pts is not None and time_base is not None
-        writer.append_frame(
-            RecordingFrameRow(
-                frame_index=frame_index,
-                recording_time_ns=recording_time_ns,
-                mp4_pts=pts,
-                mp4_time_base_num=time_base.numerator,
-                mp4_time_base_den=time_base.denominator,
-                connection_session_id="connection-1",
-                received_at_client_monotonic_ns=2_000_000_000 + recording_time_ns,
-                metadata_match_status=FrameMetadataMatchStatus.UNMATCHED,
-            )
-        )
-    for sample_index, (time_ns, sensor, values) in enumerate(
-        (
-            (100_000_000, ImuSensorType.ACCELEROMETER, (0.0, 1.0, 2.0)),
-            (150_000_000, ImuSensorType.GYROSCOPE, (3.0, 4.0, 5.0)),
-        )
-    ):
+    video_index = write_h264_video(writer.video_path)
+    frames = staged_camera_frames(video_index)
+    samples = (
+        (99_000_000, ImuSensorType.ACCELEROMETER, 0, (0.0, 1.0, 2.0)),
+        (150_000_000, ImuSensorType.GYROSCOPE, 0, (3.0, 4.0, 5.0)),
+        (201_000_000, ImuSensorType.ACCELEROMETER, 1, (6.0, 7.0, 8.0)),
+        (201_000_000, ImuSensorType.GYROSCOPE, 1, (9.0, 10.0, 11.0)),
+    )
+    for time_ns, sensor, sequence, values in samples:
         writer.append_imu(
-            RecordingImuRow(
-                sample_index=sample_index,
-                recording_time_ns=time_ns,
-                connection_session_id="connection-1",
-                sensor_type=sensor,
-                sequence_number=sample_index,
-                sensor_event_monotonic_ns=3_000_000_000 + time_ns,
-                received_at_elapsed_realtime_ns=3_000_000_000 + time_ns,
-                received_at_client_monotonic_ns=2_000_000_000 + time_ns,
-                accuracy=3,
-                x=values[0],
-                y=values[1],
-                z=values[2],
-                inside_video_span=True,
+            StagedImuSample(
+                row=RecordingImuRow(
+                    sensor_type=sensor,
+                    sequence=sequence,
+                    timestamp_ns=time_ns,
+                    x=values[0],
+                    y=values[1],
+                    z=values[2],
+                ),
+                received_at_client_monotonic_ns=(
+                    frames[0].received_at_client_monotonic_ns
+                    if time_ns < 200_000_000
+                    else frames[-1].received_at_client_monotonic_ns
+                ),
             )
         )
-    return writer.finalize(ended_at_unix_ns=1_200_000_000).directory
+    return writer.finalize(frames).directory

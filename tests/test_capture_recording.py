@@ -4,98 +4,40 @@ import csv
 from pathlib import Path
 
 import pytest
+import yaml
 
-from schemas.recording import (
-    FrameMetadataMatchStatus,
-    ImuSensorType,
-    RecordingFrameRow,
-    RecordingImuRow,
-    RecordingOutput,
+from schemas.recording import ImuSensorType, RecordingImuRow, RecordingOutput
+from tests.recording_support import (
+    append_covering_imu,
+    create_recording,
+    staged_camera_frames,
+    write_h264_video,
 )
 from ui.gateway.capture_recording import (
-    FRAME_CSV_COLUMNS,
+    CAMERA_CSV_COLUMNS,
+    IMU_CSV_COLUMNS,
+    CaptureRecordingError,
     CaptureRecordingReader,
     CaptureRecordingReadError,
     CaptureRecordingWriter,
+    StagedImuSample,
     discover_recordings,
+    recover_completed_recordings,
 )
 
 RECORDING_ID = "a" * 32
 
 
-def _frame(index: int, recording_time_ns: int) -> RecordingFrameRow:
-    return RecordingFrameRow(
-        frame_index=index,
-        recording_time_ns=recording_time_ns,
-        mp4_pts=index * 3_000,
-        mp4_time_base_num=1,
-        mp4_time_base_den=90_000,
-        connection_session_id="connection-1",
-        frame_id=index,
-        camera_start_generation=1,
-        captured_at_rokid_sdk_ms=10_000 + index * 33,
-        received_at_elapsed_realtime_ns=20_000_000 + index * 33_000_000,
-        video_at_monotonic_ns=30_000_000 + index * 33_000_000,
-        rtp_timestamp_90khz=12_000 + index * 3_000,
-        received_at_client_monotonic_ns=40_000_000 + index * 33_000_000,
-        metadata_match_status=FrameMetadataMatchStatus.EXACT,
-        timestamp_match_error_90khz=0,
-    )
-
-
-def _imu(
-    index: int,
-    recording_time_ns: int,
-    *,
-    sensor_type: ImuSensorType = ImuSensorType.ACCELEROMETER,
-    sequence_number: int | None = None,
-) -> RecordingImuRow:
-    return RecordingImuRow(
-        sample_index=index,
-        recording_time_ns=recording_time_ns,
-        connection_session_id="connection-1",
-        sensor_type=sensor_type,
-        sequence_number=index if sequence_number is None else sequence_number,
-        sensor_event_monotonic_ns=1_000_000 + recording_time_ns,
-        received_at_elapsed_realtime_ns=2_000_000 + recording_time_ns,
-        received_at_client_monotonic_ns=3_000_000 + recording_time_ns,
-        accuracy=3,
-        x=1.25,
-        y=-2.5,
-        z=9.75,
-        inside_video_span=False,
-    )
-
-
-def _complete_recording(
-    root: Path,
-    recording_id: str = RECORDING_ID,
-) -> CaptureRecordingReader:
-    writer = CaptureRecordingWriter.create(
-        root,
-        recording_id=recording_id,
-        video_profile=RecordingOutput(width=640, height=480, fps=30.0),
-        countdown_started_at_unix_ns=1_000_000,
-        countdown_started_at_client_monotonic_ns=5_000,
-    )
-    writer.video_path.write_bytes(b"synthetic-mp4")
-    writer.append_imu(_imu(0, 100))
-    writer.append_frame(_frame(0, 1_000))
-    writer.append_imu(_imu(1, 1_500, sensor_type=ImuSensorType.GYROSCOPE))
-    writer.append_frame(_frame(1, 2_000))
-    writer.append_imu(_imu(2, 2_500))
-    return writer.finalize(ended_at_unix_ns=2_000_000)
-
-
-def _rewrite_frame_csv(path: Path, mutator) -> None:
+def _rewrite_csv(path: Path, mutator) -> None:
     with path.open("r", encoding="utf-8", newline="") as stream:
-        rows = list(csv.DictReader(stream))
-    fieldnames = list(FRAME_CSV_COLUMNS)
-    fieldnames, rows = mutator(fieldnames, rows)
+        reader = csv.DictReader(stream)
+        fields = list(reader.fieldnames or ())
+        rows = list(reader)
+    fields, rows = mutator(fields, rows)
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(
             stream,
-            fieldnames=fieldnames,
+            fieldnames=fields,
             extrasaction="ignore",
             lineterminator="\n",
         )
@@ -103,137 +45,252 @@ def _rewrite_frame_csv(path: Path, mutator) -> None:
         writer.writerows(rows)
 
 
-def test_writer_publishes_exact_layout_and_preserves_countdown_imu(tmp_path: Path) -> None:
-    reader = _complete_recording(tmp_path)
+def test_writer_publishes_exact_four_file_protocol(tmp_path: Path) -> None:
+    reader = create_recording(tmp_path)
 
-    assert not (tmp_path / f".recording-{RECORDING_ID}.partial").exists()
     assert {entry.name for entry in reader.directory.iterdir()} == {
-        "manifest.json",
         "video.mp4",
+        "camera.csv",
         "imu.csv",
-        "frames.csv",
-        "quality.json",
-        "annotations",
-        "derived",
+        "calibration.yaml",
     }
-    imu_rows = list(reader.iter_imu_samples())
-    assert [row.recording_time_ns for row in imu_rows] == [100, 1_500]
-    assert [row.inside_video_span for row in imu_rows] == [False, True]
-    assert reader.manifest.frame_count == 2
-    assert reader.manifest.imu_sample_count == 2
-    assert all(
-        artifact.sha256
-        for artifact in (
-            reader.manifest.artifacts.video,
-            reader.manifest.artifacts.imu,
-            reader.manifest.artifacts.frames,
-            reader.manifest.artifacts.quality,
-        )
+    assert not (tmp_path / f".recording-{RECORDING_ID}.partial").exists()
+    assert tuple(next(csv.reader((reader.directory / "camera.csv").open()))) == (
+        CAMERA_CSV_COLUMNS
     )
+    assert tuple(next(csv.reader((reader.directory / "imu.csv").open()))) == IMU_CSV_COLUMNS
+    camera = tuple(reader.iter_camera_frames())
+    assert camera[0].rokid_timestamp_ns == 5_000_000_000
+    assert [row.frame_idx for row in camera] == [0, 1]
+    assert reader.summary().protocol_validated is True
+
+
+def test_placeholder_calibration_is_written_at_video_resolution(tmp_path: Path) -> None:
+    reader = create_recording(tmp_path, width=40, height=30)
+    payload = yaml.safe_load((reader.directory / "calibration.yaml").read_text())
+
+    assert payload["camera"]["resolution"] == [40, 30]
+    assert payload["camera"]["intrinsics"] == [1.0, 1.0, 0.0, 0.0]
+    assert payload["camera"]["distortion_coeffs"] == [0.0, 0.0, 0.0, 0.0]
+    assert payload["T_cam_imu"] == [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    assert set(payload["imu"].values()) == {None}
+    assert "unverified" not in payload
 
 
 def test_consecutive_recordings_are_independent(tmp_path: Path) -> None:
-    first = _complete_recording(tmp_path, "a" * 32)
-    second = _complete_recording(tmp_path, "b" * 32)
+    first = create_recording(tmp_path, recording_id="a" * 32)
+    second = create_recording(tmp_path, recording_id="b" * 32)
 
     assert first.directory != second.directory
-    assert [reader.manifest.recording_id for reader in discover_recordings(tmp_path)] == [
-        "b" * 32,
+    assert {reader.recording_id for reader in discover_recordings(tmp_path)} == {
         "a" * 32,
-    ]
+        "b" * 32,
+    }
 
 
-def test_incomplete_writer_can_be_recovered_and_atomically_completed(tmp_path: Path) -> None:
-    writer = CaptureRecordingWriter.create(
-        tmp_path,
-        recording_id=RECORDING_ID,
-        countdown_started_at_unix_ns=100,
-        countdown_started_at_client_monotonic_ns=200,
+def test_completed_partial_is_recovered_atomically(tmp_path: Path) -> None:
+    reader = create_recording(tmp_path)
+    partial = tmp_path / f".recording-{RECORDING_ID}.partial"
+    reader.directory.rename(partial)
+
+    assert recover_completed_recordings(tmp_path) == (RECORDING_ID,)
+    assert CaptureRecordingReader.open(tmp_path / RECORDING_ID).recording_id == RECORDING_ID
+
+
+def test_completed_partial_with_debug_staging_is_recovered(tmp_path: Path) -> None:
+    reader = create_recording(tmp_path)
+    partial = tmp_path / f".recording-{RECORDING_ID}.partial"
+    reader.directory.rename(partial)
+    (partial / ".imu-staging.csv").write_text(
+        "sensor_type,sequence,timestamp_ns,x,y,z,received_at_client_monotonic_ns\n",
+        encoding="utf-8",
     )
-    writer.video_path.write_bytes(b"recoverable-video")
-    writer.append_imu(_imu(0, 100))
-    writer.append_frame(_frame(0, 1_000))
-    writer.close_incomplete()
 
-    recovered = CaptureRecordingWriter.recover(tmp_path, RECORDING_ID)
-    recovered.append_frame(_frame(1, 2_000))
-    reader = recovered.finalize(ended_at_unix_ns=3_000)
-
-    assert reader.directory == tmp_path / RECORDING_ID
-    assert not (tmp_path / f".recording-{RECORDING_ID}.partial").exists()
-    assert [row.frame_index for row in reader.iter_frames()] == [0, 1]
+    assert recover_completed_recordings(tmp_path) == (RECORDING_ID,)
+    completed = tmp_path / RECORDING_ID
+    assert {path.name for path in completed.iterdir()} == {
+        "video.mp4",
+        "camera.csv",
+        "imu.csv",
+        "calibration.yaml",
+    }
 
 
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [
+        (lambda fields, rows: (fields[:-1], rows), "columns"),
         (
-            lambda fields, rows: ([field for field in fields if field != "mp4_pts"], rows),
-            "columns",
-        ),
-        (
-            lambda fields, rows: (fields, [{**rows[0], "mp4_pts": "not-an-int"}, rows[1]]),
-            "invalid data",
-        ),
-        (
-            lambda fields, rows: (fields, [rows[0], {**rows[1], "frame_index": "0"}]),
-            "duplicate or non-contiguous",
+            lambda fields, rows: (fields, [{**rows[0], "frame_idx": "1"}, *rows[1:]]),
+            "contiguous",
         ),
         (
             lambda fields, rows: (
                 fields,
-                [rows[0], {**rows[1], "recording_time_ns": rows[0]["recording_time_ns"]}],
+                [rows[0], {**rows[1], "rokid_timestamp_ns": rows[0]["rokid_timestamp_ns"]}],
             ),
-            "not strictly monotonic",
+            "must increase",
         ),
     ],
 )
-def test_reader_rejects_invalid_frame_csv(tmp_path: Path, mutator, message: str) -> None:
-    reader = _complete_recording(tmp_path)
-    _rewrite_frame_csv(reader.directory / "frames.csv", mutator)
+def test_reader_rejects_bad_camera_csv(tmp_path: Path, mutator, message: str) -> None:
+    reader = create_recording(tmp_path)
+    _rewrite_csv(reader.directory / "camera.csv", mutator)
 
     with pytest.raises(CaptureRecordingReadError, match=message):
-        CaptureRecordingReader.open(reader.directory, verify_hashes=False)
-
-
-def test_reader_rejects_artifact_hash_failure(tmp_path: Path) -> None:
-    reader = _complete_recording(tmp_path)
-    with reader.video_path.open("ab") as stream:
-        stream.write(b"tampered")
-
-    with pytest.raises(CaptureRecordingReadError, match="artifact size mismatch"):
         CaptureRecordingReader.open(reader.directory)
 
 
-def test_reader_rejects_bad_imu_types_even_without_hash_check(tmp_path: Path) -> None:
-    reader = _complete_recording(tmp_path)
-    path = reader.directory / "imu.csv"
-    text = path.read_text(encoding="utf-8").replace(",1.25,", ",nan,")
-    path.write_text(text, encoding="utf-8", newline="")
-
-    with pytest.raises(CaptureRecordingReadError, match="must be finite"):
-        CaptureRecordingReader.open(reader.directory, verify_hashes=False)
-
-
-def test_quality_counts_sequence_faults_without_rejecting_raw_samples(tmp_path: Path) -> None:
+@pytest.mark.parametrize("sequence", [0, 2])
+def test_imu_sequence_gaps_are_allowed(tmp_path: Path, sequence: int) -> None:
     writer = CaptureRecordingWriter.create(
         tmp_path,
         recording_id=RECORDING_ID,
-        countdown_started_at_unix_ns=100,
-        countdown_started_at_client_monotonic_ns=200,
+        video_profile=RecordingOutput(width=32, height=24, fps=10),
     )
-    writer.video_path.write_bytes(b"quality-video")
-    writer.append_frame(_frame(0, 1_000))
-    writer.append_imu(_imu(0, 1_100, sequence_number=4))
-    writer.append_imu(_imu(1, 1_200, sequence_number=6))
-    writer.append_imu(_imu(2, 1_300, sequence_number=6))
-    writer.append_imu(_imu(3, 1_400, sequence_number=3))
-    writer.append_frame(_frame(1, 2_000))
+    video_index = write_h264_video(writer.video_path)
+    frames = staged_camera_frames(video_index)
+    for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+        writer.append_imu(
+            StagedImuSample(
+                row=RecordingImuRow(
+                    sensor_type=sensor,
+                    sequence=sequence,
+                    timestamp_ns=frames[0].row.device_monotonic_ns - 1,
+                    x=0.0,
+                    y=0.0,
+                    z=0.0,
+                ),
+                received_at_client_monotonic_ns=frames[0].received_at_client_monotonic_ns,
+            )
+        )
+        writer.append_imu(
+            StagedImuSample(
+                row=RecordingImuRow(
+                    sensor_type=sensor,
+                    sequence=sequence + 2,
+                    timestamp_ns=frames[-1].row.device_monotonic_ns + 1,
+                    x=0.0,
+                    y=0.0,
+                    z=0.0,
+                ),
+                received_at_client_monotonic_ns=frames[-1].received_at_client_monotonic_ns,
+            )
+        )
 
-    reader = writer.finalize(ended_at_unix_ns=3_000, telemetry_queue_overflow_count=2)
+    assert writer.finalize(frames).summary().imu_sequence_gap_count == 2
 
-    assert reader.quality.status == "warn"
-    assert reader.quality.counts.imu_sequence_gap_count == 1
-    assert reader.quality.counts.imu_duplicate_sample_count == 1
-    assert reader.quality.counts.imu_out_of_order_sample_count == 1
-    assert reader.quality.counts.telemetry_queue_overflow_count == 2
+
+@pytest.mark.parametrize("field", ["sequence", "timestamp_ns"])
+def test_reader_rejects_duplicate_or_reversed_imu(tmp_path: Path, field: str) -> None:
+    reader = create_recording(tmp_path)
+
+    def duplicate(fields, rows):
+        same_sensor = [row for row in rows if row["sensor_type"] == "accelerometer"]
+        same_sensor[1][field] = same_sensor[0][field]
+        return fields, rows
+
+    _rewrite_csv(reader.directory / "imu.csv", duplicate)
+    with pytest.raises(CaptureRecordingReadError, match="IMU .* must increase"):
+        CaptureRecordingReader.open(reader.directory)
+
+
+def test_reader_rejects_missing_imu_coverage(tmp_path: Path) -> None:
+    reader = create_recording(tmp_path)
+
+    def move_after_camera(fields, rows):
+        for row in rows:
+            row["timestamp_ns"] = str(int(row["timestamp_ns"]) + 1_000_000_000)
+        return fields, rows
+
+    _rewrite_csv(reader.directory / "imu.csv", move_after_camera)
+    with pytest.raises(CaptureRecordingReadError, match="do not cover"):
+        CaptureRecordingReader.open(reader.directory)
+
+
+def test_reader_rejects_corrupt_video_bad_yaml_and_extra_files(tmp_path: Path) -> None:
+    first = create_recording(tmp_path, recording_id="a" * 32)
+    first.video_path.write_bytes(b"not-an-mp4")
+    with pytest.raises(CaptureRecordingReadError, match="video.mp4"):
+        CaptureRecordingReader.open(first.directory)
+
+    second = create_recording(tmp_path, recording_id="b" * 32)
+    (second.directory / "calibration.yaml").write_text("camera: [", encoding="utf-8")
+    with pytest.raises(CaptureRecordingReadError, match="calibration.yaml"):
+        CaptureRecordingReader.open(second.directory)
+
+    third = create_recording(tmp_path, recording_id="c" * 32)
+    (third.directory / "manifest.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(CaptureRecordingReadError, match="unexpected"):
+        CaptureRecordingReader.open(third.directory)
+
+
+def test_reader_rejects_decoded_frame_count_mismatch(tmp_path: Path) -> None:
+    reader = create_recording(tmp_path)
+
+    def drop_last_row(fields, rows):
+        return fields, rows[:-1]
+
+    _rewrite_csv(reader.directory / "camera.csv", drop_last_row)
+    with pytest.raises(CaptureRecordingReadError, match="frame count does not match"):
+        CaptureRecordingReader.open(reader.directory)
+
+
+def test_reader_rejects_calibration_resolution_mismatch(tmp_path: Path) -> None:
+    reader = create_recording(tmp_path)
+    path = reader.directory / "calibration.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    payload["camera"]["resolution"] = [64, 48]
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(CaptureRecordingReadError, match="dimensions do not match"):
+        CaptureRecordingReader.open(reader.directory)
+
+
+def test_disk_failure_cannot_publish_final_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = CaptureRecordingWriter.create(
+        tmp_path,
+        recording_id=RECORDING_ID,
+        video_profile=RecordingOutput(width=32, height=24, fps=10),
+    )
+    video_index = write_h264_video(writer.video_path)
+    frames = staged_camera_frames(video_index)
+    append_covering_imu(writer, frames)
+
+    def fail_replace(_source: Path, _destination: Path) -> None:
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr("ui.gateway.capture_recording.os.replace", fail_replace)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        writer.finalize(frames)
+
+    assert not (tmp_path / RECORDING_ID).exists()
+    assert (tmp_path / f".recording-{RECORDING_ID}.partial").is_dir()
+
+
+def test_failed_validation_keeps_partial_and_staging_data(tmp_path: Path) -> None:
+    writer = CaptureRecordingWriter.create(
+        tmp_path,
+        recording_id=RECORDING_ID,
+        video_profile=RecordingOutput(width=32, height=24, fps=10),
+    )
+    video_index = write_h264_video(writer.video_path, frame_count=1)
+    frames = staged_camera_frames(video_index)
+    append_covering_imu(writer, frames)
+    writer.video_path.write_bytes(b"corrupt")
+
+    with pytest.raises(CaptureRecordingError):
+        writer.finalize(frames)
+
+    partial = tmp_path / f".recording-{RECORDING_ID}.partial"
+    assert partial.is_dir()
+    assert (partial / ".imu-staging.csv").is_file()
+    assert not (tmp_path / RECORDING_ID).exists()

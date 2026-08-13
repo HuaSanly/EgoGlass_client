@@ -66,12 +66,12 @@ class RecordingCard(CardWidget):
         self.title_label.setToolTip(recording.recording_id)
         title_row.addWidget(self.title_label)
         title_row.addStretch(1)
-        self.hash_badge = (
-            InfoBadge.success("哈希通过", self)
-            if recording.hashes_verified
-            else InfoBadge.warning("哈希未复核", self)
+        self.protocol_badge = (
+            InfoBadge.success("协议通过", self)
+            if recording.protocol_validated
+            else InfoBadge.warning("协议失败", self)
         )
-        title_row.addWidget(self.hash_badge)
+        title_row.addWidget(self.protocol_badge)
         self.delete_button = TransparentToolButton(FluentIcon.DELETE, self)
         self.delete_button.setToolTip("删除该录制")
         self.delete_button.clicked.connect(
@@ -190,7 +190,7 @@ class RecordingLibraryView(QWidget):
                 item.duration_ns,
                 item.frame_count,
                 item.imu_sample_count,
-                item.hashes_verified,
+                item.protocol_validated,
             )
             for item in library.recordings
         )

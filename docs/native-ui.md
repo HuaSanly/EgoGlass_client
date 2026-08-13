@@ -31,12 +31,12 @@ filter, pose reset, head model, hand model, or spatial trajectory is loaded.
 
 The library shows one item per validated recording. Each item displays a video
 thumbnail, recorded time, duration, resolution, frame count, IMU row count,
-hash status, and delete action. Invalid and partial directories are excluded.
+protocol status, and delete action. Invalid and partial directories are excluded.
 
 Opening an item starts lightweight replay from `video.mp4`. The IMU cursor uses
-the same `recording_time_ns` as `frames.csv`, so accelerometer and gyroscope
-samples follow the displayed frame. Replay does not run algorithms or write
-derived output.
+`camera.csv.device_monotonic_ns` and `imu.csv.timestamp_ns`, so accelerometer
+and gyroscope samples follow the displayed frame. MP4 PTS are indexed only in
+memory. Replay does not run algorithms or write output.
 
 Deletion is available only for inactive recordings and targets the exact
 recording directory selected by its validated ID.
@@ -55,7 +55,7 @@ asyncio runtime thread
 bounded workers
   -> RGB conversion
   -> MP4 and CSV recording
-  -> recording finalization and hash validation
+  -> recording finalization and protocol validation
   -> lightweight replay decode
 ```
 

@@ -38,8 +38,8 @@ accelerometer and gyroscope samples. The recording client caches raw samples
 for plots and statistics only; it does not estimate orientation.
 
 `connection_session_id` remains an internal source identifier across WebRTC
-reconnects. It is present in CSV evidence but is never the recording primary
-key or a user-facing collection entity.
+reconnects. It is used only while matching frames and is never persisted in the
+four-file recording contract.
 
 ## One Recording Contract
 
@@ -48,38 +48,40 @@ directory:
 
 ```text
 <recordings-root>/<recording_id>/
-  manifest.json
   video.mp4
+  camera.csv
   imu.csv
-  frames.csv
-  quality.json
-  annotations/
-  derived/
+  calibration.yaml
 ```
 
 Writing occurs under `.recording-<recording_id>.partial/`. Completion validates
-the exact layout, strict CSV schemas, counts, video span, artifact sizes, and
-SHA256 hashes, then atomically renames the directory. A partial recording is
-never published by the library.
+the exact layout, strict CSV schemas, decoded frame count, clock monotonicity,
+IMU coverage, H.264 profile, and calibration resolution, then atomically
+renames the directory. A partial recording is never published by the library.
 
-`frames.csv` has one row per encoded MP4 frame and preserves:
+`camera.csv` has exactly one row per encoded MP4 frame:
 
-- `frame_index` and `recording_time_ns`
-- MP4 PTS and time base
-- internal connection ID
-- Glass3 frame ID and camera-start generation
-- Rokid SDK, Android elapsed-realtime, RTP, and client monotonic timestamps
-- metadata match status and match residual
+```csv
+frame_idx,frame_id,rokid_timestamp_ns,device_monotonic_ns
+```
+
+`rokid_timestamp_ns` is `captured_at_rokid_sdk_ms * 1_000_000`.
+`device_monotonic_ns` is the Glass3
+`received_at_elapsed_realtime_ns` callback timestamp.
 
 `imu.csv` preserves every raw accelerometer and gyroscope row accepted from
-countdown start through the last video frame. It includes the internal
-connection ID, sensor sequence, Android and client times, accuracy, XYZ values,
-and `inside_video_span`.
+countdown start through the last video frame:
 
-`quality.json` reports matched-frame coverage, IMU sensor counts, sequence
-gaps, duplicates, out-of-order rows, queue overflow, and timestamp mapping
-evidence. `manifest.json` records device/software provenance, time origin,
-media profile, row counts, sizes, and SHA256 values.
+```csv
+sensor_type,sequence,timestamp_ns,x,y,z
+```
+
+`timestamp_ns` is the unchanged Android `SensorEvent.timestamp`. Capture does
+not filter, interpolate, resample, or transform IMU coordinates.
+
+`calibration.yaml` contains a typed snapshot at the recorded resolution. Until
+device calibration is available, the client writes unit intrinsics, zero
+distortion, identity `T_cam_imu`, and null IMU noise values.
 
 The gateway never writes `telemetry.sqlite`, collection sessions, clips,
 processing jobs, or algorithm results.
@@ -87,10 +89,9 @@ processing jobs, or algorithm results.
 ## Lifecycle
 
 Start begins the server-authoritative countdown and opens the partial writer so
-countdown IMU is retained. The first encoded frame establishes the video-span
-start. Stop flushes the MP4 and indexes its actual PTS, closes the time window
-at the final video frame, validates all artifacts, and publishes atomically.
-WebRTC reception continues while finalization runs.
+countdown IMU is retained. Stop flushes the MP4, closes the IMU window at the
+last encoded frame, validates all artifacts, removes temporary matching data,
+and publishes atomically. WebRTC reception continues while finalization runs.
 
 An interrupted partial directory remains distinguishable from a completed
 recording. Recovery either validates and completes the exact partial contract
@@ -112,8 +113,9 @@ The recording-only API surface contains:
 - `GET /api/v1/recordings/library`
 - `DELETE /api/v1/recordings/{recording_id}`
 - `GET /api/v1/recordings/{recording_id}/video.mp4`
-- `GET /api/v1/recordings/{recording_id}/frames.csv`
+- `GET /api/v1/recordings/{recording_id}/camera.csv`
 - `GET /api/v1/recordings/{recording_id}/imu.csv`
+- `GET /api/v1/recordings/{recording_id}/calibration.yaml`
 
 There are no session, clip, perception, processing, VIO, annotation, or
 dataset endpoints.

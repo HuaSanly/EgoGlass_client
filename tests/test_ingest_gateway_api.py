@@ -64,10 +64,15 @@ class _RecordingRuntime:
         directory.mkdir(parents=True)
         self.video = directory / "video.mp4"
         self.imu = directory / "imu.csv"
-        self.frames = directory / "frames.csv"
+        self.camera = directory / "camera.csv"
+        self.calibration = directory / "calibration.yaml"
         self.video.write_bytes(b"video")
-        self.imu.write_text("sample_index\n", encoding="utf-8")
-        self.frames.write_text("frame_index\n", encoding="utf-8")
+        self.imu.write_text("sensor_type,sequence,timestamp_ns,x,y,z\n", encoding="utf-8")
+        self.camera.write_text(
+            "frame_idx,frame_id,rokid_timestamp_ns,device_monotonic_ns\n",
+            encoding="utf-8",
+        )
+        self.calibration.write_text("camera: {}\n", encoding="utf-8")
         self.state = RecordingState.READY
         self.deleted = False
 
@@ -98,7 +103,11 @@ class _RecordingRuntime:
     async def artifact_path(self, recording_id: str, artifact: str) -> Path | None:
         if recording_id != self.recording_id or self.deleted:
             return None
-        return {"imu.csv": self.imu, "frames.csv": self.frames}.get(artifact)
+        return {
+            "imu.csv": self.imu,
+            "camera.csv": self.camera,
+            "calibration.yaml": self.calibration,
+        }.get(artifact)
 
     async def close(self) -> None:
         return None
@@ -114,8 +123,8 @@ class _RecordingRuntime:
             fps=30,
             file_size_bytes=5,
             frame_count=1,
-            imu_sample_count=0,
-            hashes_verified=True,
+            imu_sample_count=1,
+            protocol_validated=True,
         )
 
 
@@ -130,7 +139,7 @@ def _client(tmp_path: Path) -> tuple[TestClient, _RecordingRuntime, _WebRtcRunti
     return TestClient(app), recording, webrtc
 
 
-def test_recording_api_exposes_flat_recordings_and_csv(tmp_path: Path) -> None:
+def test_recording_api_exposes_four_protocol_artifacts(tmp_path: Path) -> None:
     client, recording, _webrtc = _client(tmp_path)
     with client:
         library = client.get("/api/v1/recordings/library")
@@ -144,8 +153,14 @@ def test_recording_api_exposes_flat_recordings_and_csv(tmp_path: Path) -> None:
             f"/api/v1/recordings/{recording.recording_id}/imu.csv"
         ).status_code == 200
         assert client.get(
-            f"/api/v1/recordings/{recording.recording_id}/frames.csv"
+            f"/api/v1/recordings/{recording.recording_id}/camera.csv"
         ).status_code == 200
+        assert client.get(
+            f"/api/v1/recordings/{recording.recording_id}/calibration.yaml"
+        ).status_code == 200
+        assert client.get(
+            f"/api/v1/recordings/{recording.recording_id}/frames.csv"
+        ).status_code == 404
 
         deleted = client.delete(f"/api/v1/recordings/{recording.recording_id}")
         assert deleted.status_code == 200

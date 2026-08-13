@@ -228,17 +228,38 @@ def create_app(
             raise HTTPException(status_code=404, detail="recording not found")
         return FileResponse(media_path, media_type="video/mp4")
 
-    @app.get("/api/v1/recordings/{recording_id}/{artifact}")
-    async def recording_csv(
+    async def recording_artifact(
         request: Request,
         recording_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
-        artifact: Annotated[str, ApiPath(pattern=r"^(imu|frames)[.]csv$")],
+        artifact: str,
     ) -> FileResponse:
-        _require_loopback(request, viewer_allowed_hosts, "recording CSV")
+        _require_loopback(request, viewer_allowed_hosts, "recording artifact")
         artifact_path = await active_recording.artifact_path(recording_id, artifact)
         if artifact_path is None:
             raise HTTPException(status_code=404, detail="recording artifact not found")
-        return FileResponse(artifact_path, media_type="text/csv", filename=artifact)
+        media_type = "application/yaml" if artifact.endswith(".yaml") else "text/csv"
+        return FileResponse(artifact_path, media_type=media_type, filename=artifact)
+
+    @app.get("/api/v1/recordings/{recording_id}/camera.csv")
+    async def recording_camera_csv(
+        request: Request,
+        recording_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
+    ) -> FileResponse:
+        return await recording_artifact(request, recording_id, "camera.csv")
+
+    @app.get("/api/v1/recordings/{recording_id}/imu.csv")
+    async def recording_imu_csv(
+        request: Request,
+        recording_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
+    ) -> FileResponse:
+        return await recording_artifact(request, recording_id, "imu.csv")
+
+    @app.get("/api/v1/recordings/{recording_id}/calibration.yaml")
+    async def recording_calibration_yaml(
+        request: Request,
+        recording_id: Annotated[str, ApiPath(pattern=r"^[0-9a-f]{32}$")],
+    ) -> FileResponse:
+        return await recording_artifact(request, recording_id, "calibration.yaml")
 
     return app
 

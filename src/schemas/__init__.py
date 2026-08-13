@@ -1,10 +1,11 @@
 """Stable recording contracts shared by storage, API, and UI."""
 
 from .recording import (
-    CaptureRecordingManifest,
-    CaptureRecordingQualityReport,
-    FrameMetadataMatchStatus,
-    RecordingFrameRow,
+    CalibrationSnapshot,
+    CameraCalibration,
+    CameraFrameRow,
+    ImuCalibration,
+    ImuSensorType,
     RecordingImuRow,
     RecordingLibrary,
     RecordingOutput,
@@ -14,10 +15,11 @@ from .recording import (
 )
 
 __all__ = [
-    "CaptureRecordingManifest",
-    "CaptureRecordingQualityReport",
-    "FrameMetadataMatchStatus",
-    "RecordingFrameRow",
+    "CalibrationSnapshot",
+    "CameraCalibration",
+    "CameraFrameRow",
+    "ImuCalibration",
+    "ImuSensorType",
     "RecordingImuRow",
     "RecordingLibrary",
     "RecordingOutput",

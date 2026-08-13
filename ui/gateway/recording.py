@@ -13,16 +13,15 @@ from pathlib import Path
 from typing import Protocol
 
 from schemas.recording import (
-    CaptureDeviceProvenance,
-    CaptureRecordingProvenance,
-    FrameMetadataMatchStatus,
-    ImuSensorType,
-    RecordingFrameRow,
+    CameraFrameRow,
     RecordingImuRow,
     RecordingLibrary,
     RecordingOutput,
     RecordingState,
     RecordingStatus,
+)
+from schemas.recording import (
+    ImuSensorType as RecordingImuSensorType,
 )
 
 from .adapters.mp4_recorder import PyAvH264Mp4Recorder, RecordedVideoFrame
@@ -31,6 +30,9 @@ from .capture_recording import (
     CaptureRecordingError,
     CaptureRecordingReader,
     CaptureRecordingWriter,
+    StagedCameraFrame,
+    StagedImuSample,
+    recover_completed_recordings,
 )
 from .webrtc_matcher import FrameMetadataMatch
 from .webrtc_models import ImuCapabilities, ImuSample, VideoFrameMetadata
@@ -119,7 +121,6 @@ class RecordingRuntime:
         self._recording_id: str | None = None
         self._connection_session_id: str | None = None
         self._camera_start_generation: int | None = None
-        self._device_session_id: str | None = None
         self._countdown_started_at_unix_ns: int | None = None
         self._countdown_started_at_monotonic_ns: int | None = None
         self._recording_starts_at_unix_ms: int | None = None
@@ -133,7 +134,7 @@ class RecordingRuntime:
         self._countdown_task: asyncio.Task[None] | None = None
         self._monitor_task: asyncio.Task[None] | None = None
         self._telemetry_task: asyncio.Task[None] | None = None
-        self._telemetry_queue: asyncio.Queue[RecordingImuRow] | None = None
+        self._telemetry_queue: asyncio.Queue[StagedImuSample] | None = None
         self._telemetry_error: BaseException | None = None
         self._matches_by_pts: dict[int, FrameMetadataMatch] = {}
         self._recover_partial_directories()
@@ -167,18 +168,12 @@ class RecordingRuntime:
                 height=source.height,
                 fps=float(OUTPUT_FPS),
             )
-            provenance = CaptureRecordingProvenance(
-                device=CaptureDeviceProvenance(device_id=self._device_session_id)
-            )
             try:
                 writer = await asyncio.to_thread(
                     CaptureRecordingWriter.create,
                     self._root,
                     recording_id=recording_id,
                     video_profile=output,
-                    countdown_started_at_unix_ns=countdown_unix_ns,
-                    countdown_started_at_client_monotonic_ns=countdown_monotonic_ns,
-                    provenance=provenance,
                 )
             except Exception as error:
                 raise RecordingFailureError("recording workspace could not be created") from error
@@ -237,7 +232,7 @@ class RecordingRuntime:
         return None if reader is None else reader.video_path
 
     async def artifact_path(self, recording_id: str, artifact: str) -> Path | None:
-        if artifact not in {"imu.csv", "frames.csv"}:
+        if artifact not in {"camera.csv", "imu.csv", "calibration.yaml"}:
             return None
         reader = await asyncio.to_thread(self._reader_or_none, recording_id)
         return None if reader is None else reader.directory / artifact
@@ -287,8 +282,7 @@ class RecordingRuntime:
         device_session_id: str,
         observed_at_client_monotonic_ns: int,
     ) -> None:
-        del connection_session_id, observed_at_client_monotonic_ns
-        self._device_session_id = device_session_id
+        del connection_session_id, device_session_id, observed_at_client_monotonic_ns
 
     async def on_connection_state(
         self,
@@ -322,20 +316,16 @@ class RecordingRuntime:
             or connection_session_id != self._connection_session_id
         ):
             return
-        row = RecordingImuRow(
-            sample_index=self._imu_sample_count,
-            recording_time_ns=max(0, received_at_client_monotonic_ns - origin_ns),
-            connection_session_id=connection_session_id,
-            sensor_type=ImuSensorType(sample.sensor_type.value),
-            sequence_number=sample.sequence_number,
-            sensor_event_monotonic_ns=sample.sensor_event_monotonic_ns,
-            received_at_elapsed_realtime_ns=sample.received_at_elapsed_realtime_ns,
+        row = StagedImuSample(
+            row=RecordingImuRow(
+                sensor_type=RecordingImuSensorType(sample.sensor_type.value),
+                sequence=sample.sequence_number,
+                timestamp_ns=sample.sensor_event_monotonic_ns,
+                x=sample.values[0],
+                y=sample.values[1],
+                z=sample.values[2],
+            ),
             received_at_client_monotonic_ns=received_at_client_monotonic_ns,
-            accuracy=sample.accuracy,
-            x=sample.values[0],
-            y=sample.values[1],
-            z=sample.values[2],
-            inside_video_span=False,
         )
         try:
             queue.put_nowait(row)
@@ -457,18 +447,15 @@ class RecordingRuntime:
         if recorder.frames_received < 1 or len(frame_records) != recorder.frames_received:
             raise CaptureRecordingError("MP4 writer did not preserve every frame timestamp")
         await self._drain_telemetry()
+        if self._telemetry_queue_overflow_count:
+            raise CaptureRecordingError("IMU CSV queue overflowed during recording")
         writer = self._require_writer()
-        rows = self._frame_rows(frame_records)
-        for row in rows:
-            await asyncio.to_thread(writer.append_frame, row)
-        residual_ns = _timestamp_mapping_residual(rows)
+        rows = self._camera_frames(frame_records)
         reader = await asyncio.to_thread(
             writer.finalize,
-            ended_at_unix_ns=self._unix_clock_ns(),
-            telemetry_queue_overflow_count=self._telemetry_queue_overflow_count,
-            timestamp_mapping_residual_ns=residual_ns,
+            rows,
         )
-        self._recording_duration_ms = reader.manifest.duration_ns // 1_000_000
+        self._recording_duration_ms = reader.summary().duration_ns // 1_000_000
         self._clear_active()
         self._state = RecordingState.READY
         self._detail = "recording finalized"
@@ -525,22 +512,12 @@ class RecordingRuntime:
         if writer is not None:
             await asyncio.to_thread(writer.close_incomplete)
 
-    def _frame_rows(
+    def _camera_frames(
         self,
         records: Sequence[RecordedVideoFrame],
-    ) -> tuple[RecordingFrameRow, ...]:
-        origin_ns = self._countdown_started_at_monotonic_ns
-        connection_session_id = self._connection_session_id
-        if origin_ns is None or connection_session_id is None:
-            raise CaptureRecordingError("recording time origin is missing")
-        rows: list[RecordingFrameRow] = []
-        previous_recording_time = -1
+    ) -> tuple[StagedCameraFrame, ...]:
+        rows: list[StagedCameraFrame] = []
         for record in records:
-            recording_time_ns = max(
-                previous_recording_time + 1,
-                record.received_at_client_perf_counter_ns - origin_ns,
-            )
-            previous_recording_time = recording_time_ns
             match = (
                 self._matches_by_pts.get(record.source_frame_pts)
                 if record.source_frame_pts is not None
@@ -553,47 +530,30 @@ class RecordingRuntime:
             ):
                 match = None
             if match is None:
-                rows.append(
-                    RecordingFrameRow(
-                        frame_index=record.frame_index,
-                        recording_time_ns=recording_time_ns,
-                        mp4_pts=record.mp4_pts,
-                        mp4_time_base_num=record.mp4_time_base_num,
-                        mp4_time_base_den=record.mp4_time_base_den,
-                        connection_session_id=connection_session_id,
-                        received_at_client_monotonic_ns=(
-                            record.received_at_client_perf_counter_ns
-                        ),
-                        metadata_match_status=FrameMetadataMatchStatus.UNMATCHED,
-                    )
+                raise CaptureRecordingError(
+                    f"encoded frame {record.frame_index} has no matching Glass3 metadata"
                 )
-                continue
             metadata = match.metadata
+            if (
+                (metadata.width, metadata.height)
+                != (self._output.width, self._output.height)
+                or metadata.rotation_degrees != 0
+            ):
+                raise CaptureRecordingError(
+                    "camera dimensions or orientation changed during recording"
+                )
             rows.append(
-                RecordingFrameRow(
-                    frame_index=record.frame_index,
-                    recording_time_ns=recording_time_ns,
+                StagedCameraFrame(
+                    row=CameraFrameRow(
+                        frame_idx=record.frame_index,
+                        frame_id=metadata.frame_id,
+                        rokid_timestamp_ns=metadata.captured_at_rokid_sdk_ms * 1_000_000,
+                        device_monotonic_ns=metadata.received_at_elapsed_realtime_ns,
+                    ),
                     mp4_pts=record.mp4_pts,
                     mp4_time_base_num=record.mp4_time_base_num,
                     mp4_time_base_den=record.mp4_time_base_den,
-                    connection_session_id=connection_session_id,
-                    frame_id=metadata.frame_id,
-                    camera_start_generation=metadata.camera_start_generation,
-                    captured_at_rokid_sdk_ms=metadata.captured_at_rokid_sdk_ms,
-                    received_at_elapsed_realtime_ns=(
-                        metadata.received_at_elapsed_realtime_ns
-                    ),
-                    video_at_monotonic_ns=metadata.video_at_monotonic_ns,
-                    rtp_timestamp_90khz=metadata.rtp_timestamp_90khz,
-                    received_at_client_monotonic_ns=(
-                        record.received_at_client_perf_counter_ns
-                    ),
-                    metadata_match_status=(
-                        FrameMetadataMatchStatus.EXACT
-                        if match.timestamp_match_error_90khz == 0
-                        else FrameMetadataMatchStatus.WITHIN_TOLERANCE
-                    ),
-                    timestamp_match_error_90khz=match.timestamp_match_error_90khz,
+                    received_at_client_monotonic_ns=(record.received_at_client_perf_counter_ns),
                 )
             )
         return tuple(rows)
@@ -602,14 +562,10 @@ class RecordingRuntime:
         source = await self._source_provider()
         if source is None:
             raise RecordingUnavailableError("Glass3 video is not ready")
-        if (
-            min(source.width, source.height) <= 0
-            or max(source.width, source.height) > 8192
-            or source.width % 2
-            or source.height % 2
-        ):
+        if (source.width, source.height) != (640, 480):
             raise RecordingUnavailableError(
-                f"Glass3 video dimensions are invalid: {source.width}x{source.height}"
+                "Glass3 recording requires the 640x480 capture profile; "
+                f"received {source.width}x{source.height}"
             )
         if not _ID_PATTERN.fullmatch(source.connection_session_id):
             raise RecordingUnavailableError("Glass3 connection identifier is invalid")
@@ -703,30 +659,5 @@ class RecordingRuntime:
         self._matches_by_pts.clear()
 
     def _recover_partial_directories(self) -> None:
-        for directory in self._root.glob(".recording-*.partial"):
-            recording_id = directory.name.removeprefix(".recording-").removesuffix(
-                ".partial"
-            )
-            if not _ID_PATTERN.fullmatch(recording_id):
-                continue
-            try:
-                CaptureRecordingWriter.recover(self._root, recording_id).close_incomplete()
-            except Exception:
-                LOGGER.warning("invalid partial recording retained at %s", directory)
-
-
-def _timestamp_mapping_residual(rows: Sequence[RecordingFrameRow]) -> int | None:
-    matched = [row for row in rows if row.video_at_monotonic_ns is not None]
-    if len(matched) < 2:
-        return None
-    first = matched[0]
-    assert first.video_at_monotonic_ns is not None
-    residuals = [
-        abs(
-            (row.recording_time_ns - first.recording_time_ns)
-            - (row.video_at_monotonic_ns - first.video_at_monotonic_ns)
-        )
-        for row in matched[1:]
-        if row.video_at_monotonic_ns is not None
-    ]
-    return max(residuals, default=0)
+        for recording_id in recover_completed_recordings(self._root):
+            LOGGER.info("recovered completed recording %s", recording_id)
