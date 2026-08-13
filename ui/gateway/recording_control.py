@@ -52,6 +52,7 @@ class RecordingControlCoordinator:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._closed = False
         self._channel_open = False
+        self._last_published_status: RecordingControlStatus | None = None
         self._completion_refresh_pending = False
         webrtc.set_recording_control_callbacks(
             on_ready=self.channel_ready,
@@ -100,6 +101,7 @@ class RecordingControlCoordinator:
 
     async def channel_ready(self) -> None:
         self._channel_open = True
+        self._last_published_status = None
         LOGGER.info("recording-control-v1 channel is ready")
         status = await self._recording.status()
         await self._publish(status, None)
@@ -107,6 +109,7 @@ class RecordingControlCoordinator:
 
     async def channel_closed(self) -> None:
         self._channel_open = False
+        self._last_published_status = None
         LOGGER.info("recording-control-v1 channel is closed")
         self._cancel_heartbeat()
 
@@ -213,8 +216,12 @@ class RecordingControlCoordinator:
         command_id: str | None,
     ) -> RecordingControlStatus:
         control_status = self._map_status(status, command_id)
+        if control_status == self._last_published_status:
+            return control_status
         published = await self._webrtc.publish_recording_control_status(control_status)
-        if not published:
+        if published:
+            self._last_published_status = control_status
+        else:
             LOGGER.debug("recording-control-v1 status not delivered because channel is unavailable")
         return control_status
 

@@ -190,6 +190,9 @@ def test_open_channel_converges_from_unavailable_to_ready_when_source_arrives() 
         assert webrtc.statuses[0].state is RecordingControlState.UNAVAILABLE
         assert webrtc.statuses[-1].state is RecordingControlState.READY
 
+        await asyncio.sleep(0)
+        assert len(webrtc.statuses) == 2
+
         await coordinator.channel_closed()
         await coordinator.close()
 
