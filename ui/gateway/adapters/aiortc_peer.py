@@ -26,7 +26,9 @@ from .webrtc import (
 
 FRAME_METADATA_CHANNEL_LABEL = "frame-metadata-v1"
 STREAM_CONTROL_CHANNEL_LABEL = "stream-control-v1"
+RECORDING_CONTROL_CHANNEL_LABEL = "recording-control-v1"
 IMU_TELEMETRY_CHANNEL_LABEL = "imu-telemetry-experimental-v0"
+RECORDING_CONTROL_MAX_PAYLOAD_BYTES = 2048
 
 
 def lan_rtc_configuration() -> RTCConfiguration:
@@ -104,6 +106,9 @@ class AiortcPeer:
                 return
             if label == STREAM_CONTROL_CHANNEL_LABEL:
                 self._bind_control_channel(channel)
+                return
+            if label == RECORDING_CONTROL_CHANNEL_LABEL:
+                self._bind_recording_control_channel(channel)
                 return
             if label == IMU_TELEMETRY_CHANNEL_LABEL:
                 self._bind_imu_channel(channel)
@@ -246,6 +251,39 @@ class AiortcPeer:
 
         if imu_channel.is_open:
             self._schedule(self._callbacks.on_imu_channel_ready(imu_channel))
+
+    def _bind_recording_control_channel(self, channel: object) -> None:
+        if (
+            getattr(channel, "ordered", None) is not True
+            or getattr(channel, "maxRetransmits", None) is not None
+            or getattr(channel, "maxPacketLifeTime", None) is not None
+        ):
+            return
+        control_channel = AiortcControlChannel(channel)
+        on_ready = self._callbacks.on_recording_control_channel_ready
+        on_closed = self._callbacks.on_recording_control_channel_closed
+        on_command = self._callbacks.on_recording_control_command
+        if on_ready is None or on_closed is None or on_command is None:
+            return
+
+        @channel.on("open")  # type: ignore[attr-defined]
+        def on_open() -> None:
+            self._schedule(on_ready(control_channel))
+
+        @channel.on("close")  # type: ignore[attr-defined]
+        def on_close() -> None:
+            self._schedule(on_closed(control_channel))
+
+        @channel.on("message")  # type: ignore[attr-defined]
+        def on_message(message: str | bytes) -> None:
+            if (
+                isinstance(message, str)
+                and len(message.encode("utf-8")) <= RECORDING_CONTROL_MAX_PAYLOAD_BYTES
+            ):
+                self._schedule(on_command(control_channel, message))
+
+        if control_channel.is_open:
+            self._schedule(on_ready(control_channel))
 
     def _schedule(self, awaitable: Awaitable[None]) -> None:
         task = asyncio.create_task(awaitable)

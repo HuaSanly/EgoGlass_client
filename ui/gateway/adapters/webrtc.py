@@ -68,6 +68,15 @@ class WebRtcPeerCallbacks:
     on_imu_channel_ready: Callable[[WebRtcImuChannel], Awaitable[None]]
     on_imu_channel_closed: Callable[[WebRtcImuChannel], Awaitable[None]]
     on_imu_telemetry: Callable[[WebRtcImuChannel, str | bytes], Awaitable[None]]
+    on_recording_control_channel_ready: (
+        Callable[[WebRtcControlChannel], Awaitable[None]] | None
+    ) = None
+    on_recording_control_channel_closed: (
+        Callable[[WebRtcControlChannel], Awaitable[None]] | None
+    ) = None
+    on_recording_control_command: (
+        Callable[[WebRtcControlChannel, str | bytes], Awaitable[None]] | None
+    ) = None
 
 
 class WebRtcPeer(Protocol):

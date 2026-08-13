@@ -41,6 +41,14 @@ for plots and statistics only; it does not estimate orientation.
 reconnects. It is used only while matching frames and is never persisted in the
 four-file recording contract.
 
+The reliable ordered `recording-control-v1` channel carries wearer recording
+commands separately from camera control. Glass3 sends a strict
+`recording_control_command` after a temple double tap; the client serializes it
+with Qt and HTTP recording commands, starts the 640x480 stream when needed, and
+returns authoritative `recording_control_status` snapshots. Active countdown,
+recording, and finalization states are refreshed every 250 ms. Duplicate command
+IDs and events from replaced WebRTC peers cannot repeat a recording transition.
+
 ## One Recording Contract
 
 Each Start-to-Stop operation owns one 32-character `recording_id` and one

@@ -22,6 +22,7 @@ from ui.gateway.discovery import DISCOVERY_PORT, LanDiscoveryService
 from ui.gateway.imu_telemetry import ImuTelemetryPoint, ImuTelemetryRuntime
 from ui.gateway.live_frames import LiveFrame, LiveFrameBuffer
 from ui.gateway.recording import RecordingRuntime
+from ui.gateway.recording_control import RecordingControlCoordinator
 from ui.gateway.webrtc_models import StreamControlAction, StreamControlCommand
 from ui.gateway.webrtc_runtime import WebRtcSessionRuntime
 
@@ -66,6 +67,11 @@ class UnifiedRuntimeHost:
             recordings_root,
             lambda: self.webrtc.recording_source(),
         )
+        self.recording_control = RecordingControlCoordinator(
+            self.recording,
+            self.webrtc,
+            on_recording_completed=self._refresh_library,
+        )
         self.webrtc.set_capture_telemetry_sink(self.recording)
         self.discovery = (
             LanDiscoveryService(
@@ -80,6 +86,7 @@ class UnifiedRuntimeHost:
             webrtc_runtime=self.webrtc,
             discovery_service=self.discovery,
             recording_runtime=self.recording,
+            recording_coordinator=self.recording_control,
             live_frame_buffer=self.frame_buffer,
             imu_telemetry_runtime=self.imu_telemetry,
             recordings_root=recordings_root,
@@ -131,6 +138,7 @@ class UnifiedRuntimeHost:
             raise TimeoutError("EgoGlass runtime did not stop cleanly")
 
     async def _close_local_resources(self) -> None:
+        await self.recording_control.close()
         await self.recording.close()
         await self.webrtc.close()
         await self.frame_buffer.close()
@@ -205,13 +213,9 @@ class UnifiedRuntimeHost:
         )
 
     async def _request_recording(self, action: str) -> object:
-        if action == "start":
-            return await self.recording.start()
-        if action != "stop":
+        if action not in {"start", "stop"}:
             raise ValueError("recording action must be start or stop")
-        result = await self.recording.stop()
-        await self._refresh_library()
-        return result
+        return await self.recording_control.execute(action)
 
     async def _delete_recording(self, recording_id: str) -> RecordingLibrary:
         self._library = await self.recording.delete(recording_id)

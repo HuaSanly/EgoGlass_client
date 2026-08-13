@@ -10,6 +10,7 @@ from aiortc.mediastreams import MediaStreamError
 from ui.gateway.adapters.aiortc_peer import (
     FRAME_METADATA_CHANNEL_LABEL,
     IMU_TELEMETRY_CHANNEL_LABEL,
+    RECORDING_CONTROL_CHANNEL_LABEL,
     STREAM_CONTROL_CHANNEL_LABEL,
     AiortcPeer,
     AiortcVideoSource,
@@ -235,6 +236,48 @@ def test_unreliable_stream_control_channel_is_rejected() -> None:
             )
             await asyncio.sleep(0)
             assert ready_channels == []
+        finally:
+            await peer.close()
+
+    asyncio.run(scenario())
+
+
+def test_reliable_recording_control_channel_forwards_wearer_commands() -> None:
+    async def scenario() -> None:
+        ready: list[object] = []
+        commands: list[str | bytes] = []
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=ignore,
+            on_video_frame=ignore,
+            on_metadata=ignore,
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=ignore,
+            on_recording_control_channel_ready=lambda channel: append_async(ready, channel),
+            on_recording_control_channel_closed=ignore,
+            on_recording_control_command=lambda _channel, payload: append_async(
+                commands, payload
+            ),
+        )
+        peer = AiortcPeer(callbacks)
+        channel = FakeDataChannel(label=RECORDING_CONTROL_CHANNEL_LABEL)
+        try:
+            peer._peer.emit("datachannel", channel)
+            await asyncio.sleep(0)
+            assert len(ready) == 1
+            channel.emit("message", "{}")
+            channel.emit("message", b"{}")
+            channel.emit("message", "x" * 2049)
+            await asyncio.sleep(0)
+            assert commands == ["{}"]
         finally:
             await peer.close()
 

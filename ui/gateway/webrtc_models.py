@@ -55,6 +55,51 @@ class StreamControlStatus(BaseModel):
     detail: str | None = Field(default=None, max_length=256)
 
 
+class RecordingControlAction(StrEnum):
+    START = "start"
+    STOP = "stop"
+
+
+class RecordingControlState(StrEnum):
+    UNAVAILABLE = "unavailable"
+    READY = "ready"
+    STARTING_STREAM = "starting_stream"
+    COUNTDOWN = "countdown"
+    RECORDING = "recording"
+    FINALIZING = "finalizing"
+    ERROR = "error"
+
+
+class RecordingControlCommand(BaseModel):
+    """Strict command sent by the Glass3 wearer over recording-control-v1."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    message_type: Literal["recording_control_command"] = "recording_control_command"
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    action: RecordingControlAction
+    trigger: Literal["temple_double_tap"]
+    requested_at_elapsed_realtime_ns: int = Field(ge=0)
+
+
+class RecordingControlStatus(BaseModel):
+    """Authoritative recording state sent to the Glass3 HUD."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    message_type: Literal["recording_control_status"] = "recording_control_status"
+    command_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    state: RecordingControlState
+    recording_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    countdown_remaining_ms: int | None = Field(default=None, ge=0)
+    recording_duration_ms: int = Field(default=0, ge=0)
+    frame_count: int = Field(default=0, ge=0)
+    imu_sample_count: int = Field(default=0, ge=0)
+    detail: str | None = Field(default=None, max_length=256)
+
+
 class WebRtcOffer(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

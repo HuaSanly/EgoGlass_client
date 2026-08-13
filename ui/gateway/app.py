@@ -30,6 +30,7 @@ from .recording import (
     RecordingRuntime,
     RecordingUnavailableError,
 )
+from .recording_control import RecordingControlCoordinator
 from .webrtc_models import (
     ImuTelemetryStatus,
     StreamControlAction,
@@ -54,6 +55,7 @@ def create_app(
     webrtc_runtime: WebRtcSessionRuntime | None = None,
     discovery_service: LanDiscoveryService | None = None,
     recording_runtime: RecordingRuntime | None = None,
+    recording_coordinator: RecordingControlCoordinator | None = None,
     live_frame_buffer: LiveFrameBuffer | None = None,
     imu_telemetry_runtime: ImuTelemetryRuntime | None = None,
     *,
@@ -65,6 +67,11 @@ def create_app(
         recordings_root or Path("local-data/recordings"),
         lambda: active_webrtc.recording_source(),
     )
+    active_coordinator = recording_coordinator
+    if active_coordinator is None:
+        setter = getattr(active_webrtc, "set_recording_control_callbacks", None)
+        if callable(setter):
+            active_coordinator = RecordingControlCoordinator(active_recording, active_webrtc)
     active_webrtc.set_capture_telemetry_sink(active_recording)
     if live_frame_buffer is not None:
         active_webrtc.set_display_frame_sink(live_frame_buffer)
@@ -80,6 +87,8 @@ def create_app(
         finally:
             if discovery_service is not None:
                 await discovery_service.close()
+            if active_coordinator is not None:
+                await active_coordinator.close()
             await active_recording.close()
             await active_webrtc.close()
             if live_frame_buffer is not None:
@@ -96,6 +105,7 @@ def create_app(
     )
     app.state.webrtc_runtime = active_webrtc
     app.state.recording_runtime = active_recording
+    app.state.recording_coordinator = active_coordinator
     app.state.live_frame_buffer = live_frame_buffer
     app.state.imu_telemetry_runtime = imu_telemetry_runtime
     app.state.discovery_service = discovery_service
@@ -185,11 +195,13 @@ def create_app(
     ) -> RecordingStatus:
         _require_loopback(request, viewer_allowed_hosts, "recording")
         try:
-            return (
-                await active_recording.start()
-                if command.action == "start"
-                else await active_recording.stop()
-            )
+            if active_coordinator is None:
+                return (
+                    await active_recording.start()
+                    if command.action == "start"
+                    else await active_recording.stop()
+                )
+            return await active_coordinator.execute(command.action)
         except RecordingUnavailableError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except RecordingConflictError as error:

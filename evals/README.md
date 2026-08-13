@@ -11,3 +11,7 @@ The device lane records frame metadata coverage, IMU sample rate, sequence
 loss, timestamp residual, repeated Start/Stop isolation, startup time, memory,
 and imported modules. Synthetic evaluations remain deterministic and do not
 contact a Glass3.
+
+`test_wearer_recording_control.py` exercises repeated wearer start/stop commands
+through the same coordinator used by the Qt console and asserts one recording
+transition per unique command ID.

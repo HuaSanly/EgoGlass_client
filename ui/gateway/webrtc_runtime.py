@@ -6,7 +6,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -37,6 +37,8 @@ from .webrtc_models import (
     ImuSensorStatus,
     ImuSensorType,
     ImuTelemetryStatus,
+    RecordingControlCommand,
+    RecordingControlStatus,
     StreamControlCommand,
     StreamControlState,
     StreamControlStatus,
@@ -48,6 +50,7 @@ from .webrtc_models import (
 )
 
 IMU_MAX_PAYLOAD_BYTES = 16_384
+RECORDING_CONTROL_MAX_PAYLOAD_BYTES = 2_048
 RECORDING_FRAME_MAX_AGE_NS = 2_000_000_000
 LOGGER = logging.getLogger(__name__)
 
@@ -195,7 +198,37 @@ class WebRtcSessionRuntime:
             str, asyncio.Future[StreamControlStatus]
         ] = {}
         self._generation = 0
+        self._recording_control_on_ready: Callable[[], Awaitable[None]] | None = None
+        self._recording_control_on_closed: Callable[[], Awaitable[None]] | None = None
+        self._recording_control_on_command: Callable[
+            [RecordingControlCommand], Awaitable[None]
+        ] | None = None
         self._reset_state()
+
+    def set_recording_control_callbacks(
+        self,
+        *,
+        on_ready: Callable[[], Awaitable[None]],
+        on_closed: Callable[[], Awaitable[None]],
+        on_command: Callable[[RecordingControlCommand], Awaitable[None]],
+    ) -> None:
+        self._recording_control_on_ready = on_ready
+        self._recording_control_on_closed = on_closed
+        self._recording_control_on_command = on_command
+
+    async def publish_recording_control_status(
+        self,
+        status: RecordingControlStatus,
+    ) -> bool:
+        async with self._state_lock:
+            channel = self._recording_control_channel
+            if channel is None or not channel.is_open:
+                return False
+            try:
+                channel.send(status.model_dump_json())
+            except Exception:
+                return False
+            return True
 
     def set_capture_telemetry_sink(self, sink: CaptureTelemetrySink) -> None:
         self._capture_telemetry_sink = sink
@@ -400,12 +433,15 @@ class WebRtcSessionRuntime:
         async with self._session_lock:
             self._generation += 1
             generation = self._generation
+            recording_control_was_open = self._recording_control_channel is not None
             async with self._state_lock:
                 previous_session_id = self._session_id
                 self._fail_pending_control_locked(
                     StreamControlUnavailableError("WebRTC session was replaced")
                 )
                 self._reset_state()
+            if recording_control_was_open and self._recording_control_on_closed is not None:
+                await self._recording_control_on_closed()
             if previous_session_id is not None and self._capture_telemetry_sink is not None:
                 await self._emit_capture_event(
                     "on_connection_state",
@@ -440,6 +476,15 @@ class WebRtcSessionRuntime:
                 ),
                 on_imu_telemetry=lambda channel, payload: self._on_imu_telemetry(
                     generation, channel, payload
+                ),
+                on_recording_control_channel_ready=lambda channel: (
+                    self._on_recording_control_channel_ready(generation, channel)
+                ),
+                on_recording_control_channel_closed=lambda channel: (
+                    self._on_recording_control_channel_closed(generation, channel)
+                ),
+                on_recording_control_command=lambda channel, payload: (
+                    self._on_recording_control_command(generation, channel, payload)
                 ),
             )
             peer = self._peer_factory(callbacks)
@@ -497,17 +542,21 @@ class WebRtcSessionRuntime:
     async def close(self) -> None:
         async with self._session_lock:
             self._generation += 1
+            recording_control_was_open = self._recording_control_channel is not None
             async with self._state_lock:
                 session_id = self._session_id
                 self._fail_pending_control_locked(
                     StreamControlUnavailableError("WebRTC session closed")
                 )
                 self._control_channel = None
+                self._recording_control_channel = None
                 self._control_status = StreamControlStatus(
                     state=StreamControlState.UNAVAILABLE,
                     detail="WebRTC session is closed",
                 )
                 self._set_imu_unavailable_locked()
+            if recording_control_was_open and self._recording_control_on_closed is not None:
+                await self._recording_control_on_closed()
             if session_id is not None and self._capture_telemetry_sink is not None:
                 await self._emit_capture_event(
                     "on_connection_state",
@@ -526,6 +575,7 @@ class WebRtcSessionRuntime:
     async def _on_connection_state(self, generation: int, state: str) -> None:
         if generation != self._generation:
             return
+        recording_control_closed = False
         async with self._state_lock:
             session_id = self._session_id
             self._connection_state = state
@@ -541,6 +591,10 @@ class WebRtcSessionRuntime:
                 self._last_error = "WebRTC peer connection failed"
                 self._set_control_unavailable_locked("WebRTC peer connection failed")
                 self._set_imu_unavailable_locked()
+                recording_control_closed = self._recording_control_channel is not None
+                self._recording_control_channel = None
+        if recording_control_closed and self._recording_control_on_closed is not None:
+            await self._recording_control_on_closed()
         if session_id is not None and self._capture_telemetry_sink is not None:
             await self._emit_capture_event(
                 "on_connection_state",
@@ -747,6 +801,60 @@ class WebRtcSessionRuntime:
                 else ImuChannelState.READY
             )
 
+    async def _on_recording_control_channel_ready(
+        self,
+        generation: int,
+        channel: WebRtcControlChannel,
+    ) -> None:
+        if generation != self._generation or not channel.is_open:
+            return
+        async with self._state_lock:
+            if generation != self._generation or not channel.is_open:
+                return
+            self._recording_control_channel = channel
+        if self._recording_control_on_ready is not None:
+            await self._recording_control_on_ready()
+
+    async def _on_recording_control_channel_closed(
+        self,
+        generation: int,
+        channel: WebRtcControlChannel,
+    ) -> None:
+        if generation != self._generation:
+            return
+        notify = False
+        async with self._state_lock:
+            if self._recording_control_channel is channel:
+                self._recording_control_channel = None
+                notify = True
+        if notify and self._recording_control_on_closed is not None:
+            await self._recording_control_on_closed()
+
+    async def _on_recording_control_command(
+        self,
+        generation: int,
+        channel: WebRtcControlChannel,
+        payload: str | bytes,
+    ) -> None:
+        if generation != self._generation:
+            return
+        try:
+            if isinstance(payload, bytes):
+                raise ValueError("binary recording control payloads are unsupported")
+            if len(payload.encode("utf-8")) > RECORDING_CONTROL_MAX_PAYLOAD_BYTES:
+                raise ValueError("recording control payload too large")
+            raw = payload
+            command = RecordingControlCommand.model_validate_json(raw)
+        except (UnicodeError, ValueError, ValidationError):
+            return
+        async with self._state_lock:
+            current = (
+                generation == self._generation
+                and self._recording_control_channel is channel
+            )
+        if current and self._recording_control_on_command is not None:
+            await self._recording_control_on_command(command)
+
     async def _on_imu_channel_closed(
         self,
         generation: int,
@@ -913,6 +1021,7 @@ class WebRtcSessionRuntime:
             detail="control channel is not ready",
         )
         self._imu_channel: WebRtcImuChannel | None = None
+        self._recording_control_channel: WebRtcControlChannel | None = None
         self._imu_channel_state = ImuChannelState.UNAVAILABLE
         self._imu_messages_received = 0
         self._imu_capabilities_received = 0
