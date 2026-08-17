@@ -187,6 +187,57 @@ def imu_sample_json(
     )
 
 
+def test_imu_lifecycle_sink_receives_channel_and_rejection_events() -> None:
+    peers: list[FakePeer] = []
+    events: list[tuple[str, str]] = []
+
+    class LifecycleSink:
+        async def on_imu_channel_ready(self, connection_session_id: str) -> None:
+            events.append(("ready", connection_session_id))
+
+        async def on_imu_channel_closed(self, connection_session_id: str) -> None:
+            events.append(("closed", connection_session_id))
+
+        async def on_imu_message_rejected(self, connection_session_id: str) -> None:
+            events.append(("rejected", connection_session_id))
+
+    def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
+        peer = FakePeer(callbacks)
+        peers.append(peer)
+        return peer
+
+    async def scenario() -> None:
+        runtime = WebRtcSessionRuntime(
+            TOKEN,
+            factory,
+            imu_channel_lifecycle_sink=LifecycleSink(),
+        )
+        answer = await runtime.accept_offer(offer(), TOKEN)
+        channel = FakeImuChannel()
+        await peers[0].callbacks.on_imu_channel_ready(channel)
+        await peers[0].callbacks.on_imu_telemetry(channel, "{}")
+        await peers[0].callbacks.on_imu_channel_closed(channel)
+
+        assert events == [
+            ("ready", answer.session_id),
+            ("rejected", answer.session_id),
+            ("closed", answer.session_id),
+        ]
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_imu_lifecycle_protocol_does_not_replace_capture_contract() -> None:
+    from ui.gateway.webrtc_runtime import CaptureTelemetrySink, ImuChannelLifecycleSink
+
+    assert "on_imu_sample" in CaptureTelemetrySink.__dict__
+    assert "on_connection_state" in CaptureTelemetrySink.__dict__
+    assert "on_imu_channel_ready" not in CaptureTelemetrySink.__dict__
+    assert "on_imu_channel_ready" in ImuChannelLifecycleSink.__dict__
+    assert "on_imu_sample" not in ImuChannelLifecycleSink.__dict__
+
+
 def test_authenticated_session_receives_and_matches_video_metadata() -> None:
     peers: list[FakePeer] = []
     now_ns = 1_000_000_000

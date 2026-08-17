@@ -71,6 +71,7 @@ def test_only_recording_configuration_and_operator_scripts_remain() -> None:
         "benchmark_native_texture.py",
         "inspect-recording.py",
         "setup_client.ps1",
+        "start-imu-calibration.ps1",
         "start-client.ps1",
     }
 

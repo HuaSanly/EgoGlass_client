@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 egoglass-client = "ui.app:main"
 egoglass-ingest-gateway = "ui.gateway.app:main"
+egoglass-record-imu = "ui.imu_calibration.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [

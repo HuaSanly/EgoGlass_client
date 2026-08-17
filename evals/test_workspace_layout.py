@@ -24,6 +24,7 @@ def test_workspace_manifest_builds_every_client_package_once() -> None:
     assert set(scripts) == {
         "egoglass-client",
         "egoglass-ingest-gateway",
+        "egoglass-record-imu",
     }
     assert all("egoglass_" not in target for target in scripts.values())
 

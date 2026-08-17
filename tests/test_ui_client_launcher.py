@@ -2,6 +2,7 @@ from pathlib import Path
 
 CLIENT_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = CLIENT_ROOT / "scripts" / "start-client.ps1"
+IMU_LAUNCHER = CLIENT_ROOT / "scripts" / "start-imu-calibration.ps1"
 
 
 def test_workspace_launcher_runs_one_unified_native_process() -> None:
@@ -34,3 +35,14 @@ def test_workspace_launcher_uses_ignored_local_recording_directory() -> None:
     assert "$recordingsDirectory = Join-Path $repositoryRoot 'local-data\\recordings'" in script
     assert "New-Item -ItemType Directory -Force -Path $recordingsDirectory" in script
     assert "local-data/" in ignore
+
+
+def test_imu_calibration_launcher_is_headless_and_requires_a_capture_mode() -> None:
+    script = IMU_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "Mandatory = $true, ParameterSetName = 'Hours'" in script
+    assert "Mandatory = $true, ParameterSetName = 'UntilInterrupted'" in script
+    assert "-m', 'ui.imu_calibration.app'" in script
+    assert "local-data\\imu-calibration" in script
+    assert "-DurationHours" not in script
+    assert "start-client.ps1" not in script

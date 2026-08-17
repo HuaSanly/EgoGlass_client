@@ -120,6 +120,14 @@ class CaptureTelemetrySink(Protocol):
     ) -> None: ...
 
 
+class ImuChannelLifecycleSink(Protocol):
+    async def on_imu_channel_ready(self, connection_session_id: str) -> None: ...
+
+    async def on_imu_channel_closed(self, connection_session_id: str) -> None: ...
+
+    async def on_imu_message_rejected(self, connection_session_id: str) -> None: ...
+
+
 class DecodedFrameSink(Protocol):
     """Receives decoded frames after ingest state has been updated."""
 
@@ -176,6 +184,7 @@ class WebRtcSessionRuntime:
         capture_telemetry_sink: CaptureTelemetrySink | None = None,
         display_frame_sink: DecodedFrameSink | None = None,
         display_imu_sink: ImuSampleSink | None = None,
+        imu_channel_lifecycle_sink: ImuChannelLifecycleSink | None = None,
     ) -> None:
         if len(pairing_token) < 16:
             raise ValueError("pairing_token must contain at least 16 characters")
@@ -189,6 +198,7 @@ class WebRtcSessionRuntime:
         self._capture_telemetry_sink = capture_telemetry_sink
         self._display_frame_sink = display_frame_sink
         self._display_imu_sink = display_imu_sink
+        self._imu_channel_lifecycle_sink = imu_channel_lifecycle_sink
         self._session_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._control_command_lock = asyncio.Lock()
@@ -242,6 +252,11 @@ class WebRtcSessionRuntime:
         """Attach the bounded native raw-telemetry consumer."""
 
         self._display_imu_sink = sink
+
+    def set_imu_channel_lifecycle_sink(self, sink: ImuChannelLifecycleSink | None) -> None:
+        """Attach an optional consumer for IMU data-channel lifecycle events."""
+
+        self._imu_channel_lifecycle_sink = sink
 
     async def status(self) -> WebRtcStatus:
         receiver_stats = WebRtcReceiverStats()
@@ -800,6 +815,12 @@ class WebRtcSessionRuntime:
                 if self._imu_samples_received > 0
                 else ImuChannelState.READY
             )
+            session_id = self._session_id
+        if session_id is not None and self._imu_channel_lifecycle_sink is not None:
+            try:
+                await self._imu_channel_lifecycle_sink.on_imu_channel_ready(session_id)
+            except Exception:
+                LOGGER.exception("IMU channel lifecycle sink rejected ready event")
 
     async def _on_recording_control_channel_ready(
         self,
@@ -865,6 +886,14 @@ class WebRtcSessionRuntime:
         async with self._state_lock:
             if generation == self._generation and self._imu_channel is channel:
                 self._set_imu_unavailable_locked()
+                session_id = self._session_id
+            else:
+                session_id = None
+        if session_id is not None and self._imu_channel_lifecycle_sink is not None:
+            try:
+                await self._imu_channel_lifecycle_sink.on_imu_channel_closed(session_id)
+            except Exception:
+                LOGGER.exception("IMU channel lifecycle sink rejected closed event")
 
     async def _on_imu_telemetry(
         self,
@@ -901,10 +930,11 @@ class WebRtcSessionRuntime:
             self._imu_messages_received += 1
             if malformed or message is None:
                 self._imu_malformed_messages += 1
-                return
-            if isinstance(message, ImuCapabilities):
+                session_id = self._session_id
+            elif isinstance(message, ImuCapabilities):
                 self._imu_capabilities_received += 1
                 self._imu_capabilities = message
+                session_id = self._session_id
             else:
                 self._imu_samples_received += 1
                 self._imu_channel_state = ImuChannelState.RECEIVING
@@ -940,7 +970,14 @@ class WebRtcSessionRuntime:
                     else max(accumulator.max_event_to_callback_delta_ns, delta_ns)
                 )
                 accumulator.last_sample = message
-            session_id = self._session_id
+                session_id = self._session_id
+        if malformed or message is None:
+            if session_id is not None and self._imu_channel_lifecycle_sink is not None:
+                try:
+                    await self._imu_channel_lifecycle_sink.on_imu_message_rejected(session_id)
+                except Exception:
+                    LOGGER.exception("IMU channel lifecycle sink rejected malformed event")
+            return
         if session_id is None or received_at_ns is None:
             return
         if isinstance(message, ImuCapabilities):
