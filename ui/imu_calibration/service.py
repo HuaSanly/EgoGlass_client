@@ -57,6 +57,7 @@ class ImuCalibrationService(ImuChannelLifecycleSink):
         self._stream_stop_sent = False
         self._connection_id: str | None = None
         self._last_sample_at_ns: int | None = None
+        self._waiting_samples_since_ns: int | None = None
         self._capture_started_at_ns: int | None = None
         self._error: str | None = None
         self._done = asyncio.Event()
@@ -130,6 +131,7 @@ class ImuCalibrationService(ImuChannelLifecycleSink):
             if self.phase is CapturePhase.FAILED:
                 return
             self.phase = CapturePhase.WAITING_SAMPLES
+            self._waiting_samples_since_ns = time.perf_counter_ns()
         except Exception as error:
             await self.fail(f"failed to stop video stream: {error}")
 
@@ -152,6 +154,7 @@ class ImuCalibrationService(ImuChannelLifecycleSink):
                 self.writer.start()
                 self.phase = CapturePhase.CAPTURING
                 self._capture_started_at_ns = time.perf_counter_ns()
+                self._waiting_samples_since_ns = None
                 self._started.set()
             self.writer.append(sample)
             self._last_sample_at_ns = time.perf_counter_ns()
@@ -245,6 +248,16 @@ class ImuCalibrationService(ImuChannelLifecycleSink):
                 > timeout_seconds * 1_000_000_000
             ):
                 await self.fail(f"no IMU sample received for {timeout_seconds:g} seconds")
+                return
+            if (
+                self.phase is CapturePhase.WAITING_SAMPLES
+                and self._waiting_samples_since_ns is not None
+                and time.perf_counter_ns() - self._waiting_samples_since_ns
+                > timeout_seconds * 1_000_000_000
+            ):
+                await self.fail(
+                    f"no IMU sample received within {timeout_seconds:g} seconds after video stopped"
+                )
                 return
 
     async def _wait_for_stream_control(self, timeout_seconds: float = 5.0) -> None:

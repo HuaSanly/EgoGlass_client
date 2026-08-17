@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,10 @@ from ui.gateway.webrtc_models import (
     StreamControlState,
     StreamControlStatus,
     WebRtcAnswer,
+)
+from ui.imu_calibration.adb_device import (
+    AdbDevicePreparationError,
+    AdbGlassController,
 )
 from ui.imu_calibration.app import create_app
 from ui.imu_calibration.service import CapturePhase, ImuCalibrationService
@@ -306,6 +311,101 @@ def test_sample_inactivity_watchdog_fails_and_removes_partial(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
+def test_first_sample_timeout_fails_instead_of_waiting_forever(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = FakeRuntime()
+        service = ImuCalibrationService(  # type: ignore[arg-type]
+            runtime,
+            tmp_path,
+            capture_id=CAPTURE_ID,
+        )
+        await service.on_connection_started(CONNECTION_ID, "device", 1)
+        await service.on_imu_capabilities(CONNECTION_ID, complete_capabilities(), 2)
+
+        await service.watchdog(timeout_seconds=0.01)
+
+        assert service.phase is CapturePhase.FAILED
+        assert service.status().error == (
+            "no IMU sample received within 0.01 seconds after video stopped"
+        )
+        assert not service.writer.partial_dir.exists()
+
+    asyncio.run(scenario())
+
+
+def test_adb_controller_rejects_cross_subnet_before_mutating_device() -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def run(command: Sequence[str]) -> str:
+        commands.append(tuple(command))
+        return "15: wlan0    inet 192.168.3.45/24 brd 192.168.3.255 scope global wlan0\n"
+
+    controller = AdbGlassController(
+        "glass-1",
+        command_runner=run,
+        route_resolver=lambda _remote: "192.168.5.7",
+    )
+
+    with pytest.raises(AdbDevicePreparationError, match="not on the same IPv4 subnet"):
+        controller.preflight()
+
+    assert commands == [
+        ("adb", "-s", "glass-1", "shell", "ip", "-4", "-o", "addr", "show", "dev", "wlan0")
+    ]
+
+
+def test_adb_controller_launches_after_preflight_and_restores_power_setting() -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def run(command: Sequence[str]) -> str:
+        commands.append(tuple(command))
+        if command[-7:] == ("ip", "-4", "-o", "addr", "show", "dev", "wlan0"):
+            return "15: wlan0    inet 192.168.5.5/24 scope global wlan0\n"
+        if command[-4:] == (
+            "settings",
+            "get",
+            "global",
+            "stay_on_while_plugged_in",
+        ):
+            return "0\n"
+        return ""
+
+    controller = AdbGlassController(
+        "glass-1",
+        command_runner=run,
+        route_resolver=lambda _remote: "192.168.5.7",
+    )
+
+    status = controller.preflight()
+    controller.prepare_and_launch()
+    controller.restore()
+
+    assert str(status.device_network) == "192.168.5.0/24"
+    assert status.client_address.compressed == "192.168.5.7"
+    assert (
+        "adb",
+        "-s",
+        "glass-1",
+        "shell",
+        "settings",
+        "put",
+        "global",
+        "stay_on_while_plugged_in",
+        "2",
+    ) in commands
+    assert commands[-1] == (
+        "adb",
+        "-s",
+        "glass-1",
+        "shell",
+        "settings",
+        "put",
+        "global",
+        "stay_on_while_plugged_in",
+        "0",
+    )
+
+
 @pytest.mark.parametrize("failure", ["disconnect", "channel", "malformed"])
 def test_service_failure_discards_partial(tmp_path: Path, failure: str) -> None:
     async def scenario() -> None:
@@ -357,3 +457,12 @@ def test_capture_module_does_not_import_qt_or_recording_control() -> None:
     source = "\n".join(path.read_text(encoding="utf-8") for path in source_root.glob("*.py"))
     assert "PyQt" not in source
     assert "recording_control" not in source
+
+
+def test_powershell_launcher_auto_prepares_one_adb_device() -> None:
+    launcher = (Path(__file__).parents[1] / "scripts" / "start-imu-calibration.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "--adb-serial" in launcher
+    assert "Multiple ADB devices are connected" in launcher
+    assert "DisableAdbPreparation" in launcher

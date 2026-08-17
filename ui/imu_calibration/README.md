@@ -12,6 +12,11 @@ does not create Qt widgets, video recordings, or wearer recording controls.
 4. Batch raw accel/gyro rows through a bounded writer queue.
 5. Flush, fsync, validate both streams, and atomically publish `imu.csv`.
 
+The PowerShell launcher automatically uses a single connected ADB Glass3 to
+verify that both machines share one IPv4 subnet, keep the device awake while it
+is USB-powered, and restart the glasses app after the gateway is listening.
+The previous Android stay-awake setting is restored on exit.
+
 Connection replacement, channel closure, malformed telemetry, non-monotonic
 samples, inactivity, backpressure, and disk errors fail the capture and remove
 the owned partial directory. Configuration is supplied exclusively through the

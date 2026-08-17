@@ -8,7 +8,9 @@ param(
     [int]$IngestPort = 8770,
     [int]$DiscoveryPort = 8771,
     [string]$EnvironmentName = 'egoglass',
-    [string]$OutputRoot = ''
+    [string]$OutputRoot = '',
+    [string]$AdbSerial = '',
+    [switch]$DisableAdbPreparation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +36,23 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 }
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $arguments = @('-m', 'ui.imu_calibration.app', '--port', $IngestPort, '--discovery-port', $DiscoveryPort, '--output-root', $OutputRoot)
+if (-not $DisableAdbPreparation) {
+    $adb = Get-Command adb -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace($AdbSerial)) {
+        if ($null -eq $adb) { throw 'adb is required when -AdbSerial is supplied' }
+    } elseif ($null -ne $adb) {
+        $AdbSerials = @(adb devices | Select-Object -Skip 1 | ForEach-Object {
+            if ($_ -match '^([^\s]+)\s+device$') { $Matches[1] }
+        })
+        if ($AdbSerials.Count -gt 1) {
+            throw 'Multiple ADB devices are connected. Select the Glass3 with -AdbSerial.'
+        }
+        if ($AdbSerials.Count -eq 1) { $AdbSerial = $AdbSerials[0] }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($AdbSerial)) {
+        $arguments += @('--adb-serial', $AdbSerial)
+    }
+}
 if ($UntilInterrupted) { $arguments += '--until-interrupted' }
 else { $arguments += @('--duration-seconds', [string]($DurationHours * 3600)) }
 

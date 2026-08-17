@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from ui.gateway.webrtc_models import ImuSample, ImuSensorType
+from ui.imu_calibration.adb_device import AdbDevicePreparationError, AdbGlassController
 from ui.imu_calibration.writer import ImuCaptureWriter
 
 CAPTURE_ID = "c" * 32
@@ -54,3 +58,24 @@ def test_three_hour_imu_capture_writes_all_2_16_million_rows(tmp_path: Path) -> 
     assert writer.stats.gyroscope_rate_hz == 100.0
     assert maximum_queue_size <= 8192
     assert {path.name for path in output.parent.iterdir()} == {"imu.csv"}
+
+
+def test_cross_subnet_preflight_has_zero_device_side_effects() -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def run(command: Sequence[str]) -> str:
+        commands.append(tuple(command))
+        return "15: wlan0    inet 10.20.30.40/24 scope global wlan0\n"
+
+    controller = AdbGlassController(
+        "eval-glass",
+        command_runner=run,
+        route_resolver=lambda _remote: "10.20.31.8",
+    )
+
+    with pytest.raises(AdbDevicePreparationError):
+        controller.preflight()
+
+    assert len(commands) == 1
+    assert "settings" not in commands[0]
+    assert "force-stop" not in commands[0]

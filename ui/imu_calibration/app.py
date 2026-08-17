@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import secrets
+import sys
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from ui.gateway.discovery import DISCOVERY_PORT, LanDiscoveryService
 from ui.gateway.webrtc_models import WebRtcAnswer, WebRtcOffer
 from ui.gateway.webrtc_runtime import PairingTokenError, WebRtcSessionError, WebRtcSessionRuntime
 
+from .adb_device import AdbDevicePreparationError, AdbGlassController
 from .service import ImuCalibrationService
 
 
@@ -70,6 +72,14 @@ def create_app(
 
 
 async def _run(args: argparse.Namespace) -> int:
+    adb_controller = AdbGlassController(args.adb_serial) if args.adb_serial is not None else None
+    if adb_controller is not None:
+        network = await asyncio.to_thread(adb_controller.preflight)
+        print(
+            f"ADB Glass3 ready: serial={adb_controller.serial} "
+            f"glasses={network.device_address} client={network.client_address}",
+            flush=True,
+        )
     pairing_token = args.pairing_token or secrets.token_urlsafe(24)
     runtime = WebRtcSessionRuntime(pairing_token)
     service = ImuCalibrationService(runtime, args.output_root)
@@ -96,6 +106,9 @@ async def _run(args: argparse.Namespace) -> int:
                 await server_task
                 raise RuntimeError("IMU capture gateway stopped during startup")
             await asyncio.sleep(0.01)
+        if adb_controller is not None:
+            await asyncio.to_thread(adb_controller.prepare_and_launch)
+            print("ADB Glass3 launched and held awake over USB", flush=True)
         await service.wait_until_started_or_done()
         if service.phase.value == "failed":
             print(f"IMU capture failed: {service.status().error}", flush=True)
@@ -133,6 +146,11 @@ async def _run(args: argparse.Namespace) -> int:
             server_watchdog_task,
             return_exceptions=True,
         )
+        if adb_controller is not None:
+            try:
+                await asyncio.to_thread(adb_controller.restore)
+            except AdbDevicePreparationError as error:
+                print(f"Warning: failed to restore Glass3 power setting: {error}", file=sys.stderr)
 
 
 async def _report(service: ImuCalibrationService, duration: float | None) -> None:
@@ -177,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8770)
     parser.add_argument("--discovery-port", type=int, default=DISCOVERY_PORT)
     parser.add_argument("--pairing-token", default=os.environ.get("EGOGLASS_PAIRING_TOKEN"))
+    parser.add_argument("--adb-serial")
     parser.add_argument("--disable-discovery", action="store_true")
     parser.add_argument("--output-root", type=Path, default=Path("local-data/imu-calibration"))
     args = parser.parse_args(argv)
@@ -184,6 +203,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--pairing-token must contain at least 16 characters")
     try:
         return asyncio.run(_run(args))
+    except AdbDevicePreparationError as error:
+        print(f"IMU capture preflight failed: {error}", file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         return 130
 
