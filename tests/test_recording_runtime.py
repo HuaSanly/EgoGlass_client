@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from fractions import Fraction
 from pathlib import Path
 
+import av
 import pytest
+from aiortc import MediaStreamError
 
 from tests.recording_support import write_h264_video
 from ui.gateway.adapters.mp4_recorder import RecordedVideoFrame
 from ui.gateway.adapters.webrtc import WebRtcVideoRecordingSource
 from ui.gateway.recording import (
     COUNTDOWN_SECONDS,
+    MetadataMatchedVideoTrack,
     RecordingFailureError,
     RecordingRuntime,
     RecordingUnavailableError,
@@ -38,6 +42,19 @@ class _Countdown:
         assert seconds == COUNTDOWN_SECONDS
         self.started.set()
         await self.release.wait()
+
+
+class _FiniteVideoTrack:
+    def __init__(self, frame_pts: tuple[int, ...]) -> None:
+        self._frames = list(frame_pts)
+
+    async def recv(self) -> av.VideoFrame:
+        if not self._frames:
+            raise MediaStreamError
+        frame = av.VideoFrame(16, 16, "yuv420p")
+        frame.pts = self._frames.pop(0)
+        frame.time_base = Fraction(1, 90_000)
+        return frame
 
 
 class _Recorder:
@@ -134,6 +151,24 @@ def _match(frame_id: int, device_ns: int) -> FrameMetadataMatch:
         decoded_frame_received_at_client_monotonic_ns=device_ns,
         timestamp_match_error_90khz=0,
     )
+
+
+def test_recording_track_skips_frames_without_authoritative_metadata() -> None:
+    async def scenario() -> None:
+        eligible_pts = {100, 300}
+        track = MetadataMatchedVideoTrack(
+            _FiniteVideoTrack((100, 200, 300)),
+            lambda pts: asyncio.sleep(0, result=pts in eligible_pts),
+        )
+
+        assert (await track.recv()).pts == 100
+        assert (await track.recv()).pts == 300
+        assert track.skipped_frame_count == 1
+
+        with pytest.raises(MediaStreamError):
+            await track.recv()
+
+    asyncio.run(scenario())
 
 
 async def _submit_coverage(

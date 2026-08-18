@@ -19,6 +19,7 @@ from ui.gateway.adapters.aiortc_peer import AiortcPeer, AiortcVideoSource
 from ui.gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
 from ui.gateway.adapters.webrtc import WebRtcPeerCallbacks
 from ui.gateway.capture_recording import CaptureRecordingReader, CaptureRecordingWriter
+from ui.gateway.recording import MetadataMatchedVideoTrack
 
 
 def test_thirty_second_recording_satisfies_minimal_protocol(tmp_path: Path) -> None:
@@ -161,5 +162,47 @@ def test_canonical_ingest_keeps_every_frame_needed_by_recording_metadata(
             assert subscriptions == [True]
         finally:
             await peer.close()
+
+    asyncio.run(scenario())
+
+
+def test_sparse_metadata_loss_drops_only_unpublishable_video_frames(
+    tmp_path: Path,
+) -> None:
+    class Track:
+        def __init__(self) -> None:
+            self.frame_index = 0
+
+        async def recv(self) -> av.VideoFrame:
+            if self.frame_index == 120:
+                raise MediaStreamError
+            frame = av.VideoFrame(32, 24, "yuv420p")
+            frame.pts = self.frame_index * 3_000
+            frame.time_base = Fraction(1, 90_000)
+            self.frame_index += 1
+            return frame
+
+    async def scenario() -> None:
+        missing_pts = {42 * 3_000, 78 * 3_000}
+        filtered = MetadataMatchedVideoTrack(
+            Track(),
+            lambda pts: asyncio.sleep(0, result=pts not in missing_pts),
+        )
+        recorder = PyAvH264Mp4Recorder(
+            tmp_path / "metadata-filtered.mp4",
+            filtered,
+            width=32,
+            height=24,
+        )
+
+        await recorder.start()
+        await recorder.wait()
+        await recorder.stop()
+
+        assert recorder.frames_received == 118
+        assert filtered.skipped_frame_count == 2
+        assert {record.source_frame_pts for record in recorder.frame_records}.isdisjoint(
+            missing_pts
+        )
 
     asyncio.run(scenario())

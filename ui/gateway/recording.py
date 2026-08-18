@@ -12,6 +12,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
+from av import VideoFrame
+
 from schemas.recording import (
     CameraFrameRow,
     RecordingImuRow,
@@ -39,6 +41,7 @@ from .webrtc_models import ImuCapabilities, ImuSample, VideoFrameMetadata
 
 COUNTDOWN_SECONDS = 3.0
 OUTPUT_FPS = 30
+FRAME_METADATA_WAIT_SECONDS = 0.5
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 LOGGER = logging.getLogger(__name__)
 
@@ -86,6 +89,31 @@ class RecordingWriterFactory(Protocol):
         height: int,
         fps: int,
     ) -> RecordingWriter: ...
+
+
+FrameMetadataEligibility = Callable[[int], Awaitable[bool]]
+
+
+class MetadataMatchedVideoTrack:
+    """Expose only decoded frames that have authoritative Glass3 metadata."""
+
+    def __init__(
+        self,
+        track: object,
+        metadata_eligibility: FrameMetadataEligibility,
+    ) -> None:
+        self._track = track
+        self._metadata_eligibility = metadata_eligibility
+        self.skipped_frame_count = 0
+
+    async def recv(self) -> VideoFrame:
+        while True:
+            frame = await self._track.recv()  # type: ignore[attr-defined]
+            if not isinstance(frame, VideoFrame):
+                raise TypeError("recording track returned a non-video frame")
+            if frame.pts is not None and await self._metadata_eligibility(frame.pts):
+                return frame
+            self.skipped_frame_count += 1
 
 
 class RecordingRuntime:
@@ -137,6 +165,8 @@ class RecordingRuntime:
         self._telemetry_queue: asyncio.Queue[StagedImuSample] | None = None
         self._telemetry_error: BaseException | None = None
         self._matches_by_pts: dict[int, FrameMetadataMatch] = {}
+        self._metadata_match_available = asyncio.Event()
+        self._metadata_matched_track: MetadataMatchedVideoTrack | None = None
         self._recover_partial_directories()
 
     @property
@@ -194,6 +224,7 @@ class RecordingRuntime:
             self._output = output
             self._writer = writer
             self._matches_by_pts.clear()
+            self._metadata_match_available.clear()
             self._telemetry_error = None
             self._telemetry_queue = asyncio.Queue(maxsize=self._telemetry_queue_size)
             self._telemetry_task = asyncio.create_task(self._write_telemetry(writer))
@@ -346,6 +377,7 @@ class RecordingRuntime:
             in {RecordingState.COUNTDOWN, RecordingState.RECORDING, RecordingState.FINALIZING}
         ):
             self._matches_by_pts[match.decoded_frame_pts] = match
+            self._metadata_match_available.set()
 
     async def on_video_frame_metadata(
         self,
@@ -386,13 +418,18 @@ class RecordingRuntime:
                         "Glass3 stream changed during the countdown"
                     )
                 writer = self._require_writer()
+                metadata_matched_track = MetadataMatchedVideoTrack(
+                    source.source.subscribe(buffered=True),
+                    self._wait_for_frame_metadata,
+                )
                 recorder = self._recorder_factory(
                     writer.video_path,
-                    source.source.subscribe(buffered=True),
+                    metadata_matched_track,
                     width=source.width,
                     height=source.height,
                     fps=OUTPUT_FPS,
                 )
+                self._metadata_matched_track = metadata_matched_track
                 self._recorder = recorder
                 try:
                     await recorder.start()
@@ -444,6 +481,17 @@ class RecordingRuntime:
             raise CaptureRecordingError("recording has no active MP4 writer")
         await recorder.stop()
         frame_records = tuple(recorder.frame_records)
+        metadata_matched_track, self._metadata_matched_track = (
+            self._metadata_matched_track,
+            None,
+        )
+        LOGGER.info(
+            "recording frame metadata gate encoded=%d metadata_skipped=%d",
+            recorder.frames_received,
+            0
+            if metadata_matched_track is None
+            else metadata_matched_track.skipped_frame_count,
+        )
         if recorder.frames_received < 1 or len(frame_records) != recorder.frames_received:
             raise CaptureRecordingError("MP4 writer did not preserve every frame timestamp")
         await self._drain_telemetry()
@@ -472,6 +520,7 @@ class RecordingRuntime:
 
     async def _fail_locked(self, error: BaseException) -> None:
         LOGGER.error("recording failed: %s", error)
+        self._metadata_matched_track = None
         recorder, self._recorder = self._recorder, None
         if recorder is not None:
             with suppress(Exception):
@@ -511,6 +560,32 @@ class RecordingRuntime:
         writer, self._writer = self._writer, None
         if writer is not None:
             await asyncio.to_thread(writer.close_incomplete)
+
+    async def _wait_for_frame_metadata(self, source_frame_pts: int) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + FRAME_METADATA_WAIT_SECONDS
+        while not self._has_current_frame_metadata(source_frame_pts):
+            self._metadata_match_available.clear()
+            if self._has_current_frame_metadata(source_frame_pts):
+                break
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(
+                    self._metadata_match_available.wait(),
+                    timeout=remaining,
+                )
+            except TimeoutError:
+                return False
+        return True
+
+    def _has_current_frame_metadata(self, source_frame_pts: int) -> bool:
+        match = self._matches_by_pts.get(source_frame_pts)
+        return (
+            match is not None
+            and match.metadata.camera_start_generation == self._camera_start_generation
+        )
 
     def _camera_frames(
         self,
@@ -657,6 +732,8 @@ class RecordingRuntime:
         self._telemetry_queue = None
         self._telemetry_task = None
         self._matches_by_pts.clear()
+        self._metadata_match_available.clear()
+        self._metadata_matched_track = None
 
     def _recover_partial_directories(self) -> None:
         for recording_id in recover_completed_recordings(self._root):

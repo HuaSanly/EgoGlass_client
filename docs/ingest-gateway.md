@@ -31,8 +31,10 @@ aiortc terminates the H.264 WebRTC stream. The canonical ingest subscription is
 losslessly buffered so every MP4 frame can be joined to its Glass3 metadata.
 `LiveFrameBuffer` keeps only bounded
 newest-frame state for preview and never accumulates decoded media behind the
-UI. Recording has its own relay subscription, preserves monotonic source PTS,
-and writes H.264 MP4 through PyAV.
+UI. Recording has its own relay subscription, waits briefly for each frame's
+authoritative metadata, skips only unmatched frames, preserves monotonic source
+PTS, and writes H.264 MP4 through PyAV. This makes sparse metadata backpressure
+visible as dropped frame IDs instead of invalidating the complete recording.
 
 The Glass3 `stream-control-v1` data channel starts and stops camera capture.
 The experimental `imu-telemetry-experimental-v0` channel carries raw Android
