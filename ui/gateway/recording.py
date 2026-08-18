@@ -42,6 +42,8 @@ from .webrtc_models import ImuCapabilities, ImuSample, VideoFrameMetadata
 COUNTDOWN_SECONDS = 3.0
 OUTPUT_FPS = 30
 FRAME_METADATA_WAIT_SECONDS = 0.5
+IMU_TAIL_COVERAGE_TIMEOUT_SECONDS = 1.0
+TELEMETRY_DRAIN_TIMEOUT_SECONDS = 30.0
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 LOGGER = logging.getLogger(__name__)
 
@@ -164,6 +166,9 @@ class RecordingRuntime:
         self._telemetry_task: asyncio.Task[None] | None = None
         self._telemetry_queue: asyncio.Queue[StagedImuSample] | None = None
         self._telemetry_error: BaseException | None = None
+        self._accepting_imu = False
+        self._latest_imu_timestamp_ns: dict[RecordingImuSensorType, int] = {}
+        self._imu_sample_available = asyncio.Event()
         self._matches_by_pts: dict[int, FrameMetadataMatch] = {}
         self._metadata_match_available = asyncio.Event()
         self._metadata_matched_track: MetadataMatchedVideoTrack | None = None
@@ -226,8 +231,11 @@ class RecordingRuntime:
             self._matches_by_pts.clear()
             self._metadata_match_available.clear()
             self._telemetry_error = None
+            self._latest_imu_timestamp_ns.clear()
+            self._imu_sample_available.clear()
             self._telemetry_queue = asyncio.Queue(maxsize=self._telemetry_queue_size)
             self._telemetry_task = asyncio.create_task(self._write_telemetry(writer))
+            self._accepting_imu = True
             self._state = RecordingState.COUNTDOWN
             self._detail = "recording starts after the countdown"
             self._countdown_task = asyncio.create_task(
@@ -341,9 +349,15 @@ class RecordingRuntime:
         origin_ns = self._countdown_started_at_monotonic_ns
         if (
             queue is None
+            or not self._accepting_imu
             or origin_ns is None
             or self._writer is None
-            or self._state not in {RecordingState.COUNTDOWN, RecordingState.RECORDING}
+            or self._state
+            not in {
+                RecordingState.COUNTDOWN,
+                RecordingState.RECORDING,
+                RecordingState.FINALIZING,
+            }
             or connection_session_id != self._connection_session_id
         ):
             return
@@ -364,6 +378,8 @@ class RecordingRuntime:
             self._telemetry_queue_overflow_count += 1
         else:
             self._imu_sample_count += 1
+            self._latest_imu_timestamp_ns[row.row.sensor_type] = row.row.timestamp_ns
+            self._imu_sample_available.set()
 
     async def on_frame_metadata_match(
         self,
@@ -479,8 +495,13 @@ class RecordingRuntime:
             monitor.cancel()
         if recorder is None:
             raise CaptureRecordingError("recording has no active MP4 writer")
+        LOGGER.info("recording finalization stage=video_stop_started")
         await recorder.stop()
         frame_records = tuple(recorder.frame_records)
+        LOGGER.info(
+            "recording finalization stage=video_stop_completed frames=%d",
+            len(frame_records),
+        )
         metadata_matched_track, self._metadata_matched_track = (
             self._metadata_matched_track,
             None,
@@ -494,15 +515,27 @@ class RecordingRuntime:
         )
         if recorder.frames_received < 1 or len(frame_records) != recorder.frames_received:
             raise CaptureRecordingError("MP4 writer did not preserve every frame timestamp")
+        rows = self._camera_frames(frame_records)
+        await self._wait_for_imu_tail_coverage(rows[-1].row.device_monotonic_ns)
+        self._accepting_imu = False
+        LOGGER.info(
+            "recording finalization stage=telemetry_drain_started queued=%d",
+            0 if self._telemetry_queue is None else self._telemetry_queue.qsize(),
+        )
         await self._drain_telemetry()
+        LOGGER.info("recording finalization stage=telemetry_drain_completed")
         if self._telemetry_queue_overflow_count:
             raise CaptureRecordingError("IMU CSV queue overflowed during recording")
         writer = self._require_writer()
-        rows = self._camera_frames(frame_records)
+        LOGGER.info(
+            "recording finalization stage=protocol_write_started camera_rows=%d",
+            len(rows),
+        )
         reader = await asyncio.to_thread(
             writer.finalize,
             rows,
         )
+        LOGGER.info("recording finalization stage=protocol_write_completed")
         self._recording_duration_ms = reader.summary().duration_ns // 1_000_000
         self._clear_active()
         self._state = RecordingState.READY
@@ -512,6 +545,7 @@ class RecordingRuntime:
         task, self._countdown_task = self._countdown_task, None
         if task is not None:
             task.cancel()
+        self._accepting_imu = False
         await self._drain_telemetry()
         await self._close_incomplete_writer()
         self._clear_active()
@@ -520,6 +554,7 @@ class RecordingRuntime:
 
     async def _fail_locked(self, error: BaseException) -> None:
         LOGGER.error("recording failed: %s", error)
+        self._accepting_imu = False
         self._metadata_matched_track = None
         recorder, self._recorder = self._recorder, None
         if recorder is not None:
@@ -548,13 +583,65 @@ class RecordingRuntime:
         queue = self._telemetry_queue
         task, self._telemetry_task = self._telemetry_task, None
         if queue is not None:
-            await queue.join()
+            if task is None and queue.qsize():
+                raise CaptureRecordingError("IMU CSV writer stopped before queue drain")
+            try:
+                await asyncio.wait_for(
+                    queue.join(),
+                    timeout=TELEMETRY_DRAIN_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as error:
+                raise CaptureRecordingError(
+                    f"IMU CSV queue did not drain within "
+                    f"{TELEMETRY_DRAIN_TIMEOUT_SECONDS:.0f} seconds"
+                ) from error
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self._telemetry_queue = None
         if self._telemetry_error is not None:
             raise CaptureRecordingError("IMU CSV writer failed") from self._telemetry_error
+
+    async def _wait_for_imu_tail_coverage(self, camera_timestamp_ns: int) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + IMU_TAIL_COVERAGE_TIMEOUT_SECONDS
+        while not self._has_imu_tail_coverage(camera_timestamp_ns):
+            self._imu_sample_available.clear()
+            if self._has_imu_tail_coverage(camera_timestamp_ns):
+                break
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                missing = self._missing_imu_tail_coverage(camera_timestamp_ns)
+                raise CaptureRecordingError(
+                    "IMU tail did not cover the final camera timestamp within "
+                    f"{IMU_TAIL_COVERAGE_TIMEOUT_SECONDS:.1f} seconds: "
+                    + ", ".join(missing)
+                )
+            try:
+                await asyncio.wait_for(
+                    self._imu_sample_available.wait(),
+                    timeout=remaining,
+                )
+            except TimeoutError as error:
+                missing = self._missing_imu_tail_coverage(camera_timestamp_ns)
+                raise CaptureRecordingError(
+                    "IMU tail did not cover the final camera timestamp within "
+                    f"{IMU_TAIL_COVERAGE_TIMEOUT_SECONDS:.1f} seconds: "
+                    + ", ".join(missing)
+                ) from error
+
+    def _has_imu_tail_coverage(self, camera_timestamp_ns: int) -> bool:
+        return not self._missing_imu_tail_coverage(camera_timestamp_ns)
+
+    def _missing_imu_tail_coverage(self, camera_timestamp_ns: int) -> tuple[str, ...]:
+        missing: list[str] = []
+        for sensor_type in RecordingImuSensorType:
+            timestamp_ns = self._latest_imu_timestamp_ns.get(sensor_type)
+            if timestamp_ns is None or timestamp_ns < camera_timestamp_ns:
+                missing.append(
+                    f"{sensor_type.value}={timestamp_ns or 'missing'}<{camera_timestamp_ns}"
+                )
+        return tuple(missing)
 
     async def _close_incomplete_writer(self) -> None:
         writer, self._writer = self._writer, None

@@ -186,6 +186,51 @@ def test_imu_sequence_gaps_are_allowed(tmp_path: Path, sequence: int) -> None:
     assert writer.finalize(frames).summary().imu_sequence_gap_count == 2
 
 
+def test_writer_trims_imu_by_device_time_and_keeps_one_tail_sample_per_sensor(
+    tmp_path: Path,
+) -> None:
+    writer = CaptureRecordingWriter.create(
+        tmp_path,
+        recording_id=RECORDING_ID,
+        video_profile=RecordingOutput(width=32, height=24, fps=10),
+    )
+    video_index = write_h264_video(writer.video_path)
+    frames = staged_camera_frames(video_index)
+    camera_end_ns = frames[-1].row.device_monotonic_ns
+    first_camera_ns = frames[0].row.device_monotonic_ns
+    staged_timestamps = (
+        first_camera_ns - 1,
+        camera_end_ns - 10_000_000,
+        camera_end_ns + 1,
+        camera_end_ns + 10_000_000,
+    )
+    for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+        for sequence, timestamp_ns in enumerate(staged_timestamps):
+            writer.append_imu(
+                StagedImuSample(
+                    row=RecordingImuRow(
+                        sensor_type=sensor,
+                        sequence=sequence,
+                        timestamp_ns=timestamp_ns,
+                        x=0.0,
+                        y=0.0,
+                        z=0.0,
+                    ),
+                    received_at_client_monotonic_ns=(
+                        frames[-1].received_at_client_monotonic_ns + sequence + 1
+                    ),
+                )
+            )
+
+    rows = tuple(writer.finalize(frames).iter_imu_samples())
+    for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+        assert [row.timestamp_ns for row in rows if row.sensor_type is sensor] == [
+            first_camera_ns - 1,
+            camera_end_ns - 10_000_000,
+            camera_end_ns + 1,
+        ]
+
+
 @pytest.mark.parametrize("field", ["sequence", "timestamp_ns"])
 def test_reader_rejects_duplicate_or_reversed_imu(tmp_path: Path, field: str) -> None:
     reader = create_recording(tmp_path)

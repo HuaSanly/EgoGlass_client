@@ -73,6 +73,7 @@ class _Recorder:
         self.path = path
         self.receipt_clock = receipt_clock
         self.stop_gate = stop_gate
+        self.stopped = asyncio.Event()
         self.frames_received = 1
         self.wait_forever = asyncio.Event()
 
@@ -108,6 +109,7 @@ class _Recorder:
             frame_count=1,
             fps=30,
         )
+        self.stopped.set()
 
 
 async def _advance_until(predicate: Callable[[], bool]) -> None:
@@ -399,5 +401,80 @@ def test_recording_finalization_yields_to_receive_tasks(tmp_path: Path) -> None:
         assert not stopping.done()
         stop_gate.set()
         await stopping
+
+    asyncio.run(scenario())
+
+
+def test_finalizing_waits_for_both_imu_samples_after_last_camera_frame(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        connection_id = "a" * 32
+        clock = [10_000_000_000]
+        countdown = _Countdown()
+        stop_gate = asyncio.Event()
+        recorders: list[_Recorder] = []
+
+        def factory(path: Path, track: object, **profile: int) -> _Recorder:
+            recorder = _Recorder(
+                path,
+                track,
+                **profile,
+                receipt_clock=lambda: clock[0],
+                stop_gate=stop_gate,
+            )
+            recorders.append(recorder)
+            return recorder
+
+        runtime = RecordingRuntime(
+            tmp_path,
+            lambda: asyncio.sleep(
+                0,
+                result=WebRtcVideoRecordingSource(
+                    connection_id,
+                    _VideoSource(),
+                    640,
+                    480,
+                    1,
+                ),
+            ),
+            recorder_factory=factory,
+            sleep=countdown,
+            monotonic_clock_ns=lambda: clock[0],
+            recording_id_factory=lambda: "5" * 32,
+        )
+        await runtime.start()
+        countdown.release.set()
+        await _advance_until(lambda: bool(recorders))
+        camera_ns = 20_005_000_000
+        await runtime.on_frame_metadata_match(connection_id, _match(1, camera_ns))
+        for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+            await runtime.on_imu_sample(
+                connection_id,
+                _imu(sensor, 0, camera_ns - 5_000_000),
+                clock[0],
+            )
+
+        stopping = asyncio.create_task(runtime.stop())
+        stop_gate.set()
+        await asyncio.wait_for(recorders[0].stopped.wait(), timeout=5)
+        await asyncio.sleep(0)
+        assert not stopping.done()
+
+        clock[0] += 20_000_000
+        for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+            await runtime.on_imu_sample(
+                connection_id,
+                _imu(sensor, 1, camera_ns + 5_000_000),
+                clock[0],
+            )
+
+        status = await stopping
+        assert status.state.value == "ready"
+        rows = tuple((await runtime.reader("5" * 32)).iter_imu_samples())
+        for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+            assert [
+                row.timestamp_ns for row in rows if row.sensor_type.value == sensor.value
+            ] == [camera_ns - 5_000_000, camera_ns + 5_000_000]
 
     asyncio.run(scenario())

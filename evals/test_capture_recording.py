@@ -8,7 +8,7 @@ from pathlib import Path
 import av
 from aiortc import MediaStreamError
 
-from schemas.recording import RecordingOutput
+from schemas.recording import ImuSensorType, RecordingImuRow, RecordingOutput
 from tests.recording_support import (
     append_covering_imu,
     create_recording,
@@ -18,7 +18,11 @@ from tests.recording_support import (
 from ui.gateway.adapters.aiortc_peer import AiortcPeer, AiortcVideoSource
 from ui.gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
 from ui.gateway.adapters.webrtc import WebRtcPeerCallbacks
-from ui.gateway.capture_recording import CaptureRecordingReader, CaptureRecordingWriter
+from ui.gateway.capture_recording import (
+    CaptureRecordingReader,
+    CaptureRecordingWriter,
+    StagedImuSample,
+)
 from ui.gateway.recording import MetadataMatchedVideoTrack
 
 
@@ -52,6 +56,59 @@ def test_thirty_second_recording_satisfies_minimal_protocol(tmp_path: Path) -> N
         "imu.csv",
         "calibration.yaml",
     }
+
+
+def test_30_fps_camera_tail_is_covered_by_100_hz_imu_without_extra_samples(
+    tmp_path: Path,
+) -> None:
+    writer = CaptureRecordingWriter.create(
+        tmp_path,
+        recording_id="d" * 32,
+        video_profile=RecordingOutput(width=32, height=24, fps=30),
+    )
+    video_index = write_h264_video(
+        writer.video_path,
+        width=32,
+        height=24,
+        frame_count=90,
+        fps=30,
+    )
+    frames = staged_camera_frames(
+        video_index,
+        first_device_ns=1_000_000_000,
+        frame_period_ns=33_333_333,
+    )
+    camera_end_ns = frames[-1].row.device_monotonic_ns
+    imu_start_ns = frames[0].row.device_monotonic_ns - 10_000_000
+    imu_timestamps = tuple(
+        range(imu_start_ns, camera_end_ns + 30_000_000, 10_000_000)
+    )
+    expected_tail_ns = next(value for value in imu_timestamps if value >= camera_end_ns)
+    assert expected_tail_ns > camera_end_ns
+
+    for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+        for sequence, timestamp_ns in enumerate(imu_timestamps):
+            writer.append_imu(
+                StagedImuSample(
+                    row=RecordingImuRow(
+                        sensor_type=sensor,
+                        sequence=sequence,
+                        timestamp_ns=timestamp_ns,
+                        x=0.0,
+                        y=0.0,
+                        z=0.0,
+                    ),
+                    received_at_client_monotonic_ns=timestamp_ns + 5_000_000_000,
+                )
+            )
+
+    rows = tuple(writer.finalize(frames).iter_imu_samples())
+    for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+        sensor_timestamps = [
+            row.timestamp_ns for row in rows if row.sensor_type is sensor
+        ]
+        assert sensor_timestamps[-1] == expected_tail_ns
+        assert sum(timestamp >= camera_end_ns for timestamp in sensor_timestamps) == 1
 
 
 def test_mp4_finalize_keeps_the_capture_loop_responsive(tmp_path: Path) -> None:

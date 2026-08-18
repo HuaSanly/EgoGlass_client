@@ -189,7 +189,7 @@ def test_recording_replay_uses_frame_time_for_imu_cursor(tmp_path: Path) -> None
         first_cursor = source.imu_cursor(first.device_monotonic_ns)
         second_cursor = source.imu_cursor(second.device_monotonic_ns)
         assert first_cursor.accelerometer == (0.0, 1.0, 2.0)
-        assert first_cursor.gyroscope is None
+        assert first_cursor.gyroscope == (-3.0, -4.0, -5.0)
         assert second_cursor.gyroscope == (3.0, 4.0, 5.0)
     finally:
         source.close()
@@ -244,9 +244,10 @@ def _recording_fixture(root: Path) -> Path:
     frames = staged_camera_frames(video_index)
     samples = (
         (99_000_000, ImuSensorType.ACCELEROMETER, 0, (0.0, 1.0, 2.0)),
-        (150_000_000, ImuSensorType.GYROSCOPE, 0, (3.0, 4.0, 5.0)),
+        (99_000_000, ImuSensorType.GYROSCOPE, 0, (-3.0, -4.0, -5.0)),
+        (150_000_000, ImuSensorType.GYROSCOPE, 1, (3.0, 4.0, 5.0)),
         (201_000_000, ImuSensorType.ACCELEROMETER, 1, (6.0, 7.0, 8.0)),
-        (201_000_000, ImuSensorType.GYROSCOPE, 1, (9.0, 10.0, 11.0)),
+        (201_000_000, ImuSensorType.GYROSCOPE, 2, (9.0, 10.0, 11.0)),
     )
     for time_ns, sensor, sequence, values in samples:
         writer.append_imu(

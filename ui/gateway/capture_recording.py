@@ -166,11 +166,9 @@ class CaptureRecordingWriter:
             raise CaptureRecordingError("cannot publish an empty video.mp4")
 
         staged_imu = _read_staged_imu(self._staged_imu_path)
-        final_imu = tuple(
-            sample.row
-            for sample in staged_imu
-            if sample.received_at_client_monotonic_ns
-            <= camera_frames[-1].received_at_client_monotonic_ns
+        final_imu = _trim_imu_to_camera_end(
+            staged_imu,
+            camera_frames[-1].row.device_monotonic_ns,
         )
         _atomic_write_csv(
             self.camera_path,
@@ -367,9 +365,18 @@ def _validate_recording(
         raise CaptureRecordingReadError("imu.csv must contain raw sensor samples")
     first_camera_ns = camera_frames[0].device_monotonic_ns
     last_camera_ns = camera_frames[-1].device_monotonic_ns
-    imu_timestamps = [row.timestamp_ns for row in imu_rows]
-    if min(imu_timestamps) > first_camera_ns or max(imu_timestamps) < last_camera_ns:
-        raise CaptureRecordingReadError("IMU timestamps do not cover the camera time range")
+    for sensor_type in ImuSensorType:
+        sensor_timestamps = [
+            row.timestamp_ns for row in imu_rows if row.sensor_type is sensor_type
+        ]
+        if (
+            not sensor_timestamps
+            or sensor_timestamps[0] > first_camera_ns
+            or sensor_timestamps[-1] < last_camera_ns
+        ):
+            raise CaptureRecordingReadError(
+                f"{sensor_type.value} timestamps do not cover the camera time range"
+            )
     return CaptureRecordingReader(
         directory,
         camera_frames,
@@ -378,6 +385,25 @@ def _validate_recording(
         video_index,
         fps=fps,
     )
+
+
+def _trim_imu_to_camera_end(
+    samples: Sequence[StagedImuSample],
+    last_camera_timestamp_ns: int,
+) -> tuple[RecordingImuRow, ...]:
+    """Keep camera-range IMU plus one tail sample per sensor for interpolation."""
+    result: list[RecordingImuRow] = []
+    tail_covered: set[ImuSensorType] = set()
+    for sample in samples:
+        row = sample.row
+        if row.timestamp_ns <= last_camera_timestamp_ns:
+            result.append(row)
+            if row.timestamp_ns == last_camera_timestamp_ns:
+                tail_covered.add(row.sensor_type)
+        elif row.sensor_type not in tail_covered:
+            result.append(row)
+            tail_covered.add(row.sensor_type)
+    return tuple(result)
 
 
 def _validate_layout(directory: Path, *, allow_staging_file: bool = False) -> None:
