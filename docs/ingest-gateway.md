@@ -104,6 +104,11 @@ Start begins the server-authoritative countdown and opens the partial writer so
 countdown IMU is retained. Stop flushes the MP4, closes the IMU window at the
 last encoded frame, validates all artifacts, removes temporary matching data,
 and publishes atomically. WebRTC reception continues while finalization runs.
+Frame conversion and H.264 encoding run on a worker thread; they never execute
+on the aiortc event loop. If accel and gyro cannot cover the video tail after a
+one-second drain window, the writer stages the full `camera.csv`, trims video and
+camera rows to the last frame covered by both sensors, then publishes the valid
+prefix. It never invents camera or IMU timestamps.
 
 An interrupted partial directory remains distinguishable from a completed
 recording. Recovery either validates and completes the exact partial contract

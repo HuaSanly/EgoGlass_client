@@ -21,8 +21,9 @@ docs/                        # Operator and gateway documentation
 ```
 
 PyQt owns the main thread. Uvicorn, aiortc, discovery, and capture run on the
-runtime thread. RGB conversion, MP4 writing, CSV writing, and replay decoding
-use bounded workers so recording finalization does not stop WebRTC reception.
+runtime thread. Per-frame RGB conversion and H.264 encoding, MP4 finalization,
+CSV writing, and replay decoding run outside the WebRTC event loop so recording
+cannot stall IMU DataChannel consumption.
 
 ## Setup
 
@@ -63,6 +64,11 @@ calibration resolution before atomically publishing the final directory. IMU
 rows start at countdown start and stop at the final encoded frame. RTP, MP4 PTS,
 client receive clocks, and other matching evidence never enter the published
 four-file contract.
+
+If both IMU streams stop before the final video frame, finalization trims the MP4
+and `camera.csv` to their last common covered frame before validation. The ready
+status reports the number of removed frames. Full camera metadata is staged
+before this recovery step so a later failure remains diagnosable.
 
 The library can replay `video.mp4` with an IMU cursor driven by the shared
 Android monotonic clock in `camera.csv.device_monotonic_ns` and

@@ -64,6 +64,10 @@ class RecordingNotFoundError(RuntimeError):
     """Raised when a completed recording does not exist or fails validation."""
 
 
+class _ImuTailCoverageTimeout(CaptureRecordingError):
+    """Raised when live IMU cannot cover the final encoded camera frame."""
+
+
 class RecordingWriter(Protocol):
     @property
     def frames_received(self) -> int: ...
@@ -76,6 +80,8 @@ class RecordingWriter(Protocol):
     async def wait(self) -> None: ...
 
     async def stop(self) -> None: ...
+
+    async def trim_to_frame_count(self, frame_count: int) -> None: ...
 
 
 RecordingSourceProvider = Callable[[], Awaitable[WebRtcVideoRecordingSource | None]]
@@ -132,9 +138,12 @@ class RecordingRuntime:
         monotonic_clock_ns: Callable[[], int] = time.perf_counter_ns,
         recording_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
         telemetry_queue_size: int = 32_768,
+        imu_tail_coverage_timeout_seconds: float = IMU_TAIL_COVERAGE_TIMEOUT_SECONDS,
     ) -> None:
         if telemetry_queue_size < 1:
             raise ValueError("telemetry_queue_size must be positive")
+        if imu_tail_coverage_timeout_seconds < 0:
+            raise ValueError("IMU tail coverage timeout cannot be negative")
         self._root = root.expanduser().resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._source_provider = source_provider
@@ -144,6 +153,7 @@ class RecordingRuntime:
         self._monotonic_clock_ns = monotonic_clock_ns
         self._recording_id_factory = recording_id_factory
         self._telemetry_queue_size = telemetry_queue_size
+        self._imu_tail_coverage_timeout_seconds = imu_tail_coverage_timeout_seconds
         self._command_lock = asyncio.Lock()
         self._state = RecordingState.UNAVAILABLE
         self._detail = "Glass3 video is not ready"
@@ -167,6 +177,7 @@ class RecordingRuntime:
         self._telemetry_queue: asyncio.Queue[StagedImuSample] | None = None
         self._telemetry_error: BaseException | None = None
         self._accepting_imu = False
+        self._first_imu_timestamp_ns: dict[RecordingImuSensorType, int] = {}
         self._latest_imu_timestamp_ns: dict[RecordingImuSensorType, int] = {}
         self._imu_sample_available = asyncio.Event()
         self._matches_by_pts: dict[int, FrameMetadataMatch] = {}
@@ -231,6 +242,7 @@ class RecordingRuntime:
             self._matches_by_pts.clear()
             self._metadata_match_available.clear()
             self._telemetry_error = None
+            self._first_imu_timestamp_ns.clear()
             self._latest_imu_timestamp_ns.clear()
             self._imu_sample_available.clear()
             self._telemetry_queue = asyncio.Queue(maxsize=self._telemetry_queue_size)
@@ -378,6 +390,10 @@ class RecordingRuntime:
             self._telemetry_queue_overflow_count += 1
         else:
             self._imu_sample_count += 1
+            self._first_imu_timestamp_ns.setdefault(
+                row.row.sensor_type,
+                row.row.timestamp_ns,
+            )
             self._latest_imu_timestamp_ns[row.row.sensor_type] = row.row.timestamp_ns
             self._imu_sample_available.set()
 
@@ -516,7 +532,34 @@ class RecordingRuntime:
         if recorder.frames_received < 1 or len(frame_records) != recorder.frames_received:
             raise CaptureRecordingError("MP4 writer did not preserve every frame timestamp")
         rows = self._camera_frames(frame_records)
-        await self._wait_for_imu_tail_coverage(rows[-1].row.device_monotonic_ns)
+        writer = self._require_writer()
+        await asyncio.to_thread(writer.stage_camera, rows)
+        trimmed_frame_count = 0
+        try:
+            await self._wait_for_imu_tail_coverage(rows[-1].row.device_monotonic_ns)
+        except _ImuTailCoverageTimeout as error:
+            keep_count = self._recoverable_camera_prefix_length(rows)
+            if keep_count < 1 or keep_count >= len(rows):
+                raise
+            trimmed_frame_count = len(rows) - keep_count
+            trimmed_duration_ns = (
+                rows[-1].row.device_monotonic_ns
+                - rows[keep_count - 1].row.device_monotonic_ns
+            )
+            LOGGER.warning(
+                "recording IMU tail stalled; trimming frames=%d duration_ms=%.3f cause=%s",
+                trimmed_frame_count,
+                trimmed_duration_ns / 1_000_000,
+                error,
+            )
+            await recorder.trim_to_frame_count(keep_count)
+            frame_records = tuple(recorder.frame_records)
+            if len(frame_records) != keep_count:
+                raise CaptureRecordingError(
+                    "trimmed MP4 frame index does not match the recoverable camera prefix"
+                ) from error
+            rows = self._camera_frames(frame_records)
+            await asyncio.to_thread(writer.stage_camera, rows)
         self._accepting_imu = False
         LOGGER.info(
             "recording finalization stage=telemetry_drain_started queued=%d",
@@ -526,7 +569,6 @@ class RecordingRuntime:
         LOGGER.info("recording finalization stage=telemetry_drain_completed")
         if self._telemetry_queue_overflow_count:
             raise CaptureRecordingError("IMU CSV queue overflowed during recording")
-        writer = self._require_writer()
         LOGGER.info(
             "recording finalization stage=protocol_write_started camera_rows=%d",
             len(rows),
@@ -539,7 +581,11 @@ class RecordingRuntime:
         self._recording_duration_ms = reader.summary().duration_ns // 1_000_000
         self._clear_active()
         self._state = RecordingState.READY
-        self._detail = "recording finalized"
+        self._detail = (
+            f"recording finalized after trimming {trimmed_frame_count} uncovered frames"
+            if trimmed_frame_count
+            else "recording finalized"
+        )
 
     async def _cancel_countdown_locked(self) -> None:
         task, self._countdown_task = self._countdown_task, None
@@ -604,7 +650,8 @@ class RecordingRuntime:
 
     async def _wait_for_imu_tail_coverage(self, camera_timestamp_ns: int) -> None:
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + IMU_TAIL_COVERAGE_TIMEOUT_SECONDS
+        timeout_seconds = self._imu_tail_coverage_timeout_seconds
+        deadline = loop.time() + timeout_seconds
         while not self._has_imu_tail_coverage(camera_timestamp_ns):
             self._imu_sample_available.clear()
             if self._has_imu_tail_coverage(camera_timestamp_ns):
@@ -612,9 +659,9 @@ class RecordingRuntime:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 missing = self._missing_imu_tail_coverage(camera_timestamp_ns)
-                raise CaptureRecordingError(
+                raise _ImuTailCoverageTimeout(
                     "IMU tail did not cover the final camera timestamp within "
-                    f"{IMU_TAIL_COVERAGE_TIMEOUT_SECONDS:.1f} seconds: "
+                    f"{timeout_seconds:.1f} seconds: "
                     + ", ".join(missing)
                 )
             try:
@@ -624,11 +671,38 @@ class RecordingRuntime:
                 )
             except TimeoutError as error:
                 missing = self._missing_imu_tail_coverage(camera_timestamp_ns)
-                raise CaptureRecordingError(
+                raise _ImuTailCoverageTimeout(
                     "IMU tail did not cover the final camera timestamp within "
-                    f"{IMU_TAIL_COVERAGE_TIMEOUT_SECONDS:.1f} seconds: "
+                    f"{timeout_seconds:.1f} seconds: "
                     + ", ".join(missing)
                 ) from error
+
+    def _recoverable_camera_prefix_length(
+        self,
+        rows: Sequence[StagedCameraFrame],
+    ) -> int:
+        if not rows:
+            return 0
+        first_camera_timestamp_ns = rows[0].row.device_monotonic_ns
+        if any(
+            self._first_imu_timestamp_ns.get(sensor_type, first_camera_timestamp_ns + 1)
+            > first_camera_timestamp_ns
+            for sensor_type in RecordingImuSensorType
+        ):
+            return 0
+        latest_timestamps = tuple(
+            self._latest_imu_timestamp_ns.get(sensor_type)
+            for sensor_type in RecordingImuSensorType
+        )
+        if any(timestamp is None for timestamp in latest_timestamps):
+            return 0
+        coverage_end_ns = min(
+            timestamp for timestamp in latest_timestamps if timestamp is not None
+        )
+        return sum(
+            row.row.device_monotonic_ns <= coverage_end_ns
+            for row in rows
+        )
 
     def _has_imu_tail_coverage(self, camera_timestamp_ns: int) -> bool:
         return not self._missing_imu_tail_coverage(camera_timestamp_ns)

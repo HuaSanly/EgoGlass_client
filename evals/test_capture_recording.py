@@ -223,6 +223,52 @@ def test_canonical_ingest_keeps_every_frame_needed_by_recording_metadata(
     asyncio.run(scenario())
 
 
+def test_slow_h264_encoding_does_not_stall_imu_event_loop(tmp_path: Path) -> None:
+    class Track:
+        def __init__(self) -> None:
+            self.sent = False
+
+        async def recv(self) -> av.VideoFrame:
+            if self.sent:
+                raise MediaStreamError
+            self.sent = True
+            frame = av.VideoFrame(32, 24, "yuv420p")
+            frame.pts = 0
+            frame.time_base = Fraction(1, 30)
+            return frame
+
+    async def scenario() -> None:
+        recorder = PyAvH264Mp4Recorder(
+            tmp_path / "eval-encode.mp4",
+            Track(),
+            width=32,
+            height=24,
+            perf_clock=lambda: 1_000_000_000,
+        )
+        started = threading.Event()
+        release = threading.Event()
+        original_encode = recorder._encode_frame
+
+        def controlled_encode(frame: av.VideoFrame, received_at_ns: int) -> None:
+            started.set()
+            assert release.wait(timeout=5)
+            original_encode(frame, received_at_ns)
+
+        recorder._encode_frame = controlled_encode  # type: ignore[method-assign]
+        await recorder.start()
+        assert await asyncio.to_thread(started.wait, 5)
+        imu_heartbeats = 0
+        for _ in range(100):
+            await asyncio.sleep(0)
+            imu_heartbeats += 1
+        assert imu_heartbeats == 100
+        release.set()
+        await recorder.wait()
+        await recorder.stop()
+
+    asyncio.run(scenario())
+
+
 def test_sparse_metadata_loss_drops_only_unpublishable_video_frames(
     tmp_path: Path,
 ) -> None:

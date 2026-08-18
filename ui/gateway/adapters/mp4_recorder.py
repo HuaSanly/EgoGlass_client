@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from uuid import uuid4
 
 import av
 from aiortc import MediaStreamError
@@ -75,17 +77,7 @@ class PyAvH264Mp4Recorder:
             format="mp4",
             options={"movflags": "+faststart"},
         )
-        stream = self._container.add_stream(
-            "libx264",
-            rate=self._fps,
-            options={"crf": "18", "preset": "veryfast"},
-        )
-        stream.width = self._width
-        stream.height = self._height
-        stream.pix_fmt = "yuv420p"
-        stream.time_base = _ENCODER_TIME_BASE
-        stream.codec_context.time_base = _ENCODER_TIME_BASE
-        self._stream = stream
+        self._stream = self._add_output_stream(self._container)
         self._task = asyncio.create_task(self._consume())
 
     async def wait(self) -> None:
@@ -107,53 +99,80 @@ class PyAvH264Mp4Recorder:
         else:
             await self._close_container()
 
+    async def trim_to_frame_count(self, frame_count: int) -> None:
+        if self._task is not None or self._container is not None:
+            raise RuntimeError("recording must be stopped before trimming")
+        if frame_count < 1 or frame_count > self._frames_received:
+            raise ValueError("trim frame count is outside the recorded frame range")
+        if frame_count == self._frames_received:
+            return
+        await asyncio.to_thread(self._trim_finalized_video, frame_count)
+
     async def _consume(self) -> None:
         try:
             while True:
                 frame = await self._track.recv()  # type: ignore[attr-defined]
                 received_at_client_perf_counter_ns = self._perf_clock()
-                if not isinstance(frame, VideoFrame):
-                    raise TypeError("recording track returned a non-video frame")
-                if (frame.width, frame.height) != (self._width, self._height):
-                    raise ValueError(
-                        "source dimensions changed during recording: "
-                        f"{frame.width}x{frame.height}"
-                    )
-                converted_frame = frame.reformat(
-                    width=self._width,
-                    height=self._height,
-                    format="yuv420p",
-                )
-                output_frame = VideoFrame(self._width, self._height, "yuv420p")
-                for source_plane, output_plane in zip(
-                    converted_frame.planes,
-                    output_frame.planes,
-                    strict=True,
-                ):
-                    output_plane.update(bytes(source_plane))
-                output_frame.pts = self._next_output_pts(
-                    frame,
-                    received_at_client_perf_counter_ns,
-                )
-                output_frame.time_base = _ENCODER_TIME_BASE
-                container = self._container
-                stream = self._stream
-                if container is None or stream is None:
-                    raise RuntimeError("recorder container is closed")
-                for packet in stream.encode(output_frame):
-                    container.mux(packet)
-                source_time_base = frame.time_base
-                self._source_frame_records.append(
-                    (
-                        frame.pts,
-                        source_time_base.numerator if source_time_base is not None else None,
-                        source_time_base.denominator if source_time_base is not None else None,
+                encoding = asyncio.create_task(
+                    asyncio.to_thread(
+                        self._encode_frame,
+                        frame,
                         received_at_client_perf_counter_ns,
                     )
                 )
-                self._frames_received += 1
+                try:
+                    await asyncio.shield(encoding)
+                except asyncio.CancelledError:
+                    await encoding
+                    raise
         except MediaStreamError:
             return
+
+    def _encode_frame(
+        self,
+        frame: VideoFrame,
+        received_at_client_perf_counter_ns: int,
+    ) -> None:
+        if not isinstance(frame, VideoFrame):
+            raise TypeError("recording track returned a non-video frame")
+        if (frame.width, frame.height) != (self._width, self._height):
+            raise ValueError(
+                "source dimensions changed during recording: "
+                f"{frame.width}x{frame.height}"
+            )
+        converted_frame = frame.reformat(
+            width=self._width,
+            height=self._height,
+            format="yuv420p",
+        )
+        output_frame = VideoFrame(self._width, self._height, "yuv420p")
+        for source_plane, output_plane in zip(
+            converted_frame.planes,
+            output_frame.planes,
+            strict=True,
+        ):
+            output_plane.update(bytes(source_plane))
+        output_frame.pts = self._next_output_pts(
+            frame,
+            received_at_client_perf_counter_ns,
+        )
+        output_frame.time_base = _ENCODER_TIME_BASE
+        container = self._container
+        stream = self._stream
+        if container is None or stream is None:
+            raise RuntimeError("recorder container is closed")
+        for packet in stream.encode(output_frame):
+            container.mux(packet)
+        source_time_base = frame.time_base
+        self._source_frame_records.append(
+            (
+                frame.pts,
+                source_time_base.numerator if source_time_base is not None else None,
+                source_time_base.denominator if source_time_base is not None else None,
+                received_at_client_perf_counter_ns,
+            )
+        )
+        self._frames_received += 1
 
     def _next_output_pts(
         self,
@@ -215,6 +234,63 @@ class PyAvH264Mp4Recorder:
             return
         await asyncio.to_thread(self._finalize_container, container, stream)
         await asyncio.to_thread(self._load_muxed_frame_timing)
+
+    def _add_output_stream(
+        self,
+        container: av.container.OutputContainer,
+    ) -> av.video.stream.VideoStream:
+        stream = container.add_stream(
+            "libx264",
+            rate=self._fps,
+            options={"crf": "18", "preset": "veryfast"},
+        )
+        stream.width = self._width
+        stream.height = self._height
+        stream.pix_fmt = "yuv420p"
+        stream.time_base = _ENCODER_TIME_BASE
+        stream.codec_context.time_base = _ENCODER_TIME_BASE
+        return stream
+
+    def _trim_finalized_video(self, frame_count: int) -> None:
+        temporary_path = self._path.with_name(
+            f".{self._path.stem}.trim-{uuid4().hex}{self._path.suffix}"
+        )
+        written = 0
+        try:
+            with av.open(str(self._path), mode="r") as source:
+                input_stream = source.streams.video[0]
+                with av.open(
+                    str(temporary_path),
+                    mode="w",
+                    format="mp4",
+                    options={"movflags": "+faststart"},
+                ) as output:
+                    output_stream = self._add_output_stream(output)
+                    for frame in source.decode(input_stream):
+                        if written >= frame_count:
+                            break
+                        converted = frame.reformat(
+                            width=self._width,
+                            height=self._height,
+                            format="yuv420p",
+                        )
+                        converted.pts = frame.pts
+                        converted.time_base = frame.time_base
+                        for packet in output_stream.encode(converted):
+                            output.mux(packet)
+                        written += 1
+                    for packet in output_stream.encode(None):
+                        output.mux(packet)
+            if written != frame_count:
+                raise RuntimeError(
+                    f"trimmed MP4 decoded {written} frames; expected {frame_count}"
+                )
+            os.replace(temporary_path, self._path)
+            self._source_frame_records = self._source_frame_records[:frame_count]
+            self._frames_received = frame_count
+            self._load_muxed_frame_timing()
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     @staticmethod
     def _finalize_container(

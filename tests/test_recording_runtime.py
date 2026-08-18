@@ -68,28 +68,31 @@ class _Recorder:
         fps: int,
         receipt_clock: Callable[[], int],
         stop_gate: asyncio.Event | None = None,
+        frame_pts: tuple[int, ...] = (100,),
     ) -> None:
         assert (width, height, fps) == (640, 480, 30)
         self.path = path
         self.receipt_clock = receipt_clock
         self.stop_gate = stop_gate
+        self.frame_pts = frame_pts
         self.stopped = asyncio.Event()
-        self.frames_received = 1
+        self.frames_received = len(frame_pts)
         self.wait_forever = asyncio.Event()
 
     @property
     def frame_records(self) -> tuple[RecordedVideoFrame, ...]:
-        return (
+        return tuple(
             RecordedVideoFrame(
-                frame_index=0,
-                source_frame_pts=100,
+                frame_index=index,
+                source_frame_pts=source_pts,
                 source_frame_time_base_num=1,
                 source_frame_time_base_den=90_000,
-                mp4_pts=0,
+                mp4_pts=index,
                 mp4_time_base_num=1,
                 mp4_time_base_den=30,
                 received_at_client_perf_counter_ns=self.receipt_clock(),
-            ),
+            )
+            for index, source_pts in enumerate(self.frame_pts)
         )
 
     async def start(self) -> None:
@@ -106,10 +109,22 @@ class _Recorder:
             self.path,
             width=640,
             height=480,
-            frame_count=1,
+            frame_count=len(self.frame_pts),
             fps=30,
         )
         self.stopped.set()
+
+    async def trim_to_frame_count(self, frame_count: int) -> None:
+        self.frame_pts = self.frame_pts[:frame_count]
+        self.frames_received = frame_count
+        await asyncio.to_thread(
+            write_h264_video,
+            self.path,
+            width=640,
+            height=480,
+            frame_count=frame_count,
+            fps=30,
+        )
 
 
 async def _advance_until(predicate: Callable[[], bool]) -> None:
@@ -132,7 +147,11 @@ def _imu(sensor: ImuSensorType, sequence: int, event_ns: int) -> ImuSample:
     )
 
 
-def _match(frame_id: int, device_ns: int) -> FrameMetadataMatch:
+def _match(
+    frame_id: int,
+    device_ns: int,
+    decoded_frame_pts: int = 100,
+) -> FrameMetadataMatch:
     return FrameMetadataMatch(
         metadata=VideoFrameMetadata(
             frame_id=frame_id,
@@ -146,7 +165,7 @@ def _match(frame_id: int, device_ns: int) -> FrameMetadataMatch:
             rotation_degrees=0,
             capture_config_id="capture-640x480",
         ),
-        decoded_frame_pts=100,
+        decoded_frame_pts=decoded_frame_pts,
         decoded_frame_index=0,
         decoded_frame_time_base_num=1,
         decoded_frame_time_base_den=90_000,
@@ -476,5 +495,140 @@ def test_finalizing_waits_for_both_imu_samples_after_last_camera_frame(
             assert [
                 row.timestamp_ns for row in rows if row.sensor_type.value == sensor.value
             ] == [camera_ns - 5_000_000, camera_ns + 5_000_000]
+
+    asyncio.run(scenario())
+
+
+def test_recording_trims_video_to_the_last_common_imu_coverage(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        connection_id = "a" * 32
+        clock = [10_000_000_000]
+        countdown = _Countdown()
+        recorders: list[_Recorder] = []
+
+        def factory(path: Path, track: object, **profile: int) -> _Recorder:
+            recorder = _Recorder(
+                path,
+                track,
+                **profile,
+                receipt_clock=lambda: clock[0],
+                frame_pts=(100, 200, 300),
+            )
+            recorders.append(recorder)
+            return recorder
+
+        runtime = RecordingRuntime(
+            tmp_path,
+            lambda: asyncio.sleep(
+                0,
+                result=WebRtcVideoRecordingSource(
+                    connection_id,
+                    _VideoSource(),
+                    640,
+                    480,
+                    1,
+                ),
+            ),
+            recorder_factory=factory,
+            sleep=countdown,
+            monotonic_clock_ns=lambda: clock[0],
+            recording_id_factory=lambda: "6" * 32,
+            imu_tail_coverage_timeout_seconds=0,
+        )
+        await runtime.start()
+        countdown.release.set()
+        await _advance_until(lambda: bool(recorders))
+        camera_timestamps = (20_000_000_000, 20_010_000_000, 20_020_000_000)
+        for index, (pts, camera_ns) in enumerate(
+            zip((100, 200, 300), camera_timestamps, strict=True),
+            start=1,
+        ):
+            await runtime.on_frame_metadata_match(
+                connection_id,
+                _match(index, camera_ns, pts),
+            )
+        for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+            await runtime.on_imu_sample(
+                connection_id,
+                _imu(sensor, 0, camera_timestamps[0] - 1),
+                clock[0],
+            )
+            await runtime.on_imu_sample(
+                connection_id,
+                _imu(sensor, 1, camera_timestamps[1] + 1),
+                clock[0],
+            )
+
+        status = await runtime.stop()
+
+        assert status.detail == "recording finalized after trimming 1 uncovered frames"
+        reader = await runtime.reader("6" * 32)
+        assert reader.summary().frame_count == 2
+        assert [
+            row.device_monotonic_ns for row in reader.iter_camera_frames()
+        ] == list(camera_timestamps[:2])
+
+    asyncio.run(scenario())
+
+
+def test_unrecoverable_imu_tail_stages_camera_metadata_for_diagnostics(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        connection_id = "a" * 32
+        clock = [10_000_000_000]
+        countdown = _Countdown()
+        recorders: list[_Recorder] = []
+
+        def factory(path: Path, track: object, **profile: int) -> _Recorder:
+            recorder = _Recorder(
+                path,
+                track,
+                **profile,
+                receipt_clock=lambda: clock[0],
+            )
+            recorders.append(recorder)
+            return recorder
+
+        runtime = RecordingRuntime(
+            tmp_path,
+            lambda: asyncio.sleep(
+                0,
+                result=WebRtcVideoRecordingSource(
+                    connection_id,
+                    _VideoSource(),
+                    640,
+                    480,
+                    1,
+                ),
+            ),
+            recorder_factory=factory,
+            sleep=countdown,
+            monotonic_clock_ns=lambda: clock[0],
+            recording_id_factory=lambda: "7" * 32,
+            imu_tail_coverage_timeout_seconds=0,
+        )
+        await runtime.start()
+        countdown.release.set()
+        await _advance_until(lambda: bool(recorders))
+        camera_ns = 20_000_000_000
+        await runtime.on_frame_metadata_match(connection_id, _match(1, camera_ns))
+        for sensor in (ImuSensorType.ACCELEROMETER, ImuSensorType.GYROSCOPE):
+            await runtime.on_imu_sample(
+                connection_id,
+                _imu(sensor, 0, camera_ns - 1),
+                clock[0],
+            )
+
+        with pytest.raises(RecordingFailureError, match="IMU tail did not cover"):
+            await runtime.stop()
+
+        camera_path = (
+            tmp_path / f".recording-{'7' * 32}.partial" / "camera.csv"
+        )
+        assert camera_path.is_file()
+        assert len(camera_path.read_text(encoding="utf-8").splitlines()) == 2
 
     asyncio.run(scenario())

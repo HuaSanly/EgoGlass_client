@@ -157,6 +157,16 @@ class CaptureRecordingWriter:
         self._last_imu_sequence[row.sensor_type] = row.sequence
         self._last_imu_timestamp[row.sensor_type] = row.timestamp_ns
 
+    def stage_camera(self, camera_frames: Sequence[StagedCameraFrame]) -> None:
+        self._require_open()
+        if not camera_frames:
+            raise CaptureRecordingError("cannot stage a recording without camera frames")
+        _atomic_write_csv(
+            self.camera_path,
+            CAMERA_CSV_COLUMNS,
+            (frame.row.model_dump(mode="json") for frame in camera_frames),
+        )
+
     def finalize(self, camera_frames: Sequence[StagedCameraFrame]) -> CaptureRecordingReader:
         self._require_open()
         self._close_staging_file()
@@ -170,11 +180,7 @@ class CaptureRecordingWriter:
             staged_imu,
             camera_frames[-1].row.device_monotonic_ns,
         )
-        _atomic_write_csv(
-            self.camera_path,
-            CAMERA_CSV_COLUMNS,
-            (frame.row.model_dump(mode="json") for frame in camera_frames),
-        )
+        self.stage_camera(camera_frames)
         _atomic_write_csv(
             self.imu_path,
             IMU_CSV_COLUMNS,

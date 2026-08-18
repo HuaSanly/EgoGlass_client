@@ -123,6 +123,65 @@ def test_recorder_finalization_does_not_block_the_receive_event_loop(
     asyncio.run(scenario())
 
 
+def test_recorder_encoding_does_not_block_the_receive_event_loop(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        recorder = PyAvH264Mp4Recorder(
+            tmp_path / "yielding-encode.mp4",
+            VariableRateVideoTrack(),
+            perf_clock=iter(
+                (1_000_000_000, 1_033_000_000, 1_083_000_000, 1_123_000_000)
+            ).__next__,
+        )
+        encoding_started = threading.Event()
+        encoding_release = threading.Event()
+        original_encode = recorder._encode_frame
+
+        def controlled_encode(frame: av.VideoFrame, received_at_ns: int) -> None:
+            encoding_started.set()
+            assert encoding_release.wait(timeout=5)
+            original_encode(frame, received_at_ns)
+
+        recorder._encode_frame = controlled_encode  # type: ignore[method-assign]
+        await recorder.start()
+        assert await asyncio.to_thread(encoding_started.wait, 5)
+        assert await asyncio.sleep(0, result="imu-loop-responsive") == (
+            "imu-loop-responsive"
+        )
+        encoding_release.set()
+        await recorder.wait()
+        await recorder.stop()
+        assert recorder.frames_received == 4
+
+    asyncio.run(scenario())
+
+
+def test_recorder_trims_finalized_video_to_an_exact_frame_prefix(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        path = tmp_path / "trimmed.mp4"
+        recorder = PyAvH264Mp4Recorder(
+            path,
+            VariableRateVideoTrack(),
+            perf_clock=iter(
+                (1_000_000_000, 1_033_000_000, 1_083_000_000, 1_123_000_000)
+            ).__next__,
+        )
+        await recorder.start()
+        await recorder.wait()
+        await recorder.stop()
+
+        await recorder.trim_to_frame_count(2)
+
+        assert recorder.frames_received == 2
+        assert len(recorder.frame_records) == 2
+        assert inspect_recording(path).decoded_frames == 2
+
+    asyncio.run(scenario())
+
+
 def test_recorder_preserves_variable_rate_source_presentation_time(
     tmp_path: Path,
 ) -> None:
