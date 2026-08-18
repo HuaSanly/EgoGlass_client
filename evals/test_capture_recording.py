@@ -15,7 +15,9 @@ from tests.recording_support import (
     staged_camera_frames,
     write_h264_video,
 )
+from ui.gateway.adapters.aiortc_peer import AiortcPeer, AiortcVideoSource
 from ui.gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
+from ui.gateway.adapters.webrtc import WebRtcPeerCallbacks
 from ui.gateway.capture_recording import CaptureRecordingReader, CaptureRecordingWriter
 
 
@@ -115,3 +117,49 @@ def test_ten_consecutive_recordings_never_share_files(tmp_path: Path) -> None:
         for directory in directories
     )
     assert not tuple(tmp_path.glob(".recording-*.partial"))
+
+
+def test_canonical_ingest_keeps_every_frame_needed_by_recording_metadata(
+    monkeypatch: object,
+) -> None:
+    async def scenario() -> None:
+        subscriptions: list[bool] = []
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        class BlockingTrack:
+            async def recv(self) -> object:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+        def subscribe(
+            _source: AiortcVideoSource,
+            *,
+            buffered: bool,
+        ) -> object:
+            subscriptions.append(buffered)
+            return BlockingTrack()
+
+        monkeypatch.setattr(AiortcVideoSource, "subscribe", subscribe)  # type: ignore[attr-defined]
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=ignore,
+            on_video_frame=ignore,
+            on_metadata=ignore,
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=ignore,
+        )
+        peer = AiortcPeer(callbacks)
+        try:
+            peer._peer.emit("track", type("VideoTrack", (), {"kind": "video"})())
+            await asyncio.sleep(0)
+            assert subscriptions == [True]
+        finally:
+            await peer.close()
+
+    asyncio.run(scenario())

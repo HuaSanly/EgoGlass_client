@@ -119,7 +119,10 @@ class AiortcPeer:
                 source = AiortcVideoSource(track)
                 self._video_source = source
                 self._schedule(self._callbacks.on_video_source(source))
-                self._schedule(self._consume_video(source.subscribe(buffered=False)))
+                # The canonical ingest path feeds the frame/metadata matcher. Dropping a
+                # frame here can leave the lossless recorder with no protocol metadata.
+                # Display latency is bounded later by LiveFrameBuffer.
+                self._schedule(self._consume_video(source.subscribe(buffered=True)))
 
     @property
     def negotiated_video_codec(self) -> str | None:

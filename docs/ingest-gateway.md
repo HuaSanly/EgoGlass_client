@@ -27,7 +27,9 @@ LAN. Control, recording, files, and diagnostics are loopback-only.
 
 ## Capture Path
 
-aiortc terminates the H.264 WebRTC stream. `LiveFrameBuffer` keeps only bounded
+aiortc terminates the H.264 WebRTC stream. The canonical ingest subscription is
+losslessly buffered so every MP4 frame can be joined to its Glass3 metadata.
+`LiveFrameBuffer` keeps only bounded
 newest-frame state for preview and never accumulates decoded media behind the
 UI. Recording has its own relay subscription, preserves monotonic source PTS,
 and writes H.264 MP4 through PyAV.

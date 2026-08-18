@@ -75,7 +75,7 @@ def test_negotiated_video_codec_is_parsed_from_structured_sdp() -> None:
     assert negotiated_video_codec_from_sdp(sdp) == "H264"
 
 
-def test_live_subscription_is_unbuffered_to_prevent_latency_backlog() -> None:
+def test_video_source_honors_requested_buffering_mode() -> None:
     source = object.__new__(AiortcVideoSource)
 
     class Relay:
@@ -93,6 +93,54 @@ def test_live_subscription_is_unbuffered_to_prevent_latency_backlog() -> None:
     source.subscribe(buffered=False)
 
     assert relay.buffered is False
+
+
+def test_peer_uses_lossless_subscription_for_frame_metadata_matching(
+    monkeypatch: object,
+) -> None:
+    async def scenario() -> None:
+        subscriptions: list[bool] = []
+        sources: list[object] = []
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        class BlockingTrack:
+            async def recv(self) -> object:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+        def subscribe(
+            _source: AiortcVideoSource,
+            *,
+            buffered: bool,
+        ) -> object:
+            subscriptions.append(buffered)
+            return BlockingTrack()
+
+        monkeypatch.setattr(AiortcVideoSource, "subscribe", subscribe)  # type: ignore[attr-defined]
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=lambda source: append_async(sources, source),
+            on_video_frame=ignore,
+            on_metadata=ignore,
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=ignore,
+        )
+        peer = AiortcPeer(callbacks)
+        try:
+            peer._peer.emit("track", SimpleNamespace(kind="video"))
+            await asyncio.sleep(0)
+            assert len(sources) == 1
+            assert subscriptions == [True]
+        finally:
+            await peer.close()
+
+    asyncio.run(scenario())
 
 
 def test_receiver_stats_report_packet_loss_jitter_and_corrupt_frame_drops() -> None:
