@@ -6,6 +6,7 @@ from pathlib import Path
 
 import av
 import numpy as np
+import yaml
 
 from schemas.recording import (
     CameraFrameRow,
@@ -112,11 +113,14 @@ def create_recording(
     width: int = 32,
     height: int = 24,
     frame_count: int = 2,
+    calibration_path: Path | None = None,
 ) -> CaptureRecordingReader:
     writer = CaptureRecordingWriter.create(
         root,
         recording_id=recording_id,
         video_profile=RecordingOutput(width=width, height=height, fps=10.0),
+        calibration_path=calibration_path
+        or write_test_calibration(root, width=width, height=height),
     )
     video_index = write_h264_video(
         writer.video_path,
@@ -127,3 +131,31 @@ def create_recording(
     frames = staged_camera_frames(video_index)
     append_covering_imu(writer, frames)
     return writer.finalize(frames)
+
+
+def write_test_calibration(root: Path, *, width: int, height: int) -> Path:
+    path = root / f"test-calibration-{width}x{height}.yaml"
+    payload = {
+        "camera": {
+            "model": "pinhole",
+            "resolution": [width, height],
+            "intrinsics": [1.0, 1.0, 0.0, 0.0],
+            "distortion_model": "radtan",
+            "distortion_coeffs": [0.0, 0.0, 0.0, 0.0],
+        },
+        "T_cam_imu": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "timeshift_cam_imu": 0.0,
+        "imu": {
+            "gyro_noise_density": 0.0,
+            "gyro_random_walk": 0.0,
+            "accel_noise_density": 0.0,
+            "accel_random_walk": 0.0,
+        },
+    }
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path

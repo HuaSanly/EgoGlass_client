@@ -14,6 +14,7 @@ from tests.recording_support import (
     create_recording,
     staged_camera_frames,
     write_h264_video,
+    write_test_calibration,
 )
 from ui.gateway.adapters.aiortc_peer import AiortcPeer, AiortcVideoSource
 from ui.gateway.adapters.mp4_recorder import PyAvH264Mp4Recorder
@@ -32,6 +33,7 @@ def test_thirty_second_recording_satisfies_minimal_protocol(tmp_path: Path) -> N
         tmp_path,
         recording_id=recording_id,
         video_profile=RecordingOutput(width=32, height=24, fps=10),
+        calibration_path=write_test_calibration(tmp_path, width=32, height=24),
     )
     video_index = write_h264_video(
         writer.video_path,
@@ -65,6 +67,7 @@ def test_30_fps_camera_tail_is_covered_by_100_hz_imu_without_extra_samples(
         tmp_path,
         recording_id="d" * 32,
         video_profile=RecordingOutput(width=32, height=24, fps=30),
+        calibration_path=write_test_calibration(tmp_path, width=32, height=24),
     )
     video_index = write_h264_video(
         writer.video_path,

@@ -4,6 +4,7 @@ import csv
 import math
 import os
 import re
+import shutil
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,9 @@ _STAGED_IMU_COLUMNS = (*IMU_CSV_COLUMNS, "received_at_client_monotonic_ns")
 _REQUIRED_ENTRIES = {"video.mp4", "camera.csv", "imu.csv", "calibration.yaml"}
 _RECORDING_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _INTEGER_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)\Z")
+DEFAULT_CALIBRATION_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "rokid-glass3-calibration.yaml"
+)
 
 
 class CaptureRecordingError(RuntimeError):
@@ -95,6 +99,7 @@ class CaptureRecordingWriter:
         recording_id: str,
         *,
         video_profile: RecordingOutput,
+        calibration_path: Path | None = None,
     ) -> None:
         if not _RECORDING_ID_PATTERN.fullmatch(recording_id):
             raise ValueError("recording_id must be 32 lowercase hexadecimal characters")
@@ -107,10 +112,10 @@ class CaptureRecordingWriter:
         self.imu_path = self.partial_directory / "imu.csv"
         self.calibration_path = self.partial_directory / "calibration.yaml"
         self._staged_imu_path = self.partial_directory / ".imu-staging.csv"
-        self._video_profile = video_profile
-        self._calibration = CalibrationSnapshot.placeholder(
-            video_profile.width,
-            video_profile.height,
+        self._calibration_path = Path(calibration_path or DEFAULT_CALIBRATION_PATH)
+        self._calibration = _load_calibration(
+            self._calibration_path,
+            expected_resolution=(video_profile.width, video_profile.height),
         )
         self._staged_imu_file: TextIO | None = None
         self._staged_imu_writer: csv.DictWriter[str] | None = None
@@ -123,7 +128,7 @@ class CaptureRecordingWriter:
             raise FileExistsError(f"recording already exists: {recording_id}")
         self.partial_directory.mkdir()
         self.video_path.touch(exist_ok=False)
-        _atomic_write_yaml(self.calibration_path, self._calibration.model_dump(mode="python"))
+        _atomic_copy_file(self._calibration_path, self.calibration_path)
         self._open_staging_file()
 
     @classmethod
@@ -133,11 +138,13 @@ class CaptureRecordingWriter:
         *,
         recording_id: str | None = None,
         video_profile: RecordingOutput | None = None,
+        calibration_path: Path | None = None,
     ) -> CaptureRecordingWriter:
         return cls(
             recordings_root,
             recording_id or uuid4().hex,
             video_profile=video_profile or RecordingOutput(),
+            calibration_path=calibration_path,
         )
 
     def append_imu(self, sample: StagedImuSample) -> None:
@@ -522,11 +529,30 @@ def _read_staged_imu(path: Path) -> tuple[StagedImuSample, ...]:
 
 
 def _read_calibration(path: Path) -> CalibrationSnapshot:
+    return _load_calibration(path)
+
+
+def _load_calibration(
+    path: Path,
+    *,
+    expected_resolution: tuple[int, int] | None = None,
+) -> CalibrationSnapshot:
     try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return CalibrationSnapshot.model_validate(payload)
+        resolved = path.expanduser().resolve()
+        payload = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+        calibration = CalibrationSnapshot.model_validate(payload)
     except (OSError, UnicodeError, ValueError, ValidationError, yaml.YAMLError) as error:
         raise CaptureRecordingReadError(f"invalid calibration.yaml: {error}") from error
+    if (
+        expected_resolution is not None
+        and calibration.camera.resolution != expected_resolution
+    ):
+        expected = f"{expected_resolution[0]}x{expected_resolution[1]}"
+        actual = f"{calibration.camera.resolution[0]}x{calibration.camera.resolution[1]}"
+        raise CaptureRecordingError(
+            f"calibration resolution {actual} does not match recording output {expected}"
+        )
+    return calibration
 
 
 def _inspect_video(
@@ -633,13 +659,14 @@ def _atomic_write_csv(
     os.replace(temp_path, path)
 
 
-def _atomic_write_yaml(path: Path, payload: object) -> None:
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    with temp_path.open("w", encoding="utf-8", newline="\n") as stream:
-        yaml.safe_dump(payload, stream, sort_keys=False, allow_unicode=False)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temp_path, path)
+def _atomic_copy_file(source: Path, destination: Path) -> None:
+    temp_path = destination.with_suffix(destination.suffix + ".tmp")
+    with source.expanduser().resolve().open("rb") as input_stream:
+        with temp_path.open("wb") as output_stream:
+            shutil.copyfileobj(input_stream, output_stream)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+    os.replace(temp_path, destination)
 
 
 def _camera_frame_gaps(rows: Sequence[CameraFrameRow]) -> int:

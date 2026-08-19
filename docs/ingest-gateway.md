@@ -91,9 +91,11 @@ sensor_type,sequence,timestamp_ns,x,y,z
 `timestamp_ns` is the unchanged Android `SensorEvent.timestamp`. Capture does
 not filter, interpolate, resample, or transform IMU coordinates.
 
-`calibration.yaml` contains a typed snapshot at the recorded resolution. Until
-device calibration is available, the client writes unit intrinsics, zero
-distortion, identity `T_cam_imu`, and null IMU noise values.
+`calibration.yaml` is copied byte-for-byte from
+`config/rokid-glass3-calibration.yaml`. The canonical file contains the
+measured 640x480 Rokid Glass3 camera intrinsics, distortion, `T_cam_imu`,
+`timeshift_cam_imu`, and IMU noise values. Recording startup fails if the active
+video profile does not match that calibrated resolution.
 
 The gateway never writes `telemetry.sqlite`, collection sessions, clips,
 processing jobs, or algorithm results.

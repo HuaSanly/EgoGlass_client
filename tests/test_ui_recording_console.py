@@ -12,7 +12,11 @@ from schemas.recording import (
     RecordingLibrary,
     RecordingOutput,
 )
-from tests.recording_support import staged_camera_frames, write_h264_video
+from tests.recording_support import (
+    staged_camera_frames,
+    write_h264_video,
+    write_test_calibration,
+)
 from ui.gateway.capture_recording import (
     CaptureRecordingReader,
     CaptureRecordingWriter,
@@ -239,6 +243,7 @@ def _recording_fixture(root: Path) -> Path:
         root,
         recording_id="a" * 32,
         video_profile=RecordingOutput(width=32, height=24, fps=10.0),
+        calibration_path=write_test_calibration(root, width=32, height=24),
     )
     video_index = write_h264_video(writer.video_path)
     frames = staged_camera_frames(video_index)

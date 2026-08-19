@@ -73,35 +73,17 @@ accelerometer,5822,91273452417391,0.148,9.721,-0.403
 
 ## 5. 标定数据
 
-`calibration.yaml` 保存相机内参、畸变参数、相机与 IMU 外参以及 IMU 噪声参数：
+`calibration.yaml` 保存相机内参、畸变参数、相机与 IMU 外参、相机到 IMU
+时间偏移以及 IMU 噪声参数：
 
-```yaml
-camera:
-  model: pinhole
-  resolution: [640, 480]
-  intrinsics: [1.0, 1.0, 0.0, 0.0]
-  distortion_model: radtan
-  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
-
-T_cam_imu:
-  - [1.0, 0.0, 0.0, 0.0]
-  - [0.0, 1.0, 0.0, 0.0]
-  - [0.0, 0.0, 1.0, 0.0]
-  - [0.0, 0.0, 0.0, 1.0]
-
-imu:
-  gyro_noise_density: null
-  gyro_random_walk: null
-  accel_noise_density: null
-  accel_random_walk: null
-```
+当前 canonical 文件位于 `config/rokid-glass3-calibration.yaml`。
 
 约定：
 
 - `T_cam_imu` 将 IMU 坐标系中的点变换到相机坐标系，遵循 Kalibr 的定义。
-- 当前录制端按实际视频分辨率写入该占位快照，内参固定为
-  `[1.0, 1.0, 0.0, 0.0]`，畸变固定为零，外参固定为单位阵。
-- 四项 IMU 噪声参数固定为 `null`，正式运行 VIO 前再补齐。
+- 当前录制端直接复制已标定的 Glass3 真实参数文件到每个录制单元中。
+- 标定分辨率必须与录像一致；当前发布录制固定为 `640 x 480`。
+- 录制端不再生成占位内参、占位外参或 `null` 噪声参数。
 - 文件不增加协议外的标记字段。
 - 采集端保存 IMU 原始坐标，不提前转换到相机坐标系。
 

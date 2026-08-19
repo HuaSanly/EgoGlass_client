@@ -12,9 +12,11 @@ from tests.recording_support import (
     create_recording,
     staged_camera_frames,
     write_h264_video,
+    write_test_calibration,
 )
 from ui.gateway.capture_recording import (
     CAMERA_CSV_COLUMNS,
+    DEFAULT_CALIBRATION_PATH,
     IMU_CSV_COLUMNS,
     CaptureRecordingError,
     CaptureRecordingReader,
@@ -65,21 +67,35 @@ def test_writer_publishes_exact_four_file_protocol(tmp_path: Path) -> None:
     assert reader.summary().protocol_validated is True
 
 
-def test_placeholder_calibration_is_written_at_video_resolution(tmp_path: Path) -> None:
-    reader = create_recording(tmp_path, width=40, height=30)
-    payload = yaml.safe_load((reader.directory / "calibration.yaml").read_text())
+def test_default_real_calibration_is_copied_byte_for_byte(tmp_path: Path) -> None:
+    reader = create_recording(
+        tmp_path,
+        width=640,
+        height=480,
+        frame_count=1,
+        calibration_path=DEFAULT_CALIBRATION_PATH,
+    )
 
-    assert payload["camera"]["resolution"] == [40, 30]
-    assert payload["camera"]["intrinsics"] == [1.0, 1.0, 0.0, 0.0]
-    assert payload["camera"]["distortion_coeffs"] == [0.0, 0.0, 0.0, 0.0]
-    assert payload["T_cam_imu"] == [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
-    assert set(payload["imu"].values()) == {None}
-    assert "unverified" not in payload
+    assert (reader.directory / "calibration.yaml").read_bytes() == (
+        DEFAULT_CALIBRATION_PATH.read_bytes()
+    )
+    assert reader.calibration.camera.intrinsics == (
+        413.5336559113122,
+        414.47606785606047,
+        322.536987749118,
+        241.1408173835428,
+    )
+    assert reader.calibration.timeshift_cam_imu == -0.07100836969839247
+    assert reader.calibration.imu.gyro_noise_density == 9.141998445730967e-05
+
+
+def test_default_real_calibration_rejects_non_matching_output(tmp_path: Path) -> None:
+    with pytest.raises(CaptureRecordingError, match="calibration resolution"):
+        CaptureRecordingWriter.create(
+            tmp_path,
+            recording_id=RECORDING_ID,
+            video_profile=RecordingOutput(width=32, height=24, fps=10),
+        )
 
 
 def test_consecutive_recordings_are_independent(tmp_path: Path) -> None:
@@ -152,6 +168,7 @@ def test_imu_sequence_gaps_are_allowed(tmp_path: Path, sequence: int) -> None:
         tmp_path,
         recording_id=RECORDING_ID,
         video_profile=RecordingOutput(width=32, height=24, fps=10),
+        calibration_path=write_test_calibration(tmp_path, width=32, height=24),
     )
     video_index = write_h264_video(writer.video_path)
     frames = staged_camera_frames(video_index)
@@ -193,6 +210,7 @@ def test_writer_trims_imu_by_device_time_and_keeps_one_tail_sample_per_sensor(
         tmp_path,
         recording_id=RECORDING_ID,
         video_profile=RecordingOutput(width=32, height=24, fps=10),
+        calibration_path=write_test_calibration(tmp_path, width=32, height=24),
     )
     video_index = write_h264_video(writer.video_path)
     frames = staged_camera_frames(video_index)
@@ -305,6 +323,7 @@ def test_disk_failure_cannot_publish_final_directory(
         tmp_path,
         recording_id=RECORDING_ID,
         video_profile=RecordingOutput(width=32, height=24, fps=10),
+        calibration_path=write_test_calibration(tmp_path, width=32, height=24),
     )
     video_index = write_h264_video(writer.video_path)
     frames = staged_camera_frames(video_index)
@@ -326,6 +345,7 @@ def test_failed_validation_keeps_partial_and_staging_data(tmp_path: Path) -> Non
         tmp_path,
         recording_id=RECORDING_ID,
         video_profile=RecordingOutput(width=32, height=24, fps=10),
+        calibration_path=write_test_calibration(tmp_path, width=32, height=24),
     )
     video_index = write_h264_video(writer.video_path, frame_count=1)
     frames = staged_camera_frames(video_index)

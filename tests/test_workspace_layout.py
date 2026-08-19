@@ -62,6 +62,7 @@ def test_only_recording_configuration_and_operator_scripts_remain() -> None:
     assert {path.name for path in (CLIENT_ROOT / "config").iterdir()} == {
         "README.md",
         "client-runtime.yaml",
+        "rokid-glass3-calibration.yaml",
     }
     assert {
         path.name

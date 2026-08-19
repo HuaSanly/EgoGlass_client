@@ -113,19 +113,8 @@ class CalibrationSnapshot(BaseModel):
         tuple[float, float, float, float],
         tuple[float, float, float, float],
     ]
+    timeshift_cam_imu: float | None = None
     imu: ImuCalibration = Field(default_factory=ImuCalibration)
-
-    @classmethod
-    def placeholder(cls, width: int, height: int) -> CalibrationSnapshot:
-        return cls(
-            camera=CameraCalibration(resolution=(width, height)),
-            T_cam_imu=(
-                (1.0, 0.0, 0.0, 0.0),
-                (0.0, 1.0, 0.0, 0.0),
-                (0.0, 0.0, 1.0, 0.0),
-                (0.0, 0.0, 0.0, 1.0),
-            ),
-        )
 
     @model_validator(mode="after")
     def validate_transform(self) -> CalibrationSnapshot:
@@ -133,6 +122,8 @@ class CalibrationSnapshot(BaseModel):
             raise ValueError("T_cam_imu must contain finite values")
         if self.T_cam_imu[3] != (0.0, 0.0, 0.0, 1.0):
             raise ValueError("T_cam_imu must be a homogeneous transform")
+        if self.timeshift_cam_imu is not None and not math.isfinite(self.timeshift_cam_imu):
+            raise ValueError("timeshift_cam_imu must be finite")
         return self
 
 
