@@ -9,6 +9,7 @@ from aiortc.mediastreams import MediaStreamError
 
 from ui.gateway.adapters.aiortc_peer import (
     FRAME_METADATA_CHANNEL_LABEL,
+    IMU_MESSAGE_QUEUE_MAXSIZE,
     IMU_TELEMETRY_CHANNEL_LABEL,
     RECORDING_CONTROL_CHANNEL_LABEL,
     STREAM_CONTROL_CHANNEL_LABEL,
@@ -508,5 +509,112 @@ def test_imu_channel_rejects_wrong_reliability_policy() -> None:
     asyncio.run(scenario())
 
 
+def test_imu_messages_are_consumed_in_order_by_one_bounded_worker() -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        payloads: list[str | bytes] = []
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        async def consume(_channel: object, payload: str | bytes) -> None:
+            if not started.is_set():
+                started.set()
+                await release.wait()
+            payloads.append(payload)
+
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=ignore,
+            on_video_frame=ignore,
+            on_metadata=ignore,
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=consume,
+        )
+        peer = AiortcPeer(callbacks)
+        channel = FakeDataChannel(
+            label=IMU_TELEMETRY_CHANNEL_LABEL,
+            ordered=False,
+            max_retransmits=0,
+        )
+        channel.readyState = "closed"
+        try:
+            peer._peer.emit("datachannel", channel)
+            messages = [f"sample-{index}" for index in range(100)]
+            for message in messages:
+                channel.emit("message", message)
+            await asyncio.wait_for(started.wait(), timeout=1)
+            assert peer.imu_queue_depth == len(messages) - 1
+            assert peer.imu_queue_dropped == 0
+            assert len(peer._tasks) == 1
+
+            release.set()
+            await asyncio.sleep(0)
+            await asyncio.wait_for(
+                _wait_until(lambda: len(payloads) == len(messages)),
+                timeout=1,
+            )
+            assert payloads == messages
+        finally:
+            await peer.close()
+
+    asyncio.run(scenario())
+
+
+def test_imu_receive_queue_reports_overflow_without_unbounded_growth() -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def ignore(*_args: object) -> None:
+            return None
+
+        async def consume(*_args: object) -> None:
+            started.set()
+            await release.wait()
+
+        callbacks = WebRtcPeerCallbacks(
+            on_connection_state=ignore,
+            on_video_source=ignore,
+            on_video_frame=ignore,
+            on_metadata=ignore,
+            on_control_channel_ready=ignore,
+            on_control_channel_closed=ignore,
+            on_control_status=ignore,
+            on_imu_channel_ready=ignore,
+            on_imu_channel_closed=ignore,
+            on_imu_telemetry=consume,
+        )
+        peer = AiortcPeer(callbacks)
+        channel = FakeDataChannel(
+            label=IMU_TELEMETRY_CHANNEL_LABEL,
+            ordered=False,
+            max_retransmits=0,
+        )
+        channel.readyState = "closed"
+        try:
+            peer._peer.emit("datachannel", channel)
+            for index in range(IMU_MESSAGE_QUEUE_MAXSIZE + 100):
+                channel.emit("message", f"sample-{index}")
+            await asyncio.wait_for(started.wait(), timeout=1)
+            assert peer.imu_queue_depth == IMU_MESSAGE_QUEUE_MAXSIZE - 1
+            assert peer.imu_queue_dropped == 100
+        finally:
+            release.set()
+            await peer.close()
+
+    asyncio.run(scenario())
+
+
 async def append_async(items: list[object], item: object) -> None:
     items.append(item)
+
+
+async def _wait_until(predicate: Callable[[], bool]) -> None:
+    while not predicate():
+        await asyncio.sleep(0)

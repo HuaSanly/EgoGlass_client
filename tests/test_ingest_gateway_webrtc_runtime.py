@@ -187,6 +187,41 @@ def imu_sample_json(
     )
 
 
+def imu_batch_json() -> str:
+    return json.dumps(
+        {
+            "schema_version": "0.1",
+            "message_type": "imu_batch",
+            "samples": [
+                json.loads(imu_sample_json("accelerometer", 0, 1_000, 1_100)),
+                json.loads(imu_sample_json("accelerometer", 1, 6_000, 6_100)),
+                json.loads(imu_sample_json("gyroscope", 0, 1_000, 1_100)),
+            ],
+        }
+    )
+
+
+class FakeImuCaptureSink:
+    def __init__(self) -> None:
+        self.samples: list[tuple[str, int]] = []
+
+    async def on_connection_started(
+        self,
+        _connection_session_id: str,
+        _device_session_id: str,
+        _observed_at_client_monotonic_ns: int,
+    ) -> None:
+        return None
+
+    async def on_imu_sample(
+        self,
+        _connection_session_id: str,
+        sample: object,
+        _received_at_client_monotonic_ns: int,
+    ) -> None:
+        self.samples.append((sample.sensor_type.value, sample.sequence_number))
+
+
 def test_authenticated_session_receives_and_matches_video_metadata() -> None:
     peers: list[FakePeer] = []
     now_ns = 1_000_000_000
@@ -254,6 +289,41 @@ def test_authenticated_session_receives_and_matches_video_metadata() -> None:
         assert not replacement_status.metadata_calibrated
         assert replacement_status.metadata_calibration_support == 0
         assert replacement_status.metadata_rtp_origin_90khz is None
+
+    asyncio.run(scenario())
+
+
+def test_imu_batch_is_counted_and_forwarded_as_ordered_raw_samples() -> None:
+    peers: list[FakePeer] = []
+    capture_sink = FakeImuCaptureSink()
+
+    def factory(callbacks: WebRtcPeerCallbacks) -> FakePeer:
+        peer = FakePeer(callbacks)
+        peers.append(peer)
+        return peer
+
+    async def scenario() -> None:
+        runtime = WebRtcSessionRuntime(
+            TOKEN,
+            factory,
+            perf_clock=lambda: 1_000_000_000,
+            capture_telemetry_sink=capture_sink,  # type: ignore[arg-type]
+        )
+        await runtime.accept_offer(offer(), TOKEN)
+        channel = FakeImuChannel()
+        await peers[0].callbacks.on_imu_channel_ready(channel)
+        await peers[0].callbacks.on_imu_telemetry(channel, imu_batch_json())
+
+        status = await runtime.imu_status()
+        assert status.messages_received == 1
+        assert status.samples_received == 3
+        assert status.sensors["accelerometer"].sample_count == 2
+        assert status.sensors["gyroscope"].sample_count == 1
+        assert capture_sink.samples == [
+            ("accelerometer", 0),
+            ("accelerometer", 1),
+            ("gyroscope", 0),
+        ]
 
     asyncio.run(scenario())
 

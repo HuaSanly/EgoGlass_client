@@ -232,8 +232,16 @@ class ImuSample(BaseModel):
         return self
 
 
+class ImuSampleBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    schema_version: Literal["0.1"] = "0.1"
+    message_type: Literal["imu_batch"] = "imu_batch"
+    samples: list[ImuSample] = Field(min_length=1, max_length=32)
+
+
 ImuTelemetryMessage = Annotated[
-    ImuCapabilities | ImuSample,
+    ImuCapabilities | ImuSample | ImuSampleBatch,
     Field(discriminator="message_type"),
 ]
 IMU_TELEMETRY_ADAPTER = TypeAdapter(ImuTelemetryMessage)

@@ -661,11 +661,13 @@ def _atomic_write_csv(
 
 def _atomic_copy_file(source: Path, destination: Path) -> None:
     temp_path = destination.with_suffix(destination.suffix + ".tmp")
-    with source.expanduser().resolve().open("rb") as input_stream:
-        with temp_path.open("wb") as output_stream:
-            shutil.copyfileobj(input_stream, output_stream)
-            output_stream.flush()
-            os.fsync(output_stream.fileno())
+    with (
+        source.expanduser().resolve().open("rb") as input_stream,
+        temp_path.open("wb") as output_stream,
+    ):
+        shutil.copyfileobj(input_stream, output_stream)
+        output_stream.flush()
+        os.fsync(output_stream.fileno())
     os.replace(temp_path, destination)
 
 

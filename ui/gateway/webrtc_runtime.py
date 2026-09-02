@@ -34,6 +34,7 @@ from .webrtc_models import (
     ImuCapabilities,
     ImuChannelState,
     ImuSample,
+    ImuSampleBatch,
     ImuSensorStatus,
     ImuSensorType,
     ImuTelemetryStatus,
@@ -874,7 +875,7 @@ class WebRtcSessionRuntime:
     ) -> None:
         if generation != self._generation:
             return
-        message: ImuCapabilities | ImuSample | None = None
+        message: ImuCapabilities | ImuSample | ImuSampleBatch | None = None
         malformed = False
         try:
             if isinstance(payload, bytes):
@@ -891,7 +892,7 @@ class WebRtcSessionRuntime:
 
         received_at_ns = (
             self._perf_clock()
-            if isinstance(message, ImuSample)
+            if isinstance(message, (ImuSample, ImuSampleBatch))
             or (message is not None and self._capture_telemetry_sink is not None)
             else None
         )
@@ -906,40 +907,52 @@ class WebRtcSessionRuntime:
                 self._imu_capabilities_received += 1
                 self._imu_capabilities = message
             else:
-                self._imu_samples_received += 1
+                samples = (
+                    tuple(message.samples)
+                    if isinstance(message, ImuSampleBatch)
+                    else (message,)
+                )
+                self._imu_samples_received += len(samples)
                 self._imu_channel_state = ImuChannelState.RECEIVING
-                accumulator = self._imu_sensors[message.sensor_type]
-                accumulator.sample_count += 1
-                if accumulator.first_received_at_ns is None:
-                    accumulator.first_received_at_ns = received_at_ns
-                accumulator.last_received_at_ns = received_at_ns
-                previous_sequence = accumulator.latest_sequence_number
-                if previous_sequence is None:
-                    accumulator.latest_sequence_number = message.sequence_number
-                elif message.sequence_number <= previous_sequence:
-                    accumulator.out_of_order_samples += 1
-                else:
-                    accumulator.sequence_gaps += max(
-                        0,
-                        message.sequence_number - previous_sequence - 1,
+                for sample in samples:
+                    accumulator = self._imu_sensors[sample.sensor_type]
+                    accumulator.sample_count += 1
+                    if accumulator.first_received_at_ns is None:
+                        accumulator.first_received_at_ns = received_at_ns
+                    accumulator.last_received_at_ns = received_at_ns
+                    previous_sequence = accumulator.latest_sequence_number
+                    if previous_sequence is None:
+                        accumulator.latest_sequence_number = sample.sequence_number
+                    elif sample.sequence_number <= previous_sequence:
+                        accumulator.out_of_order_samples += 1
+                    else:
+                        accumulator.sequence_gaps += max(
+                            0,
+                            sample.sequence_number - previous_sequence - 1,
+                        )
+                        accumulator.latest_sequence_number = sample.sequence_number
+                    delta_ns = (
+                        sample.received_at_elapsed_realtime_ns
+                        - sample.sensor_event_monotonic_ns
                     )
-                    accumulator.latest_sequence_number = message.sequence_number
-                delta_ns = (
-                    message.received_at_elapsed_realtime_ns
-                    - message.sensor_event_monotonic_ns
-                )
-                accumulator.last_event_to_callback_delta_ns = delta_ns
-                accumulator.min_event_to_callback_delta_ns = (
-                    delta_ns
-                    if accumulator.min_event_to_callback_delta_ns is None
-                    else min(accumulator.min_event_to_callback_delta_ns, delta_ns)
-                )
-                accumulator.max_event_to_callback_delta_ns = (
-                    delta_ns
-                    if accumulator.max_event_to_callback_delta_ns is None
-                    else max(accumulator.max_event_to_callback_delta_ns, delta_ns)
-                )
-                accumulator.last_sample = message
+                    accumulator.last_event_to_callback_delta_ns = delta_ns
+                    accumulator.min_event_to_callback_delta_ns = (
+                        delta_ns
+                        if accumulator.min_event_to_callback_delta_ns is None
+                        else min(
+                            accumulator.min_event_to_callback_delta_ns,
+                            delta_ns,
+                        )
+                    )
+                    accumulator.max_event_to_callback_delta_ns = (
+                        delta_ns
+                        if accumulator.max_event_to_callback_delta_ns is None
+                        else max(
+                            accumulator.max_event_to_callback_delta_ns,
+                            delta_ns,
+                        )
+                    )
+                    accumulator.last_sample = sample
             session_id = self._session_id
         if session_id is None or received_at_ns is None:
             return
@@ -951,21 +964,27 @@ class WebRtcSessionRuntime:
                 received_at_ns,
             )
         else:
-            await self._emit_capture_event(
-                "on_imu_sample",
-                session_id,
-                message,
-                received_at_ns,
+            samples = (
+                tuple(message.samples)
+                if isinstance(message, ImuSampleBatch)
+                else (message,)
             )
-            if self._display_imu_sink is not None:
-                try:
-                    await self._display_imu_sink.submit_imu_sample(
-                        connection_session_id=session_id,
-                        sample=message,
-                        received_at_client_monotonic_ns=received_at_ns,
-                    )
-                except Exception:
-                    LOGGER.exception("native IMU preview rejected a sample")
+            for sample in samples:
+                await self._emit_capture_event(
+                    "on_imu_sample",
+                    session_id,
+                    sample,
+                    received_at_ns,
+                )
+                if self._display_imu_sink is not None:
+                    try:
+                        await self._display_imu_sink.submit_imu_sample(
+                            connection_session_id=session_id,
+                            sample=sample,
+                            received_at_client_monotonic_ns=received_at_ns,
+                        )
+                    except Exception:
+                        LOGGER.exception("native IMU preview rejected a sample")
 
     async def _emit_capture_event(self, method_name: str, *args: object) -> None:
         sink = self._capture_telemetry_sink

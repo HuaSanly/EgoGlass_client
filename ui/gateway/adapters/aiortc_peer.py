@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable
 from fractions import Fraction
 
@@ -29,6 +30,8 @@ STREAM_CONTROL_CHANNEL_LABEL = "stream-control-v1"
 RECORDING_CONTROL_CHANNEL_LABEL = "recording-control-v1"
 IMU_TELEMETRY_CHANNEL_LABEL = "imu-telemetry-experimental-v0"
 RECORDING_CONTROL_MAX_PAYLOAD_BYTES = 2048
+IMU_MESSAGE_QUEUE_MAXSIZE = 16_384
+LOGGER = logging.getLogger(__name__)
 
 
 def lan_rtc_configuration() -> RTCConfiguration:
@@ -90,6 +93,11 @@ class AiortcPeer:
         self._tasks: set[asyncio.Task[None]] = set()
         self._negotiated_video_codec: str | None = None
         self._video_source: AiortcVideoSource | None = None
+        self._imu_message_queue: asyncio.Queue[
+            tuple[AiortcImuChannel, str | bytes]
+        ] | None = None
+        self._imu_consumer_task: asyncio.Task[None] | None = None
+        self._imu_queue_dropped = 0
         self._corrupt_frames_dropped = 0
         self._cached_receiver_stats = WebRtcReceiverStats()
         self._receiver_stats_sampled_at = 0.0
@@ -127,6 +135,15 @@ class AiortcPeer:
     @property
     def negotiated_video_codec(self) -> str | None:
         return self._negotiated_video_codec
+
+    @property
+    def imu_queue_dropped(self) -> int:
+        return self._imu_queue_dropped
+
+    @property
+    def imu_queue_depth(self) -> int:
+        queue = self._imu_message_queue
+        return 0 if queue is None else queue.qsize()
 
     async def accept_offer(self, offer: WebRtcOffer) -> str:
         await self._peer.setRemoteDescription(
@@ -166,6 +183,7 @@ class AiortcPeer:
         return self._cached_receiver_stats
 
     async def close(self) -> None:
+        self._cancel_imu_consumer()
         for task in tuple(self._tasks):
             task.cancel()
         if self._tasks:
@@ -239,6 +257,15 @@ class AiortcPeer:
             return
 
         imu_channel = AiortcImuChannel(channel)
+        self._cancel_imu_consumer()
+        message_queue: asyncio.Queue[tuple[AiortcImuChannel, str | bytes]] = (
+            asyncio.Queue(maxsize=IMU_MESSAGE_QUEUE_MAXSIZE)
+        )
+        self._imu_message_queue = message_queue
+        consumer = asyncio.create_task(self._consume_imu_messages(message_queue))
+        self._imu_consumer_task = consumer
+        self._tasks.add(consumer)
+        consumer.add_done_callback(self._tasks.discard)
 
         @channel.on("open")  # type: ignore[attr-defined]
         def on_open() -> None:
@@ -250,10 +277,43 @@ class AiortcPeer:
 
         @channel.on("message")  # type: ignore[attr-defined]
         def on_message(message: str | bytes) -> None:
-            self._schedule(self._callbacks.on_imu_telemetry(imu_channel, message))
+            if self._imu_message_queue is not message_queue:
+                return
+            try:
+                message_queue.put_nowait((imu_channel, message))
+            except asyncio.QueueFull:
+                self._imu_queue_dropped += 1
+                if self._imu_queue_dropped == 1 or self._imu_queue_dropped % 1000 == 0:
+                    LOGGER.warning(
+                        "IMU receive queue is full; dropped messages=%d",
+                        self._imu_queue_dropped,
+                    )
 
         if imu_channel.is_open:
             self._schedule(self._callbacks.on_imu_channel_ready(imu_channel))
+
+    async def _consume_imu_messages(
+        self,
+        message_queue: asyncio.Queue[tuple[AiortcImuChannel, str | bytes]],
+    ) -> None:
+        try:
+            while True:
+                channel, message = await message_queue.get()
+                try:
+                    await self._callbacks.on_imu_telemetry(channel, message)
+                except Exception:
+                    LOGGER.exception("IMU telemetry callback failed")
+                finally:
+                    message_queue.task_done()
+        except asyncio.CancelledError:
+            return
+
+    def _cancel_imu_consumer(self) -> None:
+        consumer = self._imu_consumer_task
+        self._imu_consumer_task = None
+        self._imu_message_queue = None
+        if consumer is not None:
+            consumer.cancel()
 
     def _bind_recording_control_channel(self, channel: object) -> None:
         if (
